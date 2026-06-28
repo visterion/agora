@@ -9,6 +9,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.HttpClientErrorException;
@@ -33,14 +34,18 @@ class GetQuoteWebhookIT {
     int port;
 
     /**
-     * Stub MarketDataProvider — @Primary so it wins over the real YahooMarketDataProvider
-     * in the MarketDataService fallback chain. Deterministic, no network.
+     * Stub MarketDataProvider — @Primary + @Order(HIGHEST_PRECEDENCE) so it is always
+     * first in the List&lt;MarketDataProvider&gt; injected into MarketDataService.
+     * {@code @Primary} alone does not control List&lt;T&gt; injection order in Spring;
+     * {@code @Order} is required to guarantee the stub heads the fallback chain.
+     * Deterministic, no real network calls.
      */
     @TestConfiguration
     static class StubProviderConfig {
 
         @Bean
         @Primary
+        @Order(Integer.MIN_VALUE)
         MarketDataProvider stubMarketDataProvider() {
             return new MarketDataProvider() {
                 @Override
@@ -73,7 +78,10 @@ class GetQuoteWebhookIT {
         assertThat(resp.getStatusCode().value()).isEqualTo(200);
         assertThat(resp.getBody())
                 .contains("\"symbol\":\"AAPL\"")
-                .contains("\"quotes\"");
+                .contains("\"quotes\"")
+                // 201.34 is the stub's sentinel price — a real Yahoo call would return a
+                // different market price, so this assertion proves the stub answered.
+                .contains("201.34");
     }
 
     @Test
