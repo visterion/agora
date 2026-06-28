@@ -1,38 +1,51 @@
 package de.visterion.agora.data;
 
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.LongSupplier;
 
-/** Tries providers in order; first success wins (fallback seam). */
+/** Tries providers in order (fallback); caches successful ohlc/quote results (TTL). */
 @Component
 public class MarketDataService {
 
     private final List<MarketDataProvider> providers;
+    private final TtlCache<String, List<OhlcBar>> ohlcCache;
+    private final TtlCache<String, Quote> quoteCache;
 
-    public MarketDataService(List<MarketDataProvider> providers) {
+    @Autowired
+    public MarketDataService(List<MarketDataProvider> providers,
+                             @Value("${agora.data.cache.ttl-seconds:120}") long ttlSeconds) {
+        this(providers, ttlSeconds * 1000L, System::currentTimeMillis);
+    }
+
+    MarketDataService(List<MarketDataProvider> providers, long ttlMillis, LongSupplier now) {
         this.providers = List.copyOf(providers);
+        this.ohlcCache = new TtlCache<>(ttlMillis, now);
+        this.quoteCache = new TtlCache<>(ttlMillis, now);
     }
 
     public Quote quote(String symbol) {
-        return firstSuccess(p -> p.quote(symbol), "quote " + symbol);
+        return quoteCache.get("quote:" + symbol,
+                () -> firstSuccess(p -> p.quote(symbol), "quote " + symbol));
     }
 
     public List<OhlcBar> ohlc(String symbol, int days) {
-        return firstSuccess(p -> p.ohlc(symbol, days), "ohlc " + symbol);
+        return ohlcCache.get("ohlc:" + symbol + ":" + days,
+                () -> firstSuccess(p -> p.ohlc(symbol, days), "ohlc " + symbol));
     }
 
-    /** Batch: merge each provider's batch result; later providers fill only missing symbols. */
+    /** Batch quotes; per-symbol cached via quote(). Symbols that fail are omitted. */
     public Map<String, Quote> quotes(Collection<String> symbols) {
         Map<String, Quote> out = new LinkedHashMap<>();
-        for (MarketDataProvider p : providers) {
-            if (out.keySet().containsAll(symbols)) break;
-            try {
-                p.quotes(symbols).forEach(out::putIfAbsent);
-            } catch (MarketDataException ignored) { /* try next */ }
+        for (String s : symbols) {
+            try { out.put(s, quote(s)); }
+            catch (MarketDataException ignored) { /* omit */ }
         }
         return out;
     }

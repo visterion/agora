@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GetQuoteToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private MarketDataService svcWith(MarketDataProvider p) { return new MarketDataService(List.of(p)); }
+    private MarketDataService svcWith(MarketDataProvider p) { return new MarketDataService(List.of(p), 120L); }
 
     private MarketDataProvider okProvider() {
         return new MarketDataProvider() {
