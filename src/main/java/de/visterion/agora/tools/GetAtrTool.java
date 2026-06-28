@@ -77,8 +77,13 @@ public class GetAtrTool implements AgoraTool {
         int period = (args.has("period") && !args.get("period").isNull())
                 ? args.get("period").asInt() : dp.atrPeriod();
 
-        IndicatorService.Params params = new IndicatorService.Params(
-                period, dp.atrMultiple(), dp.maFast(), dp.maSlow(), dp.minBarsFor52w());
+        IndicatorService.Params params;
+        try {
+            params = new IndicatorService.Params(
+                    period, dp.atrMultiple(), dp.maFast(), dp.maSlow(), dp.minBarsFor52w());
+        } catch (IllegalArgumentException e) {
+            return ToolResult.unavailable("invalid parameter: " + e.getMessage());
+        }
 
         List<OhlcBar> bars;
         try {
