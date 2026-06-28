@@ -36,7 +36,7 @@ class ToolRegistryTest {
         ObjectNode in = mapper.createObjectNode().put("hello", "world");
         ToolResult r = reg.invoke("echo", in);
         assertThat(r.available()).isTrue();
-        assertThat(r.output().get("hello").asText()).isEqualTo("world");
+        assertThat(r.output().get("hello").asString()).isEqualTo("world");
     }
 
     @Test

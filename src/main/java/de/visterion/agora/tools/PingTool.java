@@ -29,7 +29,7 @@ public class PingTool implements AgoraTool {
         ObjectNode out = mapper.createObjectNode();
         out.put("pong", true);
         if (args != null && args.hasNonNull("message")) {
-            out.put("message", args.get("message").asText());
+            out.put("message", args.get("message").asString());
         }
         return ToolResult.ok(out);
     }
