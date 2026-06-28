@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: agora
+  ai:
+    mcp:
+      server:
+        protocol: STREAMABLE          # Streamable HTTP (SSE is sunset mid-2026)
+        type: SYNC
+        name: agora
+        version: 0.1.0
+        streamable-http:
+          mcp-endpoint: /mcp
+        annotation-scanner:
+          enabled: true
+
+agora:
+  auth:
+    # comma-separated accepted bearer tokens (one per consumer); empty = deny all tool calls
+    tokens: ${AGORA_AUTH_TOKENS:}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+server:
+  port: 8080
