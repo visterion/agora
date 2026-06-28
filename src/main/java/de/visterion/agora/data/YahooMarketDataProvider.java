@@ -114,7 +114,7 @@ public class YahooMarketDataProvider implements MarketDataProvider {
                     .setScale(4, RoundingMode.HALF_UP);
         }
 
-        String currency = meta.path("currency").asText("USD");
+        String currency = meta.path("currency").asString("USD");
 
         return new Quote(symbol, price, dayChangePercent, currency);
     }
@@ -225,7 +225,7 @@ public class YahooMarketDataProvider implements MarketDataProvider {
 
     private static BigDecimal bd(JsonNode node) {
         if (node == null || node.isNull() || node.isMissingNode()) return BigDecimal.ZERO;
-        try { return new BigDecimal(node.asText("0")); }
+        try { return new BigDecimal(node.asString("0")); }
         catch (NumberFormatException e) { return BigDecimal.ZERO; }
     }
 }

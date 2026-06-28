@@ -25,7 +25,7 @@ class YahooMarketDataProviderTest {
     @BeforeEach
     void setUp() {
         wm.resetAll();
-        provider = new YahooMarketDataProvider(wm.baseUrl(), "TestAgent/1.0", 0L);
+        provider = new YahooMarketDataProvider(wm.baseUrl(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) TestAgent/1.0", 0L);
     }
 
     // --- quote() tests ---
@@ -35,6 +35,7 @@ class YahooMarketDataProviderTest {
         wm.stubFor(get(urlPathEqualTo("/v8/finance/chart/AAPL"))
                 .withQueryParam("range", equalTo("1d"))
                 .withQueryParam("interval", equalTo("1d"))
+                .withHeader("User-Agent", containing("Windows"))
                 .willReturn(okJson("""
                     {"chart":{"result":[{
                         "meta":{
@@ -51,8 +52,8 @@ class YahooMarketDataProviderTest {
         assertThat(q.symbol()).isEqualTo("AAPL");
         assertThat(q.price()).isEqualByComparingTo("190.5");
         assertThat(q.currency()).isEqualTo("USD");
-        // dayChangePercent = (190.5 - 188.0) / 188.0 * 100 ≈ 1.33
-        assertThat(q.dayChangePercent()).isGreaterThan(java.math.BigDecimal.ZERO);
+        // dayChangePercent = (190.5 - 188.0) / 188.0 * 100, MathContext(6,HALF_UP), scale 4 → 1.3298
+        assertThat(q.dayChangePercent()).isEqualByComparingTo("1.3298");
     }
 
     @Test
