@@ -47,6 +47,21 @@ class ToolRegistryTest {
     }
 
     @Test
+    void runtimeExceptionInToolYieldsUnavailable() {
+        AgoraTool boom = new AgoraTool() {
+            public String name() { return "boom"; }
+            public String description() { return "always throws"; }
+            public ObjectNode inputSchema() { return mapper.createObjectNode(); }
+            public ToolResult call(tools.jackson.databind.JsonNode args) {
+                throw new RuntimeException("unexpected failure");
+            }
+        };
+        ToolRegistry reg = new ToolRegistry(List.of(boom));
+        ToolResult r = reg.invoke("boom", mapper.createObjectNode());
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test
     void preservesInsertionOrder() {
         AgoraTool alpha = new AgoraTool() {
             public String name() { return "alpha"; }

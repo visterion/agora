@@ -34,10 +34,10 @@ public class McpToolAdapter {
 
     @Bean
     public List<SyncToolSpecification> agoraMcpTools(ToolRegistry registry) {
-        return registry.all().stream().map(this::toSpec).toList();
+        return registry.all().stream().map(tool -> toSpec(tool, registry)).toList();
     }
 
-    private SyncToolSpecification toSpec(AgoraTool tool) {
+    private SyncToolSpecification toSpec(AgoraTool tool, ToolRegistry registry) {
         // The SDK's Tool.builder accepts the input JSON Schema as a Map<String,Object>.
         Map<String, Object> schema = mapper.convertValue(tool.inputSchema(), MAP_TYPE);
 
@@ -49,15 +49,15 @@ public class McpToolAdapter {
 
         return SyncToolSpecification.builder()
                 .tool(def)
-                .callHandler((exchange, request) -> handle(tool, request))
+                .callHandler((exchange, request) -> handle(tool.name(), registry, request))
                 .build();
     }
 
-    private McpSchema.CallToolResult handle(AgoraTool tool, McpSchema.CallToolRequest request) {
+    private McpSchema.CallToolResult handle(String toolName, ToolRegistry registry, McpSchema.CallToolRequest request) {
         Map<String, Object> args = request.arguments() == null ? Map.of() : request.arguments();
         JsonNode argsNode = mapper.valueToTree(args);
 
-        ToolResult result = tool.call(argsNode);
+        ToolResult result = registry.invoke(toolName, argsNode);
 
         Object payload = result.available()
                 ? result.output()

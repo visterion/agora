@@ -29,6 +29,7 @@ public class GetQuoteTool implements AgoraTool {
     public ObjectNode inputSchema() {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
+        schema.put("description", "Provide either 'symbols' (array of ticker strings) OR 'symbol' (single ticker string).");
         ObjectNode props = schema.putObject("properties");
         ObjectNode symbols = props.putObject("symbols");
         symbols.put("type", "array").put("description", "ticker symbols");
