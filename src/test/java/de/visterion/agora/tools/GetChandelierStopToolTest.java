@@ -67,6 +67,14 @@ class GetChandelierStopToolTest {
     }
 
     @Test
+    void unavailableOnNonNumericMultiple() {
+        var tool = toolWith(rising(10));
+        var args = mapper.createObjectNode().put("symbol", "AAPL").put("multiple", "abc");
+        var r = tool.call(args);
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test
     void periodAndMultipleOverridesApplied() {
         var tool = toolWith(rising(10));
         var args = mapper.createObjectNode().put("symbol", "TSLA")
