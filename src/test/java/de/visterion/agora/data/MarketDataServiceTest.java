@@ -31,22 +31,22 @@ class MarketDataServiceTest {
 
     @Test
     void secondProviderWinsWhenFirstFails() {
-        var svc = new MarketDataService(List.of(failing("a"), ok("b")));
+        var svc = new MarketDataService(List.of(failing("a"), ok("b")), 1000, () -> 0L);
         assertThat(svc.quote("AAPL").price()).isEqualByComparingTo("10.00");
         assertThat(svc.ohlc("AAPL", 5)).hasSize(1);
     }
 
     @Test
     void quotesOmitsUnresolvedButKeepsResolved() {
-        // ok provider resolves everything; ensure batch maps symbols
-        var svc = new MarketDataService(List.of(ok("b")));
+        // ok provider resolves everything; ensure batch maps symbols (per-symbol cached)
+        var svc = new MarketDataService(List.of(ok("b")), 1000, () -> 0L);
         Map<String, Quote> q = svc.quotes(List.of("AAPL", "MSFT"));
         assertThat(q).containsOnlyKeys("AAPL", "MSFT");
     }
 
     @Test
     void allProvidersFailingThrowsUnavailable() {
-        var svc = new MarketDataService(List.of(failing("a"), failing("b")));
+        var svc = new MarketDataService(List.of(failing("a"), failing("b")), 1000, () -> 0L);
         assertThatThrownBy(() -> svc.quote("AAPL"))
                 .isInstanceOf(MarketDataException.class)
                 .extracting(e -> ((MarketDataException) e).kind())
