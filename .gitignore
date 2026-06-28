@@ -1,0 +1,20 @@
+docs/
+CLAUDE.md
+AGENTS.md
+AGORA-PLAN.md
+target/
+node_modules/
+dist/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+.serena/
+.worktrees/
+.superpowers/
+.env
+.playwright-mcp/
+/PLAN.md
+/*-preview.png
+# Added by code-review-graph
+.code-review-graph/
