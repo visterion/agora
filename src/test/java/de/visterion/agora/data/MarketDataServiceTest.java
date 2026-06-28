@@ -52,4 +52,23 @@ class MarketDataServiceTest {
                 .extracting(e -> ((MarketDataException) e).kind())
                 .isEqualTo(MarketDataException.Kind.UNAVAILABLE);
     }
+
+    @Test
+    void quotesOmitsOnlyTheFailedSymbol() {
+        // Provider succeeds for "AAPL" but throws UNAVAILABLE for "BAD"
+        MarketDataProvider provider = new MarketDataProvider() {
+            public String name() { return "partial"; }
+            public Quote quote(String symbol) {
+                if ("BAD".equals(symbol)) {
+                    throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "bad symbol", null);
+                }
+                return new Quote(symbol, new BigDecimal("10.00"), BigDecimal.ZERO, "USD");
+            }
+            public List<OhlcBar> ohlc(String symbol, int days) { throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "n/a", null); }
+        };
+        var svc = new MarketDataService(List.of(provider), 1000, () -> 0L);
+        Map<String, Quote> result = svc.quotes(List.of("AAPL", "BAD"));
+        assertThat(result).containsKey("AAPL");
+        assertThat(result).doesNotContainKey("BAD");
+    }
 }
