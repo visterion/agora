@@ -23,6 +23,13 @@ agora:
       user-agent: ${AGORA_DATA_YAHOO_USER_AGENT:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36}
     cache:
       ttl-seconds: ${AGORA_DATA_CACHE_TTL_SECONDS:120}
+  research:
+    atr-period: ${AGORA_RESEARCH_ATR_PERIOD:22}
+    atr-multiple: ${AGORA_RESEARCH_ATR_MULTIPLE:3.0}
+    ma-fast: ${AGORA_RESEARCH_MA_FAST:50}
+    ma-slow: ${AGORA_RESEARCH_MA_SLOW:200}
+    min-bars-52w: ${AGORA_RESEARCH_MIN_BARS_52W:250}
+    fetch-days: ${AGORA_RESEARCH_FETCH_DAYS:260}
 
 management:
   endpoints:

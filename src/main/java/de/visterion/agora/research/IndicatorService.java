@@ -43,6 +43,11 @@ public class IndicatorService {
         this.defaultParams = defaultParams;
     }
 
+    /** Returns the default {@link Params} this service was constructed with. */
+    public Params defaultParams() {
+        return defaultParams;
+    }
+
     /**
      * Computes technical-analysis indicators.
      *
