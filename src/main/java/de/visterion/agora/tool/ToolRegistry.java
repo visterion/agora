@@ -6,14 +6,19 @@ import org.springframework.stereotype.Component;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Component
 public class ToolRegistry {
 
-    private final Map<String, AgoraTool> byName = new LinkedHashMap<>();
+    private final Map<String, AgoraTool> byName;
 
     public ToolRegistry(List<AgoraTool> tools) {
-        for (AgoraTool t : tools) byName.put(t.name(), t);
+        this.byName = tools.stream().collect(Collectors.toMap(
+                AgoraTool::name, Function.identity(),
+                (a, b) -> { throw new IllegalStateException("Duplicate tool name: " + a.name()); },
+                LinkedHashMap::new));
     }
 
     public List<String> names() { return List.copyOf(byName.keySet()); }
