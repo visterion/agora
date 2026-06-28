@@ -47,7 +47,10 @@ class GetAtrToolTest {
         var r = tool.call(mapper.createObjectNode().put("symbol", "AAPL"));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("symbol").asString()).isEqualTo("AAPL");
-        assertThat(r.output().get("atr").decimalValue()).isNotNull();
+        // rising(10) with atrPeriod=3: each interior bar has TR=2 (hl=2, hpc=2, lpc=0).
+        // ATR = SMA of last 3 TRs = (2+2+2)/3 = 2 exactly.
+        assertThat(r.output().get("atr").decimalValue())
+                .isEqualByComparingTo(new BigDecimal("2"));
         assertThat(r.output().get("available").asBoolean()).isTrue();
     }
 

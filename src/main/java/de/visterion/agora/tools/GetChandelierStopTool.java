@@ -76,11 +76,11 @@ public class GetChandelierStopTool implements AgoraTool {
         IndicatorService.Params dp = indicators.defaultParams();
         int period = (args.has("period") && !args.get("period").isNull())
                 ? args.get("period").asInt() : dp.atrPeriod();
-        BigDecimal multiple = (args.has("multiple") && !args.get("multiple").isNull())
-                ? new BigDecimal(args.get("multiple").asString()) : dp.atrMultiple();
 
         IndicatorService.Params params;
         try {
+            BigDecimal multiple = (args.has("multiple") && !args.get("multiple").isNull())
+                    ? new BigDecimal(args.get("multiple").asString()) : dp.atrMultiple();
             params = new IndicatorService.Params(
                     period, multiple, dp.maFast(), dp.maSlow(), dp.minBarsFor52w());
         } catch (IllegalArgumentException e) {
