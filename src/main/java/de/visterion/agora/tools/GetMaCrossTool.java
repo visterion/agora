@@ -79,8 +79,13 @@ public class GetMaCrossTool implements AgoraTool {
         int slow = (args.has("slow") && !args.get("slow").isNull())
                 ? args.get("slow").asInt() : dp.maSlow();
 
-        IndicatorService.Params params = new IndicatorService.Params(
-                dp.atrPeriod(), dp.atrMultiple(), fast, slow, dp.minBarsFor52w());
+        IndicatorService.Params params;
+        try {
+            params = new IndicatorService.Params(
+                    dp.atrPeriod(), dp.atrMultiple(), fast, slow, dp.minBarsFor52w());
+        } catch (IllegalArgumentException e) {
+            return ToolResult.unavailable("invalid parameter: " + e.getMessage());
+        }
 
         List<OhlcBar> bars;
         try {
