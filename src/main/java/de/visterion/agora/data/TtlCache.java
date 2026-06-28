@@ -4,8 +4,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
-/** Thread-safe TTL cache. Stores only successful loads — a throwing loader is never cached.
- *  Time source is injectable for deterministic tests. */
+/**
+ * Thread-safe TTL cache. Stores only successful loads — a throwing loader is never cached.
+ * Time source is injectable for deterministic tests.
+ *
+ * <p>Under concurrent cache misses for the same key the loader may run more than once;
+ * the last writer wins. This is benign for idempotent reads (e.g. market-data fetches)
+ * but means the loader is <em>not</em> exactly-once guaranteed.
+ */
 public class TtlCache<K, V> {
 
     private record Entry<V>(V value, long expiresAtMillis) {}

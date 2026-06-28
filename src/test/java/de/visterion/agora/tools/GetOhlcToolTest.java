@@ -14,6 +14,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GetOhlcToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
+    // Uses the public 2-arg ctor (ttlSeconds) — cross-package tests can't reach the package-private
+    // 3-arg test ctor. That's fine: these tests exercise tool output shape, not cache timing.
     private MarketDataService svcWith(MarketDataProvider p) { return new MarketDataService(List.of(p), 120L); }
 
     private MarketDataProvider okProvider() {

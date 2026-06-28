@@ -18,12 +18,25 @@ public class MarketDataService {
     private final TtlCache<String, List<OhlcBar>> ohlcCache;
     private final TtlCache<String, Quote> quoteCache;
 
+    /**
+     * Spring-wired constructor.
+     *
+     * @param providers   ordered list of market-data providers (first success wins)
+     * @param ttlSeconds  cache TTL in <strong>seconds</strong> (bound to {@code agora.data.cache.ttl-seconds})
+     */
     @Autowired
     public MarketDataService(List<MarketDataProvider> providers,
                              @Value("${agora.data.cache.ttl-seconds:120}") long ttlSeconds) {
         this(providers, ttlSeconds * 1000L, System::currentTimeMillis);
     }
 
+    /**
+     * Test constructor with injectable clock.
+     *
+     * @param providers   ordered list of market-data providers
+     * @param ttlMillis   cache TTL in <strong>milliseconds</strong>
+     * @param now         time source (injectable for deterministic tests)
+     */
     MarketDataService(List<MarketDataProvider> providers, long ttlMillis, LongSupplier now) {
         this.providers = List.copyOf(providers);
         this.ohlcCache = new TtlCache<>(ttlMillis, now);
