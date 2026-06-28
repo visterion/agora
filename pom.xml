@@ -68,6 +68,21 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- Also run *IT smoke tests (e.g. McpStreamableHttpSmokeIT) under
+                         `mvn test` — these are in-JVM SpringBootTest round-trips, not
+                         external-environment integration tests, so a single `mvn test`
+                         is the one green command for the whole suite. -->
+                    <includes>
+                        <include>**/*Test.java</include>
+                        <include>**/*Tests.java</include>
+                        <include>**/*IT.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
         </plugins>
     </build>
 </project>
