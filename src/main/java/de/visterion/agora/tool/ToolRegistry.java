@@ -32,6 +32,11 @@ public class ToolRegistry {
     }
 
     public ToolResult invoke(String name, JsonNode args) {
-        return get(name).call(args);
+        AgoraTool tool = get(name);              // throws ToolNotFoundException → 404 (unchanged)
+        try {
+            return tool.call(args);
+        } catch (RuntimeException e) {
+            return ToolResult.unavailable("tool '" + name + "' failed: " + e.getMessage());
+        }
     }
 }
