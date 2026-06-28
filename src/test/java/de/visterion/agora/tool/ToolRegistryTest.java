@@ -45,4 +45,28 @@ class ToolRegistryTest {
         assertThatThrownBy(() -> reg.invoke("nope", mapper.createObjectNode()))
                 .isInstanceOf(ToolNotFoundException.class);
     }
+
+    @Test
+    void preservesInsertionOrder() {
+        AgoraTool alpha = new AgoraTool() {
+            public String name() { return "alpha"; }
+            public String description() { return "first"; }
+            public ObjectNode inputSchema() { return mapper.createObjectNode(); }
+            public ToolResult call(tools.jackson.databind.JsonNode args) { return ToolResult.ok(args); }
+        };
+        AgoraTool beta = new AgoraTool() {
+            public String name() { return "beta"; }
+            public String description() { return "second"; }
+            public ObjectNode inputSchema() { return mapper.createObjectNode(); }
+            public ToolResult call(tools.jackson.databind.JsonNode args) { return ToolResult.ok(args); }
+        };
+        AgoraTool gamma = new AgoraTool() {
+            public String name() { return "gamma"; }
+            public String description() { return "third"; }
+            public ObjectNode inputSchema() { return mapper.createObjectNode(); }
+            public ToolResult call(tools.jackson.databind.JsonNode args) { return ToolResult.ok(args); }
+        };
+        ToolRegistry reg = new ToolRegistry(List.of(alpha, beta, gamma));
+        assertThat(reg.names()).containsExactly("alpha", "beta", "gamma");
+    }
 }
