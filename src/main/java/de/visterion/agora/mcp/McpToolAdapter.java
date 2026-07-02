@@ -34,7 +34,10 @@ public class McpToolAdapter {
 
     @Bean
     public List<SyncToolSpecification> agoraMcpTools(ToolRegistry registry) {
-        return registry.all().stream().map(tool -> toSpec(tool, registry)).toList();
+        return registry.all().stream()
+                .filter(t -> !"trading".equals(t.namespace()))
+                .map(tool -> toSpec(tool, registry))
+                .toList();
     }
 
     private SyncToolSpecification toSpec(AgoraTool tool, ToolRegistry registry) {

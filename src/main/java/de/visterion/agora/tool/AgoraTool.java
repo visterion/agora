@@ -10,4 +10,7 @@ public interface AgoraTool {
     String description();
     ObjectNode inputSchema();          // JSON Schema for the tool's arguments
     ToolResult call(JsonNode args);
+
+    /** Auth/routing namespace. "trading" tools require the trading token and are webhook-only. */
+    default String namespace() { return "general"; }
 }

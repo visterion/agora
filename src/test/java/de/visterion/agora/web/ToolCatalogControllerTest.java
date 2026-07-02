@@ -15,7 +15,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(ToolCatalogController.class)
 @Import({ToolRegistry.class, PingTool.class, BearerTokenFilter.class})
-@TestPropertySource(properties = "agora.auth.tokens=good-token")
+@TestPropertySource(properties = {"agora.auth.tokens=good-token", "agora.trading.tokens="})
 class ToolCatalogControllerTest {
 
     @Autowired MockMvc mvc;
