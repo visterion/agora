@@ -3,6 +3,7 @@ package de.visterion.agora.data;
 import tools.jackson.databind.JsonNode;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -40,6 +41,7 @@ public class YahooMarketDataProvider implements MarketDataProvider {
     /** Package-private constructor for tests: takes base-url + UA + explicit retry delay (pass 0 for no sleep). */
     YahooMarketDataProvider(String baseUrl, String userAgent, long retryBaseMs) {
         this.client = RestClient.builder()
+                .requestFactory(new JdkClientHttpRequestFactory())
                 .baseUrl(baseUrl)
                 .defaultHeader("User-Agent", userAgent)
                 .build();

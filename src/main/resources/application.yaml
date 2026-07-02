@@ -17,6 +17,13 @@ agora:
   auth:
     # comma-separated accepted bearer tokens (one per consumer); empty = deny all tool calls
     tokens: ${AGORA_AUTH_TOKENS:}
+  trading:
+    provider: ${AGORA_TRADING_PROVIDER:alpaca}
+    tokens: ${AGORA_TRADING_TOKENS:}
+    alpaca:
+      base-url: ${AGORA_TRADING_ALPACA_BASE_URL:https://paper-api.alpaca.markets/v2}
+      key-id: ${AGORA_TRADING_ALPACA_KEY_ID:}
+      secret: ${AGORA_TRADING_ALPACA_SECRET:}
   data:
     yahoo:
       base-url: ${AGORA_DATA_YAHOO_BASE_URL:https://query1.finance.yahoo.com}
