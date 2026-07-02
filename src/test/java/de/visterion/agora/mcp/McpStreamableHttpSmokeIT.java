@@ -41,9 +41,15 @@ class McpStreamableHttpSmokeIT {
             client.initialize();
 
             McpSchema.ListToolsResult tools = client.listTools();
-            assertThat(tools.tools())
-                    .extracting(McpSchema.Tool::name)
-                    .contains("ping");
+            var toolNames = tools.tools().stream()
+                    .map(McpSchema.Tool::name)
+                    .toList();
+
+            // General tools must be present
+            assertThat(toolNames).contains("ping");
+
+            // Trading tools must NOT appear on the MCP endpoint (webhook-only)
+            assertThat(toolNames).doesNotContain("place_bracket");
 
             McpSchema.CallToolResult res = client.callTool(
                     new McpSchema.CallToolRequest("ping", Map.of("message", "hi")));
