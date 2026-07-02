@@ -14,7 +14,7 @@ public class BrokerService {
     public OrderResult modifyBracket(String id, BigDecimal stop, BigDecimal target) { return provider.modifyBracket(id, stop, target); }
     public OrderResult flatten(String symbol) { return provider.flatten(symbol); }
     public List<Position> positions() { return provider.positions(); }
-    public List<Order> orders() { return provider.orders(); }
+    public List<Order> orders(String status) { return provider.orders(status); }
     public Account account() { return provider.account(); }
     public Order orderByClientRef(String ref) { return provider.orderByClientRef(ref); }
 }

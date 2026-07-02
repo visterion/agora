@@ -25,7 +25,7 @@ class GetOrdersToolTest {
 
     @Test void ordersListedCorrectly() {
         var stub = new StubBroker() {
-            public List<Order> orders() {
+            public List<Order> orders(String status) {
                 return List.of(new Order("oid-1", "ref-1", "AAPL", "buy",
                         new BigDecimal("5"), "limit", "new"));
             }
@@ -41,9 +41,34 @@ class GetOrdersToolTest {
         assertThat(orders.get(0).get("status").asString()).isEqualTo("new");
     }
 
+    @Test void statusArgPassedToProvider() {
+        var captured = new String[1];
+        var stub = new StubBroker() {
+            public List<Order> orders(String status) {
+                captured[0] = status;
+                return List.of();
+            }
+        };
+        var args = new ObjectMapper().createObjectNode().put("status", "all");
+        tool(stub).call(args);
+        assertThat(captured[0]).isEqualTo("all");
+    }
+
+    @Test void noStatusArgPassesNull() {
+        var captured = new String[]{"not-set"};
+        var stub = new StubBroker() {
+            public List<Order> orders(String status) {
+                captured[0] = status;
+                return List.of();
+            }
+        };
+        tool(stub).call(new ObjectMapper().createObjectNode());
+        assertThat(captured[0]).isNull();
+    }
+
     @Test void unavailableOnBrokerException() {
         var stub = new StubBroker() {
-            public List<Order> orders() {
+            public List<Order> orders(String status) {
                 throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "down", null);
             }
         };
@@ -57,7 +82,7 @@ class GetOrdersToolTest {
         public OrderResult modifyBracket(String id,BigDecimal s,BigDecimal t){return OrderResult.accepted(id,null,"replaced");}
         public OrderResult flatten(String sym){return OrderResult.accepted("oid",null,"accepted");}
         public List<Position> positions(){return List.of();}
-        public List<Order> orders(){return List.of();}
+        public List<Order> orders(String status){return List.of();}
         public Account account(){return new Account("acc",BigDecimal.TEN,BigDecimal.TEN,BigDecimal.TEN,"USD","ACTIVE");}
         public Order orderByClientRef(String ref){return new Order("oid",ref,"AAPL","buy",BigDecimal.ONE,"limit","new");}
     }

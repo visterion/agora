@@ -33,14 +33,18 @@ public class GetOrdersTool implements AgoraTool {
     public ObjectNode inputSchema() {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
-        schema.putObject("properties");
+        ObjectNode props = schema.putObject("properties");
+        props.putObject("status").put("type", "string")
+                .put("description", "Filter by order status (e.g. open, closed, all). Optional.");
         return schema;
     }
 
     @Override
     public ToolResult call(JsonNode args) {
+        String status = (args != null && args.hasNonNull("status"))
+                ? args.get("status").asString(null) : null;
         try {
-            List<Order> orders = broker.orders();
+            List<Order> orders = broker.orders(status);
             ObjectNode out = mapper.createObjectNode();
             ArrayNode arr = out.putArray("orders");
             for (Order o : orders) {

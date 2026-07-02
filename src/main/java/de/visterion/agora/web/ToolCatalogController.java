@@ -25,6 +25,7 @@ public class ToolCatalogController {
         ObjectNode root = mapper.createObjectNode();
         ArrayNode tools = root.putArray("tools");
         for (AgoraTool t : registry.all()) {
+            if ("trading".equals(t.namespace())) continue;
             ObjectNode entry = tools.addObject();
             entry.put("name", t.name());
             entry.put("description", t.description());

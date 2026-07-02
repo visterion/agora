@@ -49,6 +49,9 @@ public class ModifyBracketTool implements AgoraTool {
         BigDecimal stop = safeDecimal(args, "stop");
         BigDecimal target = safeDecimal(args, "target");
 
+        if (stop == null && target == null)
+            return ToolResult.unavailable("must provide at least one of: stop, target");
+
         try {
             OrderResult r = broker.modifyBracket(orderId, stop, target);
             return mapResult(r);

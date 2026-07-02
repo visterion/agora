@@ -13,7 +13,7 @@ class BrokerServiceTest {
             public OrderResult modifyBracket(String id, BigDecimal s, BigDecimal t) { return OrderResult.accepted(id, null, "replaced"); }
             public OrderResult flatten(String sym) { return OrderResult.accepted("oid-2", null, "accepted"); }
             public List<Position> positions() { return List.of(); }
-            public List<Order> orders() { return List.of(); }
+            public List<Order> orders(String status) { return List.of(); }
             public Account account() { return new Account("acc-1", BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, "USD", "ACTIVE"); }
             public Order orderByClientRef(String ref) { return new Order("oid-1", ref, "AAPL", "buy", BigDecimal.ONE, "limit", "new"); }
         };

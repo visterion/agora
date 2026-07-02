@@ -160,6 +160,47 @@ class AlpacaBrokerProviderTest {
         assertThat(result.accepted()).isTrue();
     }
 
+    @Test
+    void flatten_422_returnsRejected_notThrows() {
+        wm.stubFor(delete(urlEqualTo("/positions/AAPL"))
+                .willReturn(aResponse().withStatus(422)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                            {"message":"position has pending orders"}
+                            """)));
+
+        var result = provider.flatten("AAPL");
+
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.rejectCode()).isEqualTo("422");
+        assertThat(result.rejectReason()).contains("pending orders");
+    }
+
+    @Test
+    void flatten_403_returnsRejected_notThrows() {
+        wm.stubFor(delete(urlEqualTo("/positions/GOOG"))
+                .willReturn(aResponse().withStatus(403)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                            {"message":"not permitted"}
+                            """)));
+
+        var result = provider.flatten("GOOG");
+
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.rejectCode()).isEqualTo("403");
+    }
+
+    @Test
+    void flatten_404_throwsNotFound() {
+        wm.stubFor(delete(urlEqualTo("/positions/ZZZZ"))
+                .willReturn(aResponse().withStatus(404)));
+
+        assertThatThrownBy(() -> provider.flatten("ZZZZ"))
+                .isInstanceOfSatisfying(BrokerException.class, ex ->
+                        assertThat(ex.kind()).isEqualTo(BrokerException.Kind.NOT_FOUND));
+    }
+
     // ---- positions() ----
 
     @Test
@@ -188,7 +229,7 @@ class AlpacaBrokerProviderTest {
 
     @Test
     void orders_parsesListCorrectly() {
-        wm.stubFor(get(urlEqualTo("/orders"))
+        wm.stubFor(get(urlPathEqualTo("/orders"))
                 .willReturn(okJson("""
                     [
                       {"id":"oid-10","client_order_id":"ref-10","symbol":"MSFT",
@@ -196,7 +237,7 @@ class AlpacaBrokerProviderTest {
                     ]
                     """)));
 
-        var orders = provider.orders();
+        var orders = provider.orders(null);
 
         assertThat(orders).hasSize(1);
         var o = orders.get(0);
@@ -206,6 +247,28 @@ class AlpacaBrokerProviderTest {
         assertThat(o.side()).isEqualTo("buy");
         assertThat(o.qty()).isEqualByComparingTo("3");
         assertThat(o.status()).isEqualTo("new");
+    }
+
+    @Test
+    void orders_withStatus_sendsQueryParam() {
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .withQueryParam("status", equalTo("all"))
+                .willReturn(okJson("[]")));
+
+        provider.orders("all");
+
+        wm.verify(getRequestedFor(urlPathEqualTo("/orders"))
+                .withQueryParam("status", equalTo("all")));
+    }
+
+    @Test
+    void orders_withoutStatus_noQueryParam() {
+        wm.stubFor(get(urlEqualTo("/orders"))
+                .willReturn(okJson("[]")));
+
+        provider.orders(null);
+
+        wm.verify(getRequestedFor(urlEqualTo("/orders")));
     }
 
     // ---- account() ----

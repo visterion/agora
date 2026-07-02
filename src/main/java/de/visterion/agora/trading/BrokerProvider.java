@@ -10,7 +10,7 @@ public interface BrokerProvider {
     OrderResult modifyBracket(String brokerOrderId, BigDecimal newStop, BigDecimal newTarget);
     OrderResult flatten(String symbol);
     List<Position> positions();
-    List<Order> orders();
+    List<Order> orders(String status);
     Account account();
     Order orderByClientRef(String clientRef);
 }
