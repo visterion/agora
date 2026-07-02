@@ -122,13 +122,7 @@ public class AlpacaBrokerProvider implements BrokerProvider {
             }
             return OrderResult.accepted(null, null, "accepted");
         } catch (RestClientResponseException e) {
-            int status = e.getStatusCode().value();
-            if (status == 404) {
-                throw new BrokerException(BrokerException.Kind.NOT_FOUND,
-                        "Position not found: " + symbol, e);
-            }
-            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
-                    "Alpaca flatten failed HTTP " + status, e);
+            return handleWriteError(e);
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "Alpaca flatten failed: " + e.getMessage(), e);
@@ -168,10 +162,14 @@ public class AlpacaBrokerProvider implements BrokerProvider {
     }
 
     @Override
-    public List<Order> orders() {
+    public List<Order> orders(String status) {
         try {
             JsonNode resp = client.get()
-                    .uri("/orders")
+                    .uri(uri -> {
+                        var b = uri.path("/orders");
+                        if (status != null && !status.isBlank()) b = b.queryParam("status", status);
+                        return b.build();
+                    })
                     .retrieve()
                     .body(JsonNode.class);
             List<Order> out = new ArrayList<>();

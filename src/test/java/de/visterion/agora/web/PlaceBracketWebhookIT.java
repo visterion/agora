@@ -72,7 +72,7 @@ class PlaceBracketWebhookIT {
                 @Override public List<Position> positions() { return List.of(); }
 
                 @Override
-                public List<de.visterion.agora.trading.Order> orders() { return List.of(); }
+                public List<de.visterion.agora.trading.Order> orders(String status) { return List.of(); }
 
                 @Override
                 public Account account() {

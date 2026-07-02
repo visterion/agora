@@ -1,6 +1,7 @@
 package de.visterion.agora.security;
 
 import de.visterion.agora.tool.AgoraTool;
+import de.visterion.agora.tool.ToolNotFoundException;
 import de.visterion.agora.tool.ToolRegistry;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -101,9 +102,10 @@ public class BearerTokenFilter extends OncePerRequestFilter {
         try {
             AgoraTool tool = registry.get(name);
             return "trading".equals(tool.namespace());
-        } catch (Exception e) {
-            // Tool not found in registry → not a trading tool
+        } catch (ToolNotFoundException e) {
+            // Unknown tool → not a trading tool; general ∪ trading tokens accepted
             return false;
         }
+        // Any other exception propagates → request denied (fail-closed)
     }
 }
