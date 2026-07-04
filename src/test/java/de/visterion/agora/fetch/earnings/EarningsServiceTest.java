@@ -37,6 +37,24 @@ class EarningsServiceTest {
         assertThat(svc.earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"))).hasSize(1);
     }
 
+    @Test void cachesResultAcrossIdenticalCalls() {
+        int[] count = {0};
+        EarningsProvider counting = new EarningsProvider() {
+            public String name() { return "counting"; }
+            public List<EarningsEvent> earnings(String s, LocalDate f, LocalDate t) {
+                count[0]++;
+                return List.of(new EarningsEvent("AAPL", LocalDate.parse("2025-05-01"),
+                        null, null, null, null, null));
+            }
+        };
+        var svc = new EarningsService(List.of(counting), 120L, System::currentTimeMillis);
+        var from = LocalDate.parse("2025-01-01");
+        var to = LocalDate.parse("2025-12-31");
+        svc.earnings("AAPL", from, to);
+        svc.earnings("AAPL", from, to);
+        assertThat(count[0]).isEqualTo(1);
+    }
+
     @Test void allUnavailableThrows() {
         var svc = new EarningsService(List.of(fixed("finnhub", List.of(), true), fixed("yahoo", List.of(), true)),
                 120L, System::currentTimeMillis);

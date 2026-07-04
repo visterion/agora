@@ -12,6 +12,7 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.List;
 
 @Component
@@ -39,8 +40,15 @@ public class GetEarningsCalendarTool implements AgoraTool {
     public ToolResult call(JsonNode args) {
         String symbol = args == null ? null : args.path("symbol").asString(null);
         if (symbol == null || symbol.isBlank()) return ToolResult.unavailable("no symbol provided");
-        LocalDate from = parseOr(args.path("from").asString(null), LocalDate.now().minusDays(90));
-        LocalDate to = parseOr(args.path("to").asString(null), LocalDate.now().plusDays(90));
+        LocalDate from, to;
+        try {
+            String fromRaw = args.path("from").asString(null);
+            String toRaw = args.path("to").asString(null);
+            from = (fromRaw == null || fromRaw.isBlank()) ? LocalDate.now().minusDays(90) : LocalDate.parse(fromRaw);
+            to = (toRaw == null || toRaw.isBlank()) ? LocalDate.now().plusDays(90) : LocalDate.parse(toRaw);
+        } catch (DateTimeParseException e) {
+            return ToolResult.unavailable("invalid date");
+        }
         try {
             List<EarningsEvent> events = service.earnings(symbol, from, to);
             ObjectNode out = mapper.createObjectNode();
@@ -59,10 +67,5 @@ public class GetEarningsCalendarTool implements AgoraTool {
         } catch (MarketDataException e) {
             return ToolResult.unavailable(e.getMessage());
         }
-    }
-
-    private static LocalDate parseOr(String raw, LocalDate fallback) {
-        if (raw == null || raw.isBlank()) return fallback;
-        try { return LocalDate.parse(raw); } catch (Exception e) { return fallback; }
     }
 }
