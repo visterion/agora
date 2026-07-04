@@ -54,7 +54,8 @@ public class GetRFrameworkTool implements AgoraTool {
     public String name() { return "get_r_framework"; }
     public String description() {
         return "Risk unit and R-multiple price levels for a symbol. stopLevel is supplied or derived "
-             + "from ATR (price - atrMultiple*ATR). Returns riskPerUnit and target levels at each rMultiple.";
+             + "from ATR (price - atrMultiple*ATR). Returns riskPerUnit and target levels at each rMultiple."
+             + " The derived stop uses the configured ATR period (agora.research.atr-period).";
     }
 
     public ObjectNode inputSchema() {
