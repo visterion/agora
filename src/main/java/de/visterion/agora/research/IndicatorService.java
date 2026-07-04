@@ -17,12 +17,12 @@ import java.util.List;
 /**
  * Computes deterministic technical-analysis indicators from daily OHLC history.
  *
- * <p>Ported from Dracul's {@code ExitIndicatorService}, dropping all entry/position coupling:
- * no {@code entryPrice}, no {@code verdictCreatedAt}, no {@code horizon}, no {@code gainLossPct},
- * no {@code daysHeld}, no {@code horizonElapsed}, no {@code firedRules}.</p>
+ * <p>Computes ATR (SMA of True Range), Chandelier stop, moving-average cross,
+ * and 52-week high/low range. Backed by ta4j primitives (see {@code Ta4jBars}).
+ * All coupling to order management, sizing, or time-in-trade is excluded by design.</p>
  *
  * <p>ATR = simple SMA of the last {@code atrPeriod} True Range values.
- * MA names are {@code maFast}/{@code maSlow} (vs Dracul's ma50/ma200) with configurable periods.</p>
+ * MA names are {@code maFast}/{@code maSlow} with configurable periods.</p>
  *
  * <p>This class is pure Java — no Spring, no database dependencies.</p>
  */

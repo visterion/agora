@@ -22,7 +22,7 @@ import java.util.List;
 /**
  * Neutral R-framework: risk unit and R-multiple price levels from a price and a stop level.
  * The stop level may be supplied or derived from ATR (price - atrMultiple * ATR).
- * No position/entry semantics — pure level arithmetic (that coupling stays in the consumer).
+ * Pure level arithmetic — no order-management or sizing coupling (that stays in the consumer).
  */
 @Component
 public class GetRFrameworkTool implements AgoraTool {
