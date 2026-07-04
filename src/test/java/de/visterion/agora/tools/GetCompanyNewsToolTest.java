@@ -4,6 +4,7 @@ import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.fetch.finnhub.NewsItem;
 import de.visterion.agora.fetch.finnhub.NewsService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import tools.jackson.databind.ObjectMapper;
 
@@ -13,6 +14,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class GetCompanyNewsToolTest {
@@ -26,6 +29,17 @@ class GetCompanyNewsToolTest {
         var r = tool.call(mapper.createObjectNode().put("symbol", "AAPL"));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("news").get(0).get("headline").asString()).isEqualTo("Apple beats");
+    }
+
+    @Test void defaultsToLast7Days() {
+        NewsService svc = Mockito.mock(NewsService.class);
+        when(svc.companyNews(any(), any(LocalDate.class), any(LocalDate.class))).thenReturn(java.util.List.of());
+        new GetCompanyNewsTool(svc).call(mapper.createObjectNode().put("symbol", "AAPL"));
+        ArgumentCaptor<LocalDate> from = ArgumentCaptor.forClass(LocalDate.class);
+        ArgumentCaptor<LocalDate> to = ArgumentCaptor.forClass(LocalDate.class);
+        verify(svc).companyNews(eq("AAPL"), from.capture(), to.capture());
+        assertThat(to.getValue()).isEqualTo(LocalDate.now());
+        assertThat(from.getValue()).isEqualTo(to.getValue().minusDays(7));
     }
 
     @Test void missingSymbolUnavailable() {

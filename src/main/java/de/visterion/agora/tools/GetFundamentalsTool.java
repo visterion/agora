@@ -37,7 +37,7 @@ public class GetFundamentalsTool implements AgoraTool {
             Fundamentals f = service.fundamentals(symbol);
             ObjectNode out = mapper.createObjectNode();
             out.put("symbol", f.symbol());
-            out.set("metrics", f.metrics());
+            out.set("metrics", f.metrics().deepCopy());
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
             return ToolResult.unavailable(e.getMessage());
