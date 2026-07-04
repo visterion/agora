@@ -13,4 +13,8 @@ public record ResearchDefaults(
         int cciPeriod,
         int williamsPeriod,
         BigDecimal rAtrMultiple, List<BigDecimal> rMultiples,
-        int fetchDays) {}
+        int fetchDays) {
+    public ResearchDefaults {
+        rMultiples = List.copyOf(rMultiples);
+    }
+}
