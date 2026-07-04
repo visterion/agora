@@ -87,4 +87,18 @@ class GetIndicatorsToolTest {
     @Test void namespaceIsGeneral() {
         assertThat(tool(rising(10)).namespace()).isEqualTo("general");
     }
+
+    @Test void marketDataExceptionUnavailable() {
+        MarketDataProvider p = new MarketDataProvider() {
+            public String name() { return "stub"; }
+            public Quote quote(String s) { return new Quote(s, BigDecimal.TEN, BigDecimal.ZERO, "USD"); }
+            public List<OhlcBar> ohlc(String s, int d) {
+                throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "down", null);
+            }
+        };
+        var svc = new MarketDataService(List.of(p), 120L);
+        var ind = new IndicatorService(new IndicatorService.Params(3, new BigDecimal("3.0"), 2, 4, 5));
+        var tool = new GetIndicatorsTool(svc, ind, 260);
+        assertThat(tool.call(mapper.createObjectNode().put("symbol", "AAPL")).available()).isFalse();
+    }
 }
