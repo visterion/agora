@@ -3,6 +3,7 @@ package de.visterion.agora.data;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -33,7 +34,10 @@ public class FinnhubMarketDataProvider implements MarketDataProvider {
     public FinnhubMarketDataProvider(
             @Value("${agora.data.finnhub.base-url}") String baseUrl,
             @Value("${agora.data.finnhub.key}") String key) {
-        this.client = RestClient.builder().baseUrl(baseUrl).build();
+        this.client = RestClient.builder()
+                .baseUrl(baseUrl)
+                .requestFactory(new JdkClientHttpRequestFactory())
+                .build();
         this.key = key;
     }
 

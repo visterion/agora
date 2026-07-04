@@ -23,5 +23,6 @@ class ProviderFallbackTest {
                         healthy),
                 120L);
         assertThat(svc.quote("AAPL").price()).isEqualByComparingTo("5.55");
+        assertThat(svc.ohlc("AAPL", 30)).isEmpty();
     }
 }
