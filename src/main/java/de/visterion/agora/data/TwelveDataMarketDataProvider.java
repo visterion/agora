@@ -3,6 +3,7 @@ package de.visterion.agora.data;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -35,7 +36,10 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
     public TwelveDataMarketDataProvider(
             @Value("${agora.data.twelvedata.base-url}") String baseUrl,
             @Value("${agora.data.twelvedata.key}") String key) {
-        this.client = RestClient.builder().baseUrl(baseUrl).build();
+        this.client = RestClient.builder()
+                .baseUrl(baseUrl)
+                .requestFactory(new JdkClientHttpRequestFactory())
+                .build();
         this.key = key;
     }
 
@@ -65,7 +69,11 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "TwelveData unreachable: " + e.getMessage(), e);
         }
-        if (node == null || "error".equals(node.path("status").asString(""))
+        if (node == null) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    "TwelveData returned empty body for " + symbol, null);
+        }
+        if ("error".equals(node.path("status").asString(""))
                 || node.path("close").isMissingNode()) {
             throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
                     "Symbol " + symbol + " not found at TwelveData", null);

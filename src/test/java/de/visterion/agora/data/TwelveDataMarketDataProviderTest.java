@@ -57,10 +57,20 @@ class TwelveDataMarketDataProviderTest {
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
 
+    @Test void quoteEmptyBodyThrowsUnavailable() {
+        // 200 OK with no body → RestClient yields a null node (or throws); either way must be UNAVAILABLE
+        wm.stubFor(get(urlPathEqualTo("/quote"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type", "application/json")));
+        assertThatThrownBy(() -> withKey("k").quote("AAPL"))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+    }
+
     @Test void ohlcParsesNewestFirstReversedToOldestFirst() {
         wm.stubFor(get(urlPathEqualTo("/time_series"))
                 .withQueryParam("symbol", equalTo("AAPL"))
                 .withQueryParam("interval", equalTo("1day"))
+                .withQueryParam("apikey", equalTo("k"))
                 .willReturn(okJson("""
                     {"values":[
                       {"datetime":"2025-01-03","open":"11.0","high":"11.5","low":"10.8","close":"11.2","volume":"3000"},
