@@ -3,6 +3,7 @@ package de.visterion.agora.data;
 import tools.jackson.databind.JsonNode;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -22,6 +23,7 @@ import java.util.List;
  * Ports Dracul's YahooMarketDataAdapter to Agora's neutral DTOs.
  */
 @Component
+@Order(0)
 public class YahooMarketDataProvider implements MarketDataProvider {
 
     // One retry on 429/5xx (per plan spec)
