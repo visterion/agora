@@ -7,11 +7,16 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
+import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.LongSupplier;
 
@@ -19,9 +24,17 @@ import java.util.function.LongSupplier;
 @Component
 public class EdgarService {
 
+    private static final String[] EPS_TAGS = {"EarningsPerShareDiluted", "EarningsPerShareBasic"};
+
+    // Parse JSON floats as BigDecimal so reported EPS scale (e.g. "2.40") is preserved exactly.
+    private static final JsonMapper EPS_MAPPER = JsonMapper.builder()
+            .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+            .build();
+
     private final RestClient http;
     private final EdgarCikResolver cikResolver;
     private final TtlCache<String, List<FilingRef>> filingsCache;
+    private final TtlCache<String, List<EpsPoint>> epsCache;
 
     @Autowired
     public EdgarService(@Value("${agora.data.edgar.user-agent}") String userAgent,
@@ -35,6 +48,7 @@ public class EdgarService {
         this.http = http;
         this.cikResolver = cikResolver;
         this.filingsCache = new TtlCache<>(ttlSeconds * 1000L, now);
+        this.epsCache = new TtlCache<>(ttlSeconds * 1000L, now);
     }
 
     /** cikOrSymbol: 10-digit CIK if all-digits, else resolved via ticker. */
@@ -82,6 +96,57 @@ public class EdgarService {
                 out.add(new FilingRef(accession, form, filedDate, reportDate, doc, url));
             }
         }
+        return out;
+    }
+
+    public List<EpsPoint> epsHistory(String symbol, String cik) {
+        String padded = resolveCik(symbol, cik);
+        return epsCache.get("eps:" + padded, () -> fetchEps(padded));
+    }
+
+    private List<EpsPoint> fetchEps(String padded) {
+        for (String tag : EPS_TAGS) {
+            List<EpsPoint> points = fetchConcept(padded, tag);
+            if (!points.isEmpty()) return points;
+        }
+        return List.of();
+    }
+
+    private List<EpsPoint> fetchConcept(String padded, String tag) {
+        JsonNode body;
+        try {
+            String raw = http.get()
+                    .uri("/api/xbrl/companyconcept/CIK{cik}/us-gaap/{tag}.json", padded, tag)
+                    .retrieve().body(String.class);
+            body = raw == null ? null : EPS_MAPPER.readTree(raw);
+        } catch (Exception e) {
+            return List.of();   // 404/error on a tag → treat as empty, try the next tag
+        }
+        if (body == null) return List.of();
+
+        Map<LocalDate, EpsPoint> byEnd = new LinkedHashMap<>();
+        for (JsonNode unit : body.path("units")) {        // iterate unit arrays (e.g. "USD/shares")
+            for (JsonNode row : unit) {
+                try {
+                    String start = row.path("start").asString("");
+                    String end = row.path("end").asString("");
+                    if (end.isEmpty() || row.path("val").isMissingNode()) continue;
+                    LocalDate periodEnd = LocalDate.parse(end);
+                    LocalDate periodStart = start.isEmpty() ? null : LocalDate.parse(start);
+                    Integer fy = row.path("fy").isMissingNode() || row.path("fy").isNull()
+                            ? null : row.path("fy").asInt();
+                    String fp = row.path("fp").asString(null);
+                    String form = row.path("form").asString(null);
+                    LocalDate filed = parseDate(row.path("filed").asString(""));
+                    byEnd.put(periodEnd, new EpsPoint(periodEnd, periodStart,
+                            row.path("val").decimalValue(), fy, fp, form, filed));
+                } catch (Exception rowError) {
+                    // skip malformed row, keep the rest
+                }
+            }
+        }
+        List<EpsPoint> out = new ArrayList<>(byEnd.values());
+        out.sort(Comparator.comparing(EpsPoint::periodEnd).reversed());
         return out;
     }
 
