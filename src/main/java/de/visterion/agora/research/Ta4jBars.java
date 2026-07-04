@@ -42,7 +42,9 @@ public final class Ta4jBars {
 
     /** Value of an indicator at the last bar. */
     public static Num last(Indicator<Num> indicator) {
-        return indicator.getValue(indicator.getBarSeries().getEndIndex());
+        BarSeries s = indicator.getBarSeries();
+        if (s.isEmpty()) throw new IllegalArgumentException("cannot read last value of an empty series");
+        return indicator.getValue(s.getEndIndex());
     }
 
     /** Read a Num as BigDecimal rounded HALF_UP to scale. */

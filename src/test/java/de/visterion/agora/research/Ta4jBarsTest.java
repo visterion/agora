@@ -10,6 +10,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class Ta4jBarsTest {
 
@@ -38,5 +39,12 @@ class Ta4jBarsTest {
 
     @Test void emptyListYieldsEmptySeries() {
         assertThat(Ta4jBars.toSeries(List.of()).getBarCount()).isZero();
+    }
+
+    @Test void lastOnEmptySeriesThrows() {
+        var series = Ta4jBars.toSeries(List.of());
+        var close = new ClosePriceIndicator(series);
+        assertThatThrownBy(() -> Ta4jBars.last(close))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }
