@@ -87,12 +87,13 @@ public class GetMacdTool implements AgoraTool {
 
         BigDecimal macdBd = Ta4jBars.toBd(macdV, 4);
         BigDecimal signalBd = Ta4jBars.toBd(signalV, 4);
+        BigDecimal histogramBd = Ta4jBars.toBd(macdV.minus(signalV), 4);
 
         ObjectNode out = mapper.createObjectNode();
         out.put("symbol", symbol);
         out.put("macd", macdBd);
         out.put("signal", signalBd);
-        out.put("histogram", macdBd.subtract(signalBd));
+        out.put("histogram", histogramBd);
         out.put("available", true);
         return ToolResult.ok(out);
     }

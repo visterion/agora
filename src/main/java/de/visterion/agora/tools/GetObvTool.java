@@ -64,7 +64,7 @@ public class GetObvTool implements AgoraTool {
 
         ObjectNode out = mapper.createObjectNode();
         out.put("symbol", symbol);
-        out.put("obv", Ta4jBars.toBd(v, 4));
+        out.put("obv", v.bigDecimalValue());
         out.put("available", true);
         return ToolResult.ok(out);
     }

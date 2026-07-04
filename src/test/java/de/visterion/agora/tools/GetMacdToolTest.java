@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 class GetMacdToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
@@ -44,7 +45,10 @@ class GetMacdToolTest {
         BigDecimal macd = r.output().get("macd").decimalValue();
         BigDecimal signal = r.output().get("signal").decimalValue();
         BigDecimal histogram = r.output().get("histogram").decimalValue();
-        assertThat(histogram).isEqualByComparingTo(macd.subtract(signal));
+        // histogram is computed from the raw ta4j Nums (macdV.minus(signalV)) then rounded to
+        // scale 4, so it may differ from the rounded-then-subtracted values by <=1 ULP — assert
+        // closeness, not exact identity.
+        assertThat(histogram).isCloseTo(macd.subtract(signal), within(new BigDecimal("0.0001")));
         // Directional wiring check: on a strictly rising series the fast EMA leads the slow
         // EMA (MACD > 0) and MACD stays above its signal line (histogram > 0). A mis-wired
         // indicator (swapped fast/slow, wrong signal source) would break these.
