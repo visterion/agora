@@ -8,6 +8,7 @@ import de.visterion.agora.research.Ta4jBars;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.ta4j.core.BarSeries;
 import org.ta4j.core.indicators.WilliamsRIndicator;
 import org.ta4j.core.num.Num;
@@ -25,6 +26,7 @@ public class GetWilliamsRTool implements AgoraTool {
     private final int fetchDays;
     private final ObjectMapper mapper = new ObjectMapper();
 
+    @Autowired
     public GetWilliamsRTool(MarketDataService service, ResearchDefaults d) {
         this(service, d.williamsPeriod(), d.fetchDays());
     }
