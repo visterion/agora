@@ -28,8 +28,35 @@ agora:
     yahoo:
       base-url: ${AGORA_DATA_YAHOO_BASE_URL:https://query1.finance.yahoo.com}
       user-agent: ${AGORA_DATA_YAHOO_USER_AGENT:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36}
+    twelvedata:
+      base-url: ${AGORA_DATA_TWELVEDATA_BASE_URL:https://api.twelvedata.com}
+      key: ${AGORA_DATA_TWELVEDATA_KEY:}
+    finnhub:
+      base-url: ${AGORA_DATA_FINNHUB_BASE_URL:https://finnhub.io/api/v1}
+      key: ${AGORA_DATA_FINNHUB_KEY:}
+    edgar:
+      user-agent: ${AGORA_DATA_EDGAR_USER_AGENT:agora agora@visterion.de}
+    wikipedia:
+      base-url: ${AGORA_DATA_WIKIPEDIA_BASE_URL:https://en.wikipedia.org}
+      user-agent: ${AGORA_DATA_WIKIPEDIA_USER_AGENT:agora/1.0 (research)}
+      sp500-page: ${AGORA_DATA_WIKIPEDIA_SP500_PAGE:List of S&P 500 companies}
+    intraday:
+      interval: ${AGORA_DATA_INTRADAY_INTERVAL:5m}
+      range: ${AGORA_DATA_INTRADAY_RANGE:1d}
+    fx:
+      warm-pairs: ${AGORA_DATA_FX_WARM_PAIRS:}
+      refresh:
+        enabled: ${AGORA_DATA_FX_REFRESH_ENABLED:false}
+        initial-delay-ms: ${AGORA_DATA_FX_REFRESH_INITIAL_DELAY_MS:0}
+        fixed-delay-ms: ${AGORA_DATA_FX_REFRESH_FIXED_DELAY_MS:1800000}
     cache:
-      ttl-seconds: ${AGORA_DATA_CACHE_TTL_SECONDS:120}
+      ttl-seconds: ${AGORA_DATA_CACHE_TTL_SECONDS:120}     # existing: quote/ohlc (Slice 2/3)
+      ttl:
+        prices-seconds: ${AGORA_DATA_CACHE_TTL_PRICES:120}         # intraday, fx
+        news-seconds: ${AGORA_DATA_CACHE_TTL_NEWS:900}
+        fundamentals-seconds: ${AGORA_DATA_CACHE_TTL_FUNDAMENTALS:21600}
+        filings-seconds: ${AGORA_DATA_CACHE_TTL_FILINGS:3600}
+        constituents-seconds: ${AGORA_DATA_CACHE_TTL_CONSTITUENTS:86400}
   research:
     atr-period: ${AGORA_RESEARCH_ATR_PERIOD:22}
     atr-multiple: ${AGORA_RESEARCH_ATR_MULTIPLE:3.0}
