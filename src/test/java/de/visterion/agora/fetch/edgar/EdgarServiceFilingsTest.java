@@ -60,6 +60,21 @@ class EdgarServiceFilingsTest {
         assertThat(svc().filings("AAPL", null, null, null, 2)).hasSize(2);
     }
 
+    @Test void fromDateFilters() {
+        wm.stubFor(get(urlPathEqualTo("/submissions/CIK0000320193.json"))
+                .willReturn(okJson("""
+                    {"filings":{"recent":{
+                      "accessionNumber":["a-new","a-old"],
+                      "form":["8-K","8-K"],
+                      "filingDate":["2025-05-02","2024-12-01"],
+                      "reportDate":["",""],
+                      "primaryDocument":["d1.htm","d2.htm"]
+                    }}}""")));
+        var filtered = svc().filings("AAPL", null, null, java.time.LocalDate.parse("2025-01-01"), 40);
+        assertThat(filtered).hasSize(1);
+        assertThat(filtered.get(0).filedDate()).isEqualTo(java.time.LocalDate.parse("2025-05-02"));
+    }
+
     @Test void httpErrorThrowsUnavailable() {
         wm.stubFor(get(urlPathEqualTo("/submissions/CIK0000320193.json")).willReturn(aResponse().withStatus(500)));
         assertThatThrownBy(() -> svc().filings("AAPL", null, null, null, 40))
