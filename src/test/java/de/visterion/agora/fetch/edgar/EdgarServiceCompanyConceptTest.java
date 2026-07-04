@@ -71,6 +71,20 @@ class EdgarServiceCompanyConceptTest {
         assertThat(series.datapoints()).hasSize(1);
     }
 
+    @Test void preservesDecimalFloatValue() {
+        wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyconcept/CIK0000320193/us-gaap/EarningsPerShareBasic.json"))
+                .willReturn(okJson("""
+                    {"units":{"USD/shares":[
+                      {"start":"2024-01-01","end":"2024-12-31","val":2.40,"fy":2024,"fp":"FY","form":"10-K","filed":"2025-01-31"}
+                    ]}}
+                    """)));
+        EdgarService.ConceptSeries series = svc().companyConcept("AAPL", null, "us-gaap", "EarningsPerShareBasic");
+        assertThat(series.datapoints()).hasSize(1);
+        ConceptDatapoint d = series.datapoints().get(0);
+        assertThat(d.value()).isEqualByComparingTo("2.40");
+        assertThat(d.value().toPlainString()).isEqualTo("2.40"); // scale preserved via USE_BIG_DECIMAL_FOR_FLOATS
+    }
+
     @Test void notFoundConceptYieldsEmptySeries() {
         wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyconcept/CIK0000320193/us-gaap/Nonexistent.json"))
                 .willReturn(aResponse().withStatus(404)));

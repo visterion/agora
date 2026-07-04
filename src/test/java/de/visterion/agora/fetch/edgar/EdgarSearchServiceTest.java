@@ -45,6 +45,39 @@ class EdgarSearchServiceTest {
         assertThat(h.url()).isEqualTo("https://www.sec.gov/Archives/edgar/data/320193/000032019325000050/aapl-1012b.htm");
     }
 
+    @Test void tickerAbsentYieldsCompanyOnly() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("10-12B"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000050:aapl-1012b.htm","_source":{
+                         "display_names":["Fresh Spinco Inc. (CIK 0000320193)"],
+                         "file_date":"2025-05-02","file_type":"10-12B"}}
+                    ]}}
+                    """)));
+        List<FilingHit> hits = svc().search(List.of("10-12B"), null,
+                LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
+        assertThat(hits).hasSize(1);
+        FilingHit h = hits.get(0);
+        assertThat(h.ticker()).isEmpty();
+        assertThat(h.company()).isEqualTo("Fresh Spinco Inc.");
+    }
+
+    @Test void malformedHitSkipped() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("8-K"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"a-1:d1.htm","_source":{"display_names":["Bad Corp"],"tickers":["BAD"],"file_date":"","file_type":"8-K"}},
+                      {"_id":"a-2:d2.htm","_source":{"display_names":["Good Corp"],"tickers":["GOOD"],"file_date":"2025-05-02","file_type":"8-K"}}
+                    ]}}
+                    """)));
+        List<FilingHit> hits = svc().search(List.of("8-K"), null,
+                LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
+        assertThat(hits).hasSize(1);
+        assertThat(hits.get(0).ticker()).isEqualTo("GOOD");
+    }
+
     @Test void emptyHitsYieldsEmptyList() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).willReturn(okJson("{\"hits\":{\"hits\":[]}}")));
         assertThat(svc().search(List.of("8-K"), null, LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100)).isEmpty();
