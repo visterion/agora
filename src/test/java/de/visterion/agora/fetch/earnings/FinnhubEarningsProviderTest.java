@@ -47,4 +47,14 @@ class FinnhubEarningsProviderTest {
         assertThatThrownBy(() -> p("k").earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31")))
                 .isInstanceOf(MarketDataException.class);
     }
+
+    @Test void marketWideOmitsSymbolParamAndKeepsPerRowSymbols() {
+        wm.stubFor(get(urlPathEqualTo("/calendar/earnings"))
+                .withQueryParam("symbol", absent())
+                .willReturn(okJson("{\"earningsCalendar\":["
+                        + "{\"symbol\":\"AAPL\",\"date\":\"2025-05-01\",\"epsActual\":1.5,\"epsEstimate\":1.4},"
+                        + "{\"symbol\":\"MSFT\",\"date\":\"2025-05-02\",\"epsActual\":2.1,\"epsEstimate\":2.0}]}")));
+        var out = p("k").earnings(null, LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-03"));
+        assertThat(out).extracting(EarningsEvent::symbol).containsExactly("AAPL", "MSFT");
+    }
 }

@@ -40,4 +40,13 @@ class YahooEarningsProviderTest {
         assertThatThrownBy(() -> p().earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31")))
                 .isInstanceOf(MarketDataException.class);
     }
+
+    @Test void marketWideReturnsAllRows() {
+        wm.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
+                .willReturn(okJson("{\"rows\":["
+                        + "{\"ticker\":\"AAPL\",\"startdatetime\":\"2025-05-01T12:00:00Z\",\"epsactual\":1.5,\"epsestimate\":1.4},"
+                        + "{\"ticker\":\"MSFT\",\"startdatetime\":\"2025-05-02T12:00:00Z\",\"epsactual\":2.1,\"epsestimate\":2.0}]}")));
+        var out = p().earnings(null, LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-03"));
+        assertThat(out).extracting(EarningsEvent::symbol).containsExactly("AAPL", "MSFT");
+    }
 }
