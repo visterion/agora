@@ -53,6 +53,11 @@ class McpStreamableHttpSmokeIT {
                     "get_company_news", "get_fundamentals", "get_analyst_estimates", "get_earnings_calendar",
                     "get_filings", "get_eps_history", "get_index_constituents");
 
+            // Slice 6 ta4j research tools must be present
+            assertThat(toolNames).contains(
+                    "get_rsi", "get_macd", "get_bollinger", "get_stochastic",
+                    "get_adx", "get_obv", "get_cci", "get_williams_r", "get_r_framework");
+
             // Trading tools must NOT appear on the MCP endpoint (webhook-only)
             assertThat(toolNames).doesNotContain("place_bracket");
 
