@@ -10,7 +10,15 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.function.LongSupplier;
 
-/** Earnings calendar with provider fallback (Finnhub → Yahoo), per-family TTL cache. */
+/**
+ * Earnings calendar with provider fallback (Finnhub → Yahoo), per-family TTL cache.
+ *
+ * <p>A successful result is cached for the TTL — including an empty list from the Yahoo
+ * fallback. This is not a live-reconfiguration hazard: provider keys are read from the
+ * environment at startup, so a key added later only takes effect on restart, which builds
+ * a fresh (empty) in-memory cache. Hence a cached-empty result never outlives the config
+ * that produced it.
+ */
 @Component
 public class EarningsService {
 

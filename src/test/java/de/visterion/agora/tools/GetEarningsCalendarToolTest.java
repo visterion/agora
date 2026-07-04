@@ -34,6 +34,12 @@ class GetEarningsCalendarToolTest {
                 .call(mapper.createObjectNode()).available()).isFalse();
     }
 
+    @Test void badExplicitDateUnavailable() {
+        var r = new GetEarningsCalendarTool(Mockito.mock(EarningsService.class))
+                .call(mapper.createObjectNode().put("symbol", "AAPL").put("from", "not-a-date"));
+        assertThat(r.available()).isFalse();
+    }
+
     @Test void serviceExceptionUnavailable() {
         EarningsService svc = Mockito.mock(EarningsService.class);
         when(svc.earnings(any(), any(LocalDate.class), any(LocalDate.class)))
