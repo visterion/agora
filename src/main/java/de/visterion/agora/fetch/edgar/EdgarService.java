@@ -54,21 +54,27 @@ public class EdgarService {
     }
 
     /** cikOrSymbol: 10-digit CIK if all-digits, else resolved via ticker. */
-    private String resolveCik(String symbol, String cik) {
-        if (cik != null && !cik.isBlank()) return String.format("%010d", Long.parseLong(cik.trim()));
+    public String resolveCik(String symbol, String cik) {
+        if (cik != null && !cik.isBlank()) {
+            try {
+                return String.format("%010d", Long.parseLong(cik.trim()));
+            } catch (NumberFormatException e) {
+                throw new MarketDataException(MarketDataException.Kind.NOT_FOUND, "invalid CIK (must be numeric): " + cik, e);
+            }
+        }
         Optional<String> resolved = cikResolver.cik(symbol);
         if (resolved.isEmpty())
             throw new MarketDataException(MarketDataException.Kind.NOT_FOUND, "no CIK for " + symbol, null);
         return resolved.get();
     }
 
-    public List<FilingRef> filings(String symbol, String cik, String formType, LocalDate from, int limit) {
+    public List<FilingRef> filings(String symbol, String cik, String formType, LocalDate from, LocalDate to, int limit) {
         String padded = resolveCik(symbol, cik);
-        String key = "filings:" + padded + ":" + formType + ":" + from + ":" + limit;
-        return filingsCache.get(key, () -> fetchFilings(padded, formType, from, limit));
+        String key = "filings:" + padded + ":" + formType + ":" + from + ":" + to + ":" + limit;
+        return filingsCache.get(key, () -> fetchFilings(padded, formType, from, to, limit));
     }
 
-    private List<FilingRef> fetchFilings(String padded, String formType, LocalDate from, int limit) {
+    private List<FilingRef> fetchFilings(String padded, String formType, LocalDate from, LocalDate to, int limit) {
         JsonNode body;
         try {
             body = http.get().uri("/submissions/CIK{cik}.json", padded).retrieve().body(JsonNode.class);
@@ -90,6 +96,7 @@ public class EdgarService {
                 LocalDate filedDate = parseDate(filed.path(i).asString(""));
                 if (filedDate == null) continue;
                 if (from != null && filedDate.isBefore(from)) continue;
+                if (to != null && filedDate.isAfter(to)) continue;
                 String accession = acc.path(i).asString("");
                 String noDash = accession.replace("-", "");
                 String doc = docs.path(i).asString("");
