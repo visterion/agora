@@ -40,6 +40,11 @@ public class EarningsService {
         return cache.get("earn:" + symbol + ":" + from + ":" + to, () -> firstSuccess(symbol, from, to));
     }
 
+    /** Market-wide earnings for the window (no symbol). Distinct cache family from symbol lookups. */
+    public List<EarningsEvent> earningsWindow(LocalDate from, LocalDate to) {
+        return cache.get("earnwin:" + from + ":" + to, () -> firstSuccess(null, from, to));
+    }
+
     private List<EarningsEvent> firstSuccess(String symbol, LocalDate from, LocalDate to) {
         MarketDataException last = null;
         for (EarningsProvider p : providers) {
