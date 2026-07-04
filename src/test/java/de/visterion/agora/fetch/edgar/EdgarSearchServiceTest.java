@@ -64,4 +64,45 @@ class EdgarSearchServiceTest {
             ]}}""")));
         assertThat(svc().search(List.of("8-K"), null, LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1)).hasSize(1);
     }
+
+    @Test void form4TransactionsParseXml() {
+        // efts search for forms=4 returns one hit
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000099:form4.xml","_source":{
+                         "display_names":["Cook Timothy (CIK 0000000001)"],"tickers":["AAPL"],
+                         "file_date":"2025-05-05","file_type":"4"}}
+                    ]}}
+                    """)));
+        // the per-hit Form-4 XML fetch (archive URL path)
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type","application/xml").withBody("""
+                    <ownershipDocument>
+                      <reportingOwner><reportingOwnerId><rptOwnerName>Cook Timothy</rptOwnerName></reportingOwnerId>
+                        <reportingOwnerRelationship><officerTitle>CEO</officerTitle></reportingOwnerRelationship></reportingOwner>
+                      <nonDerivativeTable><nonDerivativeTransaction>
+                        <transactionDate><value>2025-05-05</value></transactionDate>
+                        <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                        <transactionAmounts>
+                          <transactionShares><value>1000</value></transactionShares>
+                          <transactionPricePerShare><value>190.00</value></transactionPricePerShare>
+                        </transactionAmounts>
+                      </nonDerivativeTransaction></nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        // archive base points at the same WireMock server for the test
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis);
+        List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
+        assertThat(tx).hasSize(1);
+        Form4Transaction t = tx.get(0);
+        assertThat(t.ticker()).isEqualTo("AAPL");
+        assertThat(t.filerName()).isEqualTo("Cook Timothy");
+        assertThat(t.filerRole()).isEqualTo("CEO");
+        assertThat(t.code()).isEqualTo("P");
+        assertThat(t.shares()).isEqualByComparingTo("1000");
+        assertThat(t.dollarValue()).isEqualByComparingTo("190000"); // 1000 * 190
+    }
 }

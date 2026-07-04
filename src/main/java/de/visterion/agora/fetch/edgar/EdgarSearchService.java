@@ -8,6 +8,10 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 
+import javax.xml.parsers.DocumentBuilderFactory;
+import java.io.ByteArrayInputStream;
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,6 +29,7 @@ public class EdgarSearchService {
     private final RestClient http;
     private final String archiveBase;
     private final TtlCache<String, List<FilingHit>> searchCache;
+    private final TtlCache<String, List<Form4Transaction>> form4Cache;
 
     @Autowired
     public EdgarSearchService(
@@ -41,6 +46,7 @@ public class EdgarSearchService {
         this.http = http;
         this.archiveBase = archiveBase;
         this.searchCache = new TtlCache<>(ttlSeconds * 1000L, now);
+        this.form4Cache = new TtlCache<>(ttlSeconds * 1000L, now);
     }
 
     /** Full-text filing search on efts. ticker on a hit may be empty (fresh registrations). */
@@ -125,5 +131,87 @@ public class EdgarSearchService {
 
         if (company.isEmpty() && ticker.isEmpty()) return null;
         return new FilingHit(ticker, company, form, filedDate, accession, url);
+    }
+
+    /**
+     * Non-derivative Form-4 transactions filed in the window. efts search for forms=4,
+     * then per-hit Form-4 XML fetch + DOM parse. Malformed hits/XML are skipped (never
+     * throw per-hit); an efts search failure surfaces as {@link MarketDataException}.
+     */
+    public List<Form4Transaction> form4Transactions(LocalDate from, LocalDate to, int limit) {
+        String key = "form4:" + from + ":" + to + ":" + limit;
+        return form4Cache.get(key, () -> fetchForm4(from, to, limit));
+    }
+
+    private List<Form4Transaction> fetchForm4(LocalDate from, LocalDate to, int limit) {
+        List<FilingHit> hits = search(List.of("4"), null, from, to, limit);
+        List<Form4Transaction> out = new ArrayList<>();
+        for (FilingHit hit : hits) {
+            if (out.size() >= limit) break;
+            try {
+                parseForm4(hit, out);
+            } catch (Exception e) {
+                // skip malformed individual filings; continue
+            }
+        }
+        return out;
+    }
+
+    private void parseForm4(FilingHit hit, List<Form4Transaction> out) throws Exception {
+        String ticker = hit.ticker();
+        if (ticker == null || ticker.isEmpty()) return;
+        if (hit.url() == null || hit.url().isEmpty()) return;
+
+        String xml;
+        try {
+            xml = http.get().uri(hit.url()).retrieve().body(String.class);
+        } catch (Exception e) {
+            return;
+        }
+        if (xml == null) return;
+
+        var doc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
+                .parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+        var owners = doc.getElementsByTagName("reportingOwner");
+        String filerName = "";
+        String filerRole = "";
+        if (owners.getLength() > 0) {
+            var owner = (org.w3c.dom.Element) owners.item(0);
+            var names = owner.getElementsByTagName("rptOwnerName");
+            if (names.getLength() > 0) filerName = names.item(0).getTextContent().trim();
+            var titles = owner.getElementsByTagName("officerTitle");
+            if (titles.getLength() > 0) filerRole = titles.item(0).getTextContent().trim();
+        }
+
+        var transactions = doc.getElementsByTagName("nonDerivativeTransaction");
+        for (int i = 0; i < transactions.getLength(); i++) {
+            var tx = (org.w3c.dom.Element) transactions.item(i);
+            String code = textOf(tx, "transactionCode");
+            String dateStr = valueOf(tx, "transactionDate");
+            String sharesStr = valueOf(tx, "transactionShares");
+            String priceStr = valueOf(tx, "transactionPricePerShare");
+            if (dateStr.isEmpty() || sharesStr.isEmpty()) continue;
+            BigDecimal shares = new BigDecimal(sharesStr);
+            BigDecimal price = priceStr.isEmpty() ? BigDecimal.ZERO : new BigDecimal(priceStr);
+            BigDecimal dollar = shares.multiply(price);
+            out.add(new Form4Transaction(
+                    ticker, filerName, filerRole,
+                    LocalDate.parse(dateStr), shares, dollar, code
+            ));
+        }
+    }
+
+    private static String textOf(org.w3c.dom.Element parent, String tag) {
+        var nodes = parent.getElementsByTagName(tag);
+        return nodes.getLength() == 0 ? "" : nodes.item(0).getTextContent().trim();
+    }
+
+    private static String valueOf(org.w3c.dom.Element parent, String tag) {
+        var nodes = parent.getElementsByTagName(tag);
+        if (nodes.getLength() == 0) return "";
+        var inner = ((org.w3c.dom.Element) nodes.item(0)).getElementsByTagName("value");
+        return inner.getLength() == 0
+                ? nodes.item(0).getTextContent().trim()
+                : inner.item(0).getTextContent().trim();
     }
 }
