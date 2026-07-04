@@ -52,7 +52,8 @@ class McpStreamableHttpSmokeIT {
                     "get_intraday", "get_fx_rate",
                     "get_company_news", "get_fundamentals", "get_analyst_estimates", "get_earnings_calendar",
                     "get_filings", "get_eps_history", "get_index_constituents",
-                    "get_atr", "get_chandelier_stop", "get_ma_cross", "get_52w_range");
+                    "get_atr", "get_chandelier_stop", "get_ma_cross", "get_52w_range",
+                    "get_indicators");
 
             // Slice 6 ta4j research tools must be present
             assertThat(toolNames).contains(
