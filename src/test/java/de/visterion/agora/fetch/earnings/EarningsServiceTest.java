@@ -1,0 +1,46 @@
+package de.visterion.agora.fetch.earnings;
+
+import de.visterion.agora.data.MarketDataException;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.*;
+
+class EarningsServiceTest {
+
+    private EarningsProvider fixed(String name, List<EarningsEvent> events, boolean throwUnavailable) {
+        return new EarningsProvider() {
+            public String name() { return name; }
+            public List<EarningsEvent> earnings(String s, LocalDate f, LocalDate t) {
+                if (throwUnavailable) throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, name + " down", null);
+                return events;
+            }
+        };
+    }
+
+    @Test void usesFirstHealthyProvider() {
+        var ev = List.of(new EarningsEvent("AAPL", LocalDate.parse("2025-05-01"),
+                new BigDecimal("1.4"), new BigDecimal("1.5"), new BigDecimal("7.1"), null, null));
+        var svc = new EarningsService(List.of(fixed("finnhub", ev, false), fixed("yahoo", List.of(), false)),
+                120L, System::currentTimeMillis);
+        assertThat(svc.earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"))).hasSize(1);
+    }
+
+    @Test void fallsBackWhenPrimaryUnavailable() {
+        var ev = List.of(new EarningsEvent("AAPL", LocalDate.parse("2025-05-01"),
+                null, null, null, null, null));
+        var svc = new EarningsService(List.of(fixed("finnhub", List.of(), true), fixed("yahoo", ev, false)),
+                120L, System::currentTimeMillis);
+        assertThat(svc.earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"))).hasSize(1);
+    }
+
+    @Test void allUnavailableThrows() {
+        var svc = new EarningsService(List.of(fixed("finnhub", List.of(), true), fixed("yahoo", List.of(), true)),
+                120L, System::currentTimeMillis);
+        assertThatThrownBy(() -> svc.earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31")))
+                .isInstanceOf(MarketDataException.class);
+    }
+}
