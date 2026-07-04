@@ -35,6 +35,11 @@ public class EdgarService {
     private final EdgarCikResolver cikResolver;
     private final TtlCache<String, List<FilingRef>> filingsCache;
     private final TtlCache<String, List<EpsPoint>> epsCache;
+    private final TtlCache<String, ConceptSeries> conceptCache;
+
+    /** An XBRL company-concept series: the reporting {@code unit} (e.g. "USD") plus its datapoints.
+     *  unit is null and datapoints empty when the concept does not exist for the company. */
+    public record ConceptSeries(String unit, List<ConceptDatapoint> datapoints) {}
 
     @Autowired
     public EdgarService(@Value("${agora.data.edgar.user-agent}") String userAgent,
@@ -51,6 +56,7 @@ public class EdgarService {
         this.cikResolver = cikResolver;
         this.filingsCache = new TtlCache<>(ttlSeconds * 1000L, now);
         this.epsCache = new TtlCache<>(ttlSeconds * 1000L, now);
+        this.conceptCache = new TtlCache<>(ttlSeconds * 1000L, now);
     }
 
     /** cikOrSymbol: 10-digit CIK if all-digits, else resolved via ticker. */
@@ -157,6 +163,57 @@ public class EdgarService {
         List<EpsPoint> out = new ArrayList<>(byEnd.values());
         out.sort(Comparator.comparing(EpsPoint::periodEnd).reversed());
         return out;
+    }
+
+    /** Any XBRL company-concept for a company (by symbol or CIK), e.g. us-gaap/Assets.
+     *  Returns all datapoints (no quarterly filter), sorted by periodEnd descending.
+     *  A concept absent for the company (404) yields an empty series rather than an error. */
+    public ConceptSeries companyConcept(String symbol, String cik, String taxonomy, String tag) {
+        String padded = resolveCik(symbol, cik);
+        String tax = (taxonomy == null || taxonomy.isBlank()) ? "us-gaap" : taxonomy.trim();
+        String key = "concept:" + padded + ":" + tax + ":" + tag;
+        return conceptCache.get(key, () -> fetchCompanyConcept(padded, tax, tag));
+    }
+
+    private ConceptSeries fetchCompanyConcept(String padded, String taxonomy, String tag) {
+        JsonNode body;
+        try {
+            String raw = http.get()
+                    .uri("/api/xbrl/companyconcept/CIK{cik}/{taxonomy}/{tag}.json", padded, taxonomy, tag)
+                    .retrieve().body(String.class);
+            body = raw == null ? null : EPS_MAPPER.readTree(raw);
+        } catch (Exception e) {
+            return new ConceptSeries(null, List.of());   // 404/error → concept may not exist; not fatal
+        }
+        if (body == null) return new ConceptSeries(null, List.of());
+
+        String unit = null;
+        List<ConceptDatapoint> out = new ArrayList<>();
+        JsonNode units = body.path("units");
+        var fields = units.propertyNames().iterator();
+        if (fields.hasNext()) {
+            unit = fields.next();                          // take the FIRST unit field name
+            for (JsonNode row : units.path(unit)) {
+                try {
+                    String start = row.path("start").asString("");
+                    String end = row.path("end").asString("");
+                    if (end.isEmpty() || row.path("val").isMissingNode()) continue;
+                    LocalDate periodEnd = LocalDate.parse(end);
+                    LocalDate periodStart = start.isEmpty() ? null : LocalDate.parse(start);
+                    Integer fy = row.path("fy").isMissingNode() || row.path("fy").isNull()
+                            ? null : row.path("fy").asInt();
+                    String fp = row.path("fp").asString(null);
+                    String form = row.path("form").asString(null);
+                    LocalDate filed = parseDate(row.path("filed").asString(""));
+                    out.add(new ConceptDatapoint(periodStart, periodEnd,
+                            row.path("val").decimalValue(), fy, fp, form, filed));
+                } catch (Exception rowError) {
+                    // skip malformed row, keep the rest
+                }
+            }
+        }
+        out.sort(Comparator.comparing(ConceptDatapoint::periodEnd).reversed());
+        return new ConceptSeries(unit, out);
     }
 
     private static LocalDate parseDate(String s) {
