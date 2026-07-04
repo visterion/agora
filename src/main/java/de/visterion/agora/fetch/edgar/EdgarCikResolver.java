@@ -54,7 +54,9 @@ public class EdgarCikResolver {
             } catch (Exception e) {
                 return built;
             }
-            cache = built;
+            if (!built.isEmpty()) {
+                cache = built;
+            }
             return built;
         }
     }

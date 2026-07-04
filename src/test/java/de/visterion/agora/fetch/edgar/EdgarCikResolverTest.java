@@ -1,6 +1,7 @@
 package de.visterion.agora.fetch.edgar;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import org.junit.jupiter.api.*;
 import org.springframework.web.client.RestClient;
 
@@ -35,5 +36,23 @@ class EdgarCikResolverTest {
 
     @Test void blankTickerEmpty() {
         assertThat(resolver().cik("  ")).isEmpty();
+    }
+
+    @Test void emptyBodyDoesNotPoisonCache() {
+        wm.stubFor(get(urlPathEqualTo("/files/company_tickers.json"))
+                .inScenario("empty-then-valid").whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{}"))
+                .willSetStateTo("second"));
+        wm.stubFor(get(urlPathEqualTo("/files/company_tickers.json"))
+                .inScenario("empty-then-valid").whenScenarioStateIs("second")
+                .willReturn(okJson("""
+                    {"0":{"cik_str":320193,"ticker":"AAPL","title":"Apple Inc"}}
+                    """)));
+
+        EdgarCikResolver resolver = resolver();
+        // First call: empty body → empty, but must NOT poison the cache.
+        assertThat(resolver.cik("AAPL")).isEmpty();
+        // Second call: valid body is fetched again (cache was not poisoned) → resolves.
+        assertThat(resolver.cik("AAPL")).contains("0000320193");
     }
 }
