@@ -44,6 +44,10 @@ class GetStochasticToolTest {
         BigDecimal k = r.output().get("k").decimalValue();
         assertThat(k.compareTo(BigDecimal.ZERO)).isGreaterThanOrEqualTo(0);
         assertThat(k.compareTo(new BigDecimal("100"))).isLessThanOrEqualTo(0);
+        // %D (SMA of %K) must be wired and bounded; while %K climbs toward 100 on a rising
+        // series, its SMA lags, so %D <= %K (equality allowed if both saturate at 100).
+        assertThat(r.output().get("d").decimalValue()).isBetween(new java.math.BigDecimal("0"), new java.math.BigDecimal("100"));
+        assertThat(r.output().get("d").decimalValue()).isLessThanOrEqualTo(r.output().get("k").decimalValue());
     }
 
     @Test void tooFewBarsUnavailable() {
