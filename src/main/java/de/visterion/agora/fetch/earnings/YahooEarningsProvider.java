@@ -61,11 +61,13 @@ public class YahooEarningsProvider implements EarningsProvider {
         if (body == null)
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "empty earnings body", null);
 
-        String want = symbol == null ? "" : symbol.toUpperCase();
+        boolean marketWide = symbol == null || symbol.isBlank();
+        String want = marketWide ? "" : symbol.toUpperCase();
         List<EarningsEvent> out = new ArrayList<>();
         for (JsonNode row : body.path("rows")) {
             String ticker = row.path("ticker").asString("").toUpperCase();
-            if (ticker.isEmpty() || !ticker.equals(want)) continue;
+            if (ticker.isEmpty()) continue;
+            if (!marketWide && !ticker.equals(want)) continue;
             String dt = row.path("startdatetime").asString("");
             if (dt.length() < 10) continue;
             LocalDate date;

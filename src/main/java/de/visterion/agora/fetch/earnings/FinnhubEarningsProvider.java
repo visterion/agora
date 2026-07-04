@@ -51,15 +51,18 @@ public class FinnhubEarningsProvider implements EarningsProvider {
     public List<EarningsEvent> earnings(String symbol, LocalDate from, LocalDate to) {
         if (key == null || key.isBlank())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "finnhub: no api key", null);
+        boolean marketWide = symbol == null || symbol.isBlank();
         JsonNode body;
         try {
             body = client.get()
-                    .uri(uri -> uri.path("/calendar/earnings")
-                            .queryParam("from", from.toString())
-                            .queryParam("to", to.toString())
-                            .queryParam("symbol", symbol)
-                            .queryParam("token", key)
-                            .build())
+                    .uri(uri -> {
+                        uri.path("/calendar/earnings")
+                           .queryParam("from", from.toString())
+                           .queryParam("to", to.toString())
+                           .queryParam("token", key);
+                        if (!marketWide) uri.queryParam("symbol", symbol);
+                        return uri.build();
+                    })
                     .retrieve()
                     .body(JsonNode.class);
         } catch (RestClientResponseException e) {
