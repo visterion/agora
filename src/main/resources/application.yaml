@@ -36,6 +36,8 @@ agora:
       key: ${AGORA_DATA_FINNHUB_KEY:}
     edgar:
       user-agent: ${AGORA_DATA_EDGAR_USER_AGENT:agora agora@visterion.de}
+      efts-base-url: ${AGORA_DATA_EDGAR_EFTS_BASE_URL:https://efts.sec.gov}
+      archive-base: ${AGORA_DATA_EDGAR_ARCHIVE_BASE:https://www.sec.gov}
     wikipedia:
       base-url: ${AGORA_DATA_WIKIPEDIA_BASE_URL:https://en.wikipedia.org}
       user-agent: ${AGORA_DATA_WIKIPEDIA_USER_AGENT:agora/1.0 (research)}
