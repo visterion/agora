@@ -8,6 +8,7 @@ import de.visterion.agora.research.Ta4jBars;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.ta4j.core.BarSeries;
 import org.ta4j.core.indicators.RSIIndicator;
 import org.ta4j.core.indicators.helpers.ClosePriceIndicator;
@@ -26,6 +27,7 @@ public class GetRsiTool implements AgoraTool {
     private final int fetchDays;
     private final ObjectMapper mapper = new ObjectMapper();
 
+    @Autowired
     public GetRsiTool(MarketDataService service, ResearchDefaults d) {
         this(service, d.rsiPeriod(), d.fetchDays());
     }
