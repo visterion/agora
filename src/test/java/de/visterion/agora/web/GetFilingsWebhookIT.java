@@ -31,7 +31,8 @@ class GetFilingsWebhookIT {
         @Bean @Primary
         EdgarService stubEdgarService(EdgarCikResolver cik) {
             return new EdgarService(RestClient.create(), cik, 1L, System::currentTimeMillis) {
-                @Override public List<FilingRef> filings(String symbol, String c, String formType, LocalDate from, int limit) {
+                @Override public String resolveCik(String symbol, String c) { return "0000320193"; }
+                @Override public List<FilingRef> filings(String symbol, String c, String formType, LocalDate from, LocalDate to, int limit) {
                     // Sentinel accession a real EDGAR call could never return
                     return List.of(new FilingRef("SENTINEL-25-000001", "8-K",
                             LocalDate.parse("2025-05-02"), LocalDate.parse("2025-05-01"),

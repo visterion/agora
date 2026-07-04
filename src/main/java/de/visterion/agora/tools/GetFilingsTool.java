@@ -36,6 +36,7 @@ public class GetFilingsTool implements AgoraTool {
         props.putObject("cik").put("type", "string").put("description", "SEC CIK (alternative to symbol)");
         props.putObject("formType").put("type", "string").put("description", "filter by form type, e.g. 8-K, 10-Q");
         props.putObject("from").put("type", "string").put("description", "earliest filing date ISO (YYYY-MM-DD)");
+        props.putObject("to").put("type", "string").put("description", "latest filing date ISO (YYYY-MM-DD)");
         props.putObject("limit").put("type", "integer").put("description", "max filings to return; default 40");
         return schema;
     }
@@ -47,16 +48,21 @@ public class GetFilingsTool implements AgoraTool {
             return ToolResult.unavailable("symbol or cik required");
         String formType = args.path("formType").asString(null);
         LocalDate from;
+        LocalDate to;
         try {
             String fromRaw = args.path("from").asString(null);
             from = (fromRaw == null || fromRaw.isBlank()) ? null : LocalDate.parse(fromRaw);
+            String toRaw = args.path("to").asString(null);
+            to = (toRaw == null || toRaw.isBlank()) ? null : LocalDate.parse(toRaw);
         } catch (DateTimeParseException e) {
             return ToolResult.unavailable("invalid date");
         }
         int limit = args.path("limit").asInt(40);
         try {
-            List<FilingRef> filings = service.filings(symbol, cik, formType, from, limit);
+            String resolvedCik = service.resolveCik(symbol, cik);
+            List<FilingRef> filings = service.filings(symbol, cik, formType, from, to, limit);
             ObjectNode out = mapper.createObjectNode();
+            out.put("cik", resolvedCik);
             ArrayNode arr = out.putArray("filings");
             for (FilingRef f : filings) {
                 ObjectNode o = arr.addObject();

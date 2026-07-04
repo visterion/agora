@@ -37,11 +37,11 @@ class EdgarServiceFilingsTest {
                       "primaryDocument":["aapl-8k.htm","aapl-10q.htm"]
                     }}}
                     """)));
-        List<FilingRef> all = svc().filings("AAPL", null, null, null, 40);
+        List<FilingRef> all = svc().filings("AAPL", null, null, null, null, 40);
         assertThat(all).hasSize(2);
         assertThat(all.get(0).url()).contains("/Archives/edgar/data/320193/000032019325000050/aapl-8k.htm");
 
-        List<FilingRef> only8k = svc().filings("AAPL", null, "8-K", null, 40);
+        List<FilingRef> only8k = svc().filings("AAPL", null, "8-K", null, null, 40);
         assertThat(only8k).hasSize(1);
         assertThat(only8k.get(0).form()).isEqualTo("8-K");
     }
@@ -57,7 +57,7 @@ class EdgarServiceFilingsTest {
                       "primaryDocument":["d1.htm","d2.htm","d3.htm"]
                     }}}
                     """)));
-        assertThat(svc().filings("AAPL", null, null, null, 2)).hasSize(2);
+        assertThat(svc().filings("AAPL", null, null, null, null, 2)).hasSize(2);
     }
 
     @Test void fromDateFilters() {
@@ -70,14 +70,35 @@ class EdgarServiceFilingsTest {
                       "reportDate":["",""],
                       "primaryDocument":["d1.htm","d2.htm"]
                     }}}""")));
-        var filtered = svc().filings("AAPL", null, null, java.time.LocalDate.parse("2025-01-01"), 40);
+        var filtered = svc().filings("AAPL", null, null, java.time.LocalDate.parse("2025-01-01"), null, 40);
         assertThat(filtered).hasSize(1);
         assertThat(filtered.get(0).filedDate()).isEqualTo(java.time.LocalDate.parse("2025-05-02"));
     }
 
+    @Test void toDateFilters() {
+        wm.stubFor(get(urlPathEqualTo("/submissions/CIK0000320193.json"))
+                .willReturn(okJson("""
+                    {"filings":{"recent":{
+                      "accessionNumber":["a-new","a-old"],
+                      "form":["8-K","8-K"],
+                      "filingDate":["2025-05-02","2024-12-01"],
+                      "reportDate":["",""],
+                      "primaryDocument":["d1.htm","d2.htm"]
+                    }}}""")));
+        var filtered = svc().filings("AAPL", null, null, null, java.time.LocalDate.parse("2025-01-01"), 40);
+        assertThat(filtered).hasSize(1);
+        assertThat(filtered.get(0).filedDate()).isEqualTo(java.time.LocalDate.parse("2024-12-01"));
+    }
+
+    @Test void nonNumericCikThrowsNotFound() {
+        assertThatThrownBy(() -> svc().filings("X", "notanumber", null, null, null, 40))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
+    }
+
     @Test void httpErrorThrowsUnavailable() {
         wm.stubFor(get(urlPathEqualTo("/submissions/CIK0000320193.json")).willReturn(aResponse().withStatus(500)));
-        assertThatThrownBy(() -> svc().filings("AAPL", null, null, null, 40))
+        assertThatThrownBy(() -> svc().filings("AAPL", null, null, null, null, 40))
                 .isInstanceOf(MarketDataException.class);
     }
 
@@ -86,7 +107,7 @@ class EdgarServiceFilingsTest {
             @Override public Optional<String> cik(String t) { return Optional.empty(); }
         };
         EdgarService s = new EdgarService(RestClient.builder().baseUrl(wm.baseUrl()).build(), cik, 3600L, System::currentTimeMillis);
-        assertThatThrownBy(() -> s.filings("ZZZZ", null, null, null, 40))
+        assertThatThrownBy(() -> s.filings("ZZZZ", null, null, null, null, 40))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
     }
