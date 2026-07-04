@@ -47,6 +47,11 @@ class McpStreamableHttpSmokeIT {
 
             // General tools must be present
             assertThat(toolNames).contains("ping");
+            assertThat(toolNames).contains(
+                    "get_quote", "get_ohlc",
+                    "get_intraday", "get_fx_rate",
+                    "get_company_news", "get_fundamentals", "get_analyst_estimates", "get_earnings_calendar",
+                    "get_filings", "get_eps_history", "get_index_constituents");
 
             // Trading tools must NOT appear on the MCP endpoint (webhook-only)
             assertThat(toolNames).doesNotContain("place_bracket");
