@@ -45,6 +45,11 @@ class GetMacdToolTest {
         BigDecimal signal = r.output().get("signal").decimalValue();
         BigDecimal histogram = r.output().get("histogram").decimalValue();
         assertThat(histogram).isEqualByComparingTo(macd.subtract(signal));
+        // Directional wiring check: on a strictly rising series the fast EMA leads the slow
+        // EMA (MACD > 0) and MACD stays above its signal line (histogram > 0). A mis-wired
+        // indicator (swapped fast/slow, wrong signal source) would break these.
+        assertThat(r.output().get("macd").decimalValue()).isGreaterThan(java.math.BigDecimal.ZERO);
+        assertThat(r.output().get("histogram").decimalValue()).isGreaterThan(java.math.BigDecimal.ZERO);
     }
 
     @Test void tooFewBarsUnavailable() {

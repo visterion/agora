@@ -41,7 +41,9 @@ class GetCciToolTest {
         var r = tool(rising(30)).call(mapper.createObjectNode().put("symbol", "AAPL"));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("symbol").asString()).isEqualTo("AAPL");
-        assertThat(r.output().get("cci")).isNotNull();
+        // CCI on a strictly rising series is strongly positive; a bare isNotNull() would
+        // pass even for a mis-wired indicator, so pin the direction.
+        assertThat(r.output().get("cci").decimalValue()).isGreaterThan(java.math.BigDecimal.ZERO);
     }
 
     @Test void tooFewBarsUnavailable() {
