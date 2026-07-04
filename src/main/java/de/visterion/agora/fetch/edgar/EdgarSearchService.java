@@ -8,7 +8,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 
-import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -26,7 +25,22 @@ import java.util.function.LongSupplier;
 @Component
 public class EdgarSearchService {
 
+    private static final javax.xml.parsers.DocumentBuilderFactory DBF = hardenedDbf();
+
+    private static javax.xml.parsers.DocumentBuilderFactory hardenedDbf() {
+        var dbf = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+        try {
+            dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            dbf.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            dbf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+        } catch (javax.xml.parsers.ParserConfigurationException ignored) { /* best effort */ }
+        dbf.setXIncludeAware(false);
+        dbf.setExpandEntityReferences(false);
+        return dbf;
+    }
+
     private final RestClient http;
+    private final RestClient archiveHttp;
     private final String archiveBase;
     private final TtlCache<String, List<FilingHit>> searchCache;
     private final TtlCache<String, List<Form4Transaction>> form4Cache;
@@ -38,12 +52,20 @@ public class EdgarSearchService {
             @Value("${agora.data.edgar.archive-base:https://www.sec.gov}") String archiveBase,
             @Value("${agora.data.cache.ttl.filings-seconds:3600}") long ttlSeconds) {
         this(RestClient.builder().baseUrl(eftsBase).defaultHeader("User-Agent", userAgent).build(),
+                RestClient.builder().baseUrl(archiveBase).defaultHeader("User-Agent", userAgent).build(),
                 archiveBase, ttlSeconds, System::currentTimeMillis);
     }
 
     // Test constructor: pre-built efts RestClient (User-Agent already set) + archive base.
+    // Builds a UA-less archive client on archiveBase for the Form-4 XML fetch.
     EdgarSearchService(RestClient http, String archiveBase, long ttlSeconds, LongSupplier now) {
+        this(http, RestClient.builder().baseUrl(archiveBase).build(), archiveBase, ttlSeconds, now);
+    }
+
+    // Full constructor: explicit efts + archive RestClients.
+    EdgarSearchService(RestClient http, RestClient archiveHttp, String archiveBase, long ttlSeconds, LongSupplier now) {
         this.http = http;
+        this.archiveHttp = archiveHttp;
         this.archiveBase = archiveBase;
         this.searchCache = new TtlCache<>(ttlSeconds * 1000L, now);
         this.form4Cache = new TtlCache<>(ttlSeconds * 1000L, now);
@@ -164,13 +186,14 @@ public class EdgarSearchService {
 
         String xml;
         try {
-            xml = http.get().uri(hit.url()).retrieve().body(String.class);
+            // hit.url() is absolute (archiveBase + /Archives/...); archiveHttp's baseUrl == archiveBase resolves it correctly.
+            xml = archiveHttp.get().uri(hit.url()).retrieve().body(String.class);
         } catch (Exception e) {
             return;
         }
         if (xml == null) return;
 
-        var doc = DocumentBuilderFactory.newInstance().newDocumentBuilder()
+        var doc = DBF.newDocumentBuilder()
                 .parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
         var owners = doc.getElementsByTagName("reportingOwner");
         String filerName = "";
