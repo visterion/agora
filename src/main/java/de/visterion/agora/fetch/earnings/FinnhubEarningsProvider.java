@@ -91,7 +91,8 @@ public class FinnhubEarningsProvider implements EarningsProvider {
                         .divide(estimate.abs(), 6, RoundingMode.HALF_UP)
                         .multiply(BigDecimal.valueOf(100));
             }
-            String sym = row.path("symbol").asString(symbol).toUpperCase();
+            String sym = row.path("symbol").asString(symbol == null ? "" : symbol).toUpperCase();
+            if (sym.isBlank()) continue;
             out.add(new EarningsEvent(sym, date, estimate, actual, surprisePct,
                     dec(row, "revenueEstimate"), dec(row, "revenueActual")));
         }
