@@ -1,10 +1,17 @@
 package de.visterion.agora.research;
 
 import de.visterion.agora.data.OhlcBar;
+import org.ta4j.core.BarSeries;
+import org.ta4j.core.indicators.averages.SMAIndicator;
+import org.ta4j.core.indicators.helpers.ClosePriceIndicator;
+import org.ta4j.core.indicators.helpers.HighPriceIndicator;
+import org.ta4j.core.indicators.helpers.HighestValueIndicator;
+import org.ta4j.core.indicators.helpers.LowPriceIndicator;
+import org.ta4j.core.indicators.helpers.LowestValueIndicator;
+import org.ta4j.core.indicators.helpers.TRIndicator;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -69,60 +76,46 @@ public class IndicatorService {
         }
 
         int n = bars.size();
-        OhlcBar last = bars.get(n - 1);
-        BigDecimal currentClose = last.close();
+        BarSeries series = Ta4jBars.toSeries(bars);
+        int end = series.getEndIndex();
 
-        // --- True Range values (index 1..n-1 relative to bars list) ---
-        // TR_i = max(high_i - low_i, |high_i - prevClose|, |low_i - prevClose|)
-        List<BigDecimal> trValues = new ArrayList<>(n - 1);
-        for (int i = 1; i < n; i++) {
-            OhlcBar bar = bars.get(i);
-            BigDecimal prevClose = bars.get(i - 1).close();
-            BigDecimal hl = bar.high().subtract(bar.low()).abs();
-            BigDecimal hpc = bar.high().subtract(prevClose).abs();
-            BigDecimal lpc = bar.low().subtract(prevClose).abs();
-            BigDecimal tr = hl.max(hpc).max(lpc);
-            trValues.add(tr);
-        }
+        // --- Current close ---
+        ClosePriceIndicator close = new ClosePriceIndicator(series);
+        BigDecimal currentClose = close.getValue(end).bigDecimalValue();
 
-        // --- ATR: SMA of last atrPeriod TR values ---
-        // trValues.size() == bars.size() - 1, so atrAvailable iff bars.size() > atrPeriod
-        boolean atrAvailable = trValues.size() >= params.atrPeriod();
+        // --- ATR: SMA of the last atrPeriod True Range values ---
+        // TR count is n-1 (index 0 has no prior close), so atrAvailable iff (n-1) >= atrPeriod.
+        // The guard ensures the SMA window never reaches index 0's TR, so ta4j's index-0
+        // TR = high-low convention does not affect the Slice-3 fixtures.
+        boolean atrAvailable = (n - 1) >= params.atrPeriod();
+        SMAIndicator atrIndicator = new SMAIndicator(new TRIndicator(series), params.atrPeriod());
         BigDecimal atr = null;
         if (atrAvailable) {
-            List<BigDecimal> lastTrs = trValues.subList(trValues.size() - params.atrPeriod(), trValues.size());
-            BigDecimal sum = BigDecimal.ZERO;
-            for (BigDecimal tr : lastTrs) sum = sum.add(tr);
-            atr = sum.divide(BigDecimal.valueOf(params.atrPeriod()), MC);
+            atr = atrIndicator.getValue(end).bigDecimalValue();
         }
 
         // --- Chandelier stop = highestHigh(last atrPeriod bars) - atrMultiple * atr ---
         BigDecimal chandelierStop = null;
         boolean chandelierBreached = false;
         if (atrAvailable) {
-            // last atrPeriod bars: from index (n - atrPeriod) to (n-1)
-            int startIdx = n - params.atrPeriod();
-            BigDecimal highestHigh = bars.get(startIdx).high();
-            for (int i = startIdx + 1; i < n; i++) {
-                if (bars.get(i).high().compareTo(highestHigh) > 0) {
-                    highestHigh = bars.get(i).high();
-                }
-            }
-            chandelierStop = highestHigh.subtract(params.atrMultiple().multiply(atr, MC));
+            HighestValueIndicator highestHigh =
+                    new HighestValueIndicator(new HighPriceIndicator(series), params.atrPeriod());
+            BigDecimal hh = highestHigh.getValue(end).bigDecimalValue();
+            chandelierStop = hh.subtract(params.atrMultiple().multiply(atr, MC));
             chandelierBreached = currentClose.compareTo(chandelierStop) < 0;
         }
 
-        // --- Moving averages ---
+        // --- Moving averages (SMA of close over the last n periods) ---
         BigDecimal maFast = null;
         boolean maFastAvailable = n >= params.maFast();
         if (maFastAvailable) {
-            maFast = sma(bars, n - params.maFast(), n);
+            maFast = new SMAIndicator(close, params.maFast()).getValue(end).bigDecimalValue();
         }
 
         BigDecimal maSlow = null;
         boolean maSlowAvailable = n >= params.maSlow();
         if (maSlowAvailable) {
-            maSlow = sma(bars, n - params.maSlow(), n);
+            maSlow = new SMAIndicator(close, params.maSlow()).getValue(end).bigDecimalValue();
         }
 
         // --- MA cross state ---
@@ -136,12 +129,10 @@ public class IndicatorService {
         }
 
         // --- 52-week high/low (computed from all available bars; flag reflects threshold) ---
-        BigDecimal high52w = bars.get(0).high();
-        BigDecimal low52w = bars.get(0).low();
-        for (int i = 1; i < n; i++) {
-            if (bars.get(i).high().compareTo(high52w) > 0) high52w = bars.get(i).high();
-            if (bars.get(i).low().compareTo(low52w) < 0) low52w = bars.get(i).low();
-        }
+        BigDecimal high52w = new HighestValueIndicator(new HighPriceIndicator(series), n)
+                .getValue(end).bigDecimalValue();
+        BigDecimal low52w = new LowestValueIndicator(new LowPriceIndicator(series), n)
+                .getValue(end).bigDecimalValue();
         boolean window52wAvailable = n >= params.minBarsFor52w();
 
         return new Indicators(
@@ -159,14 +150,5 @@ public class IndicatorService {
      */
     public Indicators compute(List<OhlcBar> bars) {
         return compute(bars, defaultParams);
-    }
-
-    // --- Helpers ---
-
-    /** SMA of close prices from bars[fromIdx] (inclusive) to bars[toIdx] (exclusive). */
-    private static BigDecimal sma(List<OhlcBar> bars, int fromIdx, int toIdx) {
-        BigDecimal sum = BigDecimal.ZERO;
-        for (int i = fromIdx; i < toIdx; i++) sum = sum.add(bars.get(i).close());
-        return sum.divide(BigDecimal.valueOf(toIdx - fromIdx), MC);
     }
 }
