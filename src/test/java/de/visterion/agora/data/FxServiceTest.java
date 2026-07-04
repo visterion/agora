@@ -31,6 +31,15 @@ class FxServiceTest {
         assertThat(r.rate()).isEqualByComparingTo("1.0842");
     }
 
+    @Test void invalidCurrencyThrowsUnavailable() {
+        assertThatThrownBy(() -> svc().rate("EU R", "USD"))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+        assertThatThrownBy(() -> svc().rate("EURO", "USD"))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+    }
+
     @Test void missingPriceThrowsUnavailable() {
         wm.stubFor(get(urlPathEqualTo("/v8/finance/chart/EURGBP=X"))
                 .willReturn(okJson("{\"chart\":{\"result\":[{\"meta\":{}}],\"error\":null}}")));

@@ -38,6 +38,8 @@ public class FxService {
         String f = from == null ? "" : from.toUpperCase();
         String t = to == null ? "" : to.toUpperCase();
         if (f.equals(t)) return new FxRate(f, t, BigDecimal.ONE);
+        if (!f.matches("[A-Z]{3}") || !t.matches("[A-Z]{3}"))
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "invalid currency code: " + f + "/" + t, null);
         return cache.get("fx:" + f + t, () -> fetch(f, t));
     }
 
@@ -57,6 +59,10 @@ public class FxService {
         JsonNode px = body.path("chart").path("result").path(0).path("meta").path("regularMarketPrice");
         if (px.isMissingNode() || px.isNull())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "no rate for " + pair, null);
-        return new FxRate(f, t, new BigDecimal(px.asString()));
+        try {
+            return new FxRate(f, t, new BigDecimal(px.asString()));
+        } catch (NumberFormatException e) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "bad rate value for " + pair, e);
+        }
     }
 }
