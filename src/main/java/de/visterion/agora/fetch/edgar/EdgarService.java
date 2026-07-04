@@ -44,7 +44,9 @@ public class EdgarService {
                 cikResolver, ttlSeconds, System::currentTimeMillis);
     }
 
-    EdgarService(RestClient http, EdgarCikResolver cikResolver, long ttlSeconds, LongSupplier now) {
+    // protected (not package-private) so a cross-package @Primary stub subclass in an
+    // integration test can invoke it via super(...); still not part of the public API.
+    protected EdgarService(RestClient http, EdgarCikResolver cikResolver, long ttlSeconds, LongSupplier now) {
         this.http = http;
         this.cikResolver = cikResolver;
         this.filingsCache = new TtlCache<>(ttlSeconds * 1000L, now);
