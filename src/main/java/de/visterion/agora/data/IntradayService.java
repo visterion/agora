@@ -45,6 +45,8 @@ public class IntradayService {
     }
 
     public List<IntradayBar> intraday(String symbol, String interval, String range) {
+        if (symbol == null || symbol.isBlank())
+            throw new MarketDataException(MarketDataException.Kind.NOT_FOUND, "symbol required", null);
         String iv = (interval == null || interval.isBlank()) ? defaultInterval : interval;
         String rg = (range == null || range.isBlank()) ? defaultRange : range;
         return cache.get("intraday:" + symbol + ":" + iv + ":" + rg, () -> fetch(symbol, iv, rg));
