@@ -55,6 +55,25 @@ class EarningsServiceTest {
         assertThat(count[0]).isEqualTo(1);
     }
 
+    @Test void earningsWindowUsesMarketWideAndCachesSeparately() {
+        int[] count = {0};
+        EarningsProvider counting = new EarningsProvider() {
+            public String name() { return "counting"; }
+            public List<EarningsEvent> earnings(String s, LocalDate f, LocalDate t) {
+                count[0]++;
+                assertThat(s).isNull(); // window mode passes null symbol
+                return List.of(new EarningsEvent("AAPL", LocalDate.parse("2025-05-01"),
+                        null, null, null, null, null));
+            }
+        };
+        var svc = new EarningsService(List.of(counting), 120L, System::currentTimeMillis);
+        var from = LocalDate.parse("2025-05-01");
+        var to = LocalDate.parse("2025-05-03");
+        assertThat(svc.earningsWindow(from, to)).hasSize(1);
+        svc.earningsWindow(from, to);
+        assertThat(count[0]).isEqualTo(1); // window result cached
+    }
+
     @Test void allUnavailableThrows() {
         var svc = new EarningsService(List.of(fixed("finnhub", List.of(), true), fixed("yahoo", List.of(), true)),
                 120L, System::currentTimeMillis);
