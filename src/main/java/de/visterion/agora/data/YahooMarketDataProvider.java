@@ -23,7 +23,7 @@ import java.util.List;
  * Ports Dracul's YahooMarketDataAdapter to Agora's neutral DTOs.
  */
 @Component
-@Order(0)
+@Order(30)
 public class YahooMarketDataProvider implements MarketDataProvider {
 
     // One retry on 429/5xx (per plan spec)
