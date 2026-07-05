@@ -3,15 +3,10 @@ package de.visterion.agora.research;
 import java.math.BigDecimal;
 import java.util.List;
 
-/** Default indicator parameters bound from agora.research.* (Slice 6 additions). */
+/** Default parameters bound from agora.research.* — only what the remaining
+ *  non-catalog tools need (get_r_framework). Indicator params live in the
+ *  indicator catalog (indicators-catalog.yaml / BuiltinIndicators). */
 public record ResearchDefaults(
-        int rsiPeriod,
-        int macdFast, int macdSlow, int macdSignal,
-        int bollingerPeriod, BigDecimal bollingerK,
-        int stochasticK, int stochasticD,
-        int adxPeriod,
-        int cciPeriod,
-        int williamsPeriod,
         BigDecimal rAtrMultiple, List<BigDecimal> rMultiples,
         int fetchDays) {
     public ResearchDefaults {
