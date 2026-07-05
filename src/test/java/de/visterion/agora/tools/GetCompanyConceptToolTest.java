@@ -13,6 +13,8 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class GetCompanyConceptToolTest {
@@ -38,6 +40,27 @@ class GetCompanyConceptToolTest {
         assertThat(new BigDecimal(d.get("value").asString())).isEqualByComparingTo("365000000000");
         assertThat(d.get("fiscalYear").asInt()).isEqualTo(2024);
         assertThat(d.get("form").asString()).isEqualTo("10-K");
+    }
+
+    @Test void symbolPathPassesOriginalArgsToServiceNotResolvedCik() {
+        // Regression: the tool must pass the ORIGINAL symbol/cik to companyConcept and let the
+        // service resolve the CIK exactly once. Passing the already-resolved CIK into the
+        // symbol position makes the service re-resolve it as a ticker → "no CIK for 0000320193".
+        EdgarService svc = Mockito.mock(EdgarService.class);
+        when(svc.resolveCik("AAPL", null)).thenReturn("0000320193");
+        when(svc.companyConcept(eq("AAPL"), isNull(), eq("us-gaap"), eq("Revenues")))
+                .thenReturn(new EdgarService.ConceptSeries("USD",
+                        List.of(new ConceptDatapoint(LocalDate.parse("2024-01-01"), LocalDate.parse("2024-12-31"),
+                                new BigDecimal("391000000000"), 2024, "FY", "10-K", LocalDate.parse("2025-01-31")))));
+        var args = mapper.createObjectNode();
+        args.put("symbol", "AAPL");
+        args.put("tag", "Revenues");
+        var r = new GetCompanyConceptTool(svc).call(args);
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("cik").asString()).isEqualTo("0000320193");
+        assertThat(r.output().get("unit").asString()).isEqualTo("USD");
+        verify(svc).companyConcept("AAPL", null, "us-gaap", "Revenues");
+        verify(svc, never()).companyConcept(eq("0000320193"), any(), any(), any());
     }
 
     @Test void usesCikArgAsTaxonomyDefault() {
