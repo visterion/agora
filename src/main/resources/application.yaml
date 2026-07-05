@@ -66,17 +66,8 @@ agora:
     ma-slow: ${AGORA_RESEARCH_MA_SLOW:200}
     min-bars-52w: ${AGORA_RESEARCH_MIN_BARS_52W:250}
     fetch-days: ${AGORA_RESEARCH_FETCH_DAYS:260}
-    rsi-period: ${AGORA_RESEARCH_RSI_PERIOD:14}
-    macd-fast: ${AGORA_RESEARCH_MACD_FAST:12}
-    macd-slow: ${AGORA_RESEARCH_MACD_SLOW:26}
-    macd-signal: ${AGORA_RESEARCH_MACD_SIGNAL:9}
-    bollinger-period: ${AGORA_RESEARCH_BOLLINGER_PERIOD:20}
-    bollinger-k: ${AGORA_RESEARCH_BOLLINGER_K:2}
-    stochastic-k: ${AGORA_RESEARCH_STOCHASTIC_K:14}
-    stochastic-d: ${AGORA_RESEARCH_STOCHASTIC_D:3}
-    adx-period: ${AGORA_RESEARCH_ADX_PERIOD:14}
-    cci-period: ${AGORA_RESEARCH_CCI_PERIOD:20}
-    williams-period: ${AGORA_RESEARCH_WILLIAMS_PERIOD:14}
+    default-indicators: ${AGORA_RESEARCH_DEFAULT_INDICATORS:atr,chandelier_stop,ma_cross,52w_range}
+    indicators-file: ${AGORA_RESEARCH_INDICATORS_FILE:}
     r-atr-multiple: ${AGORA_RESEARCH_R_ATR_MULTIPLE:3.0}
     r-multiples: ${AGORA_RESEARCH_R_MULTIPLES:1,2,3}
 

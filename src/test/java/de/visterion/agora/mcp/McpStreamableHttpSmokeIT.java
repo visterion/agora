@@ -53,13 +53,13 @@ class McpStreamableHttpSmokeIT {
                     "get_company_news", "get_fundamentals", "get_analyst_estimates", "get_earnings_calendar",
                     "get_filings", "get_eps_history", "get_index_constituents",
                     "search_filings", "get_form4_transactions", "get_company_concept",
-                    "get_atr", "get_chandelier_stop", "get_ma_cross", "get_52w_range",
-                    "get_indicators");
+                    "get_indicators", "list_indicators", "get_r_framework");
 
-            // Slice 6 ta4j research tools must be present
-            assertThat(toolNames).contains(
+            // The granular indicator tools are gone — replaced by the generic catalog
+            assertThat(toolNames).doesNotContain(
+                    "get_atr", "get_chandelier_stop", "get_ma_cross", "get_52w_range",
                     "get_rsi", "get_macd", "get_bollinger", "get_stochastic",
-                    "get_adx", "get_obv", "get_cci", "get_williams_r", "get_r_framework");
+                    "get_adx", "get_obv", "get_cci", "get_williams_r");
 
             // Trading tools must NOT appear on the MCP endpoint (webhook-only)
             assertThat(toolNames).doesNotContain("place_bracket");
