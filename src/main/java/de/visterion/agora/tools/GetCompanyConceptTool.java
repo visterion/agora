@@ -49,7 +49,7 @@ public class GetCompanyConceptTool implements AgoraTool {
         String taxonomy = (taxonomyRaw == null || taxonomyRaw.isBlank()) ? "us-gaap" : taxonomyRaw.trim();
         try {
             String resolvedCik = service.resolveCik(symbol, cik);
-            EdgarService.ConceptSeries series = service.companyConcept(resolvedCik, null, taxonomy, tag);
+            EdgarService.ConceptSeries series = service.companyConcept(symbol, cik, taxonomy, tag);
             ObjectNode out = mapper.createObjectNode();
             out.put("cik", resolvedCik);
             out.put("taxonomy", taxonomy);

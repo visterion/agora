@@ -24,7 +24,7 @@ class WikipediaServiceTest {
 
     @Test void parsesConstituents() {
         // Minimal wikitext table with Symbol, Security, GICS Sector, Date added columns
-        String wikitext = "{|\n! Symbol !! Security !! GICS Sector !! Date added\n" +
+        String wikitext = "{| class=\"wikitable sortable\" id=\"constituents\"\n! Symbol !! Security !! GICS Sector !! Date added\n" +
                 "|-\n| [[Apple Inc.|AAPL]] || Apple Inc. || Information Technology || 1982-11-30\n" +
                 "|-\n| MSFT || Microsoft || Information Technology || 1994-06-01\n|}";
         wm.stubFor(get(urlPathEqualTo("/w/api.php"))
@@ -33,6 +33,38 @@ class WikipediaServiceTest {
         assertThat(c).hasSize(2);
         assertThat(c.get(0).symbol()).isEqualTo("AAPL");
         assertThat(c.get(0).sector()).isEqualTo("Information Technology");
+    }
+
+    @Test void parsesRealisticConstituentsTable() {
+        // Mirrors the real "List of S&P 500 companies" wikitext: a leading <!--EDITORS...-->
+        // comment that itself contains the phrase "Date added", the real table anchored by
+        // id="constituents", a header where Symbol and GICS Sector carry inline wikilinks, and
+        // data rows whose symbol cells are {{NyseSymbol|..}} / {{NasdaqSymbol|..}} templates.
+        String wikitext = "<!--EDITORS PLEASE TAKE NOTE:\n" +
+                " 3. Most of the dates in the \"Date added\" column agree with the source.\n" +
+                "-->\n" +
+                "Some lead paragraph text.\n" +
+                "{| class=\"wikitable sortable mw-collapsible sticky-header\" id=\"constituents\"\n" +
+                "|-\n" +
+                "![[Ticker symbol|Symbol]]\n" +
+                "! Security !! [[Global Industry Classification Standard|GICS]] Sector !! GICS Sub-Industry !! Headquarters Location !! Date added !! [[Central Index Key|CIK]] !! Founded\n" +
+                "|-\n" +
+                "|{{NyseSymbol|MMM}}\n" +
+                "|[[3M]]|| Industrials || Industrial Conglomerates || [[Saint Paul, Minnesota]] || 1957-03-04 || 0000066740 || 1902\n" +
+                "|-\n" +
+                "|{{NasdaqSymbol|AOS}}\n" +
+                "|[[A. O. Smith]]|| Industrials || Building Products || [[Milwaukee, Wisconsin]] || 2017-07-26 || 0000091142 || 1916\n" +
+                "|}";
+        wm.stubFor(get(urlPathEqualTo("/w/api.php"))
+                .willReturn(okJson("{\"parse\":{\"wikitext\":" + toJsonString(wikitext) + "}}")));
+        List<Constituent> c = svc().constituents("sp500");
+        assertThat(c).hasSize(2);
+        assertThat(c.get(0).symbol()).isEqualTo("MMM");
+        assertThat(c.get(0).name()).isEqualTo("3M");
+        assertThat(c.get(0).sector()).isEqualTo("Industrials");
+        assertThat(c.get(1).symbol()).isEqualTo("AOS");
+        assertThat(c.get(1).name()).isEqualTo("A. O. Smith");
+        assertThat(c.get(1).sector()).isEqualTo("Industrials");
     }
 
     @Test void unknownIndexThrowsUnavailable() {
