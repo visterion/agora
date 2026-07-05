@@ -154,6 +154,33 @@ class IndicatorExpressionResolverTest {
     }
 
     @Test
+    void nonCoercibleIntParamIsRejected() {
+        var series = Ta4jBars.toSeries(rising(30));
+        assertThatThrownBy(() -> resolver.resolve(json("{\"name\":\"rsi\",\"params\":{\"period\":\"abc\"}}"), series))
+                .isInstanceOf(IndicatorExpressionResolver.SpecException.class)
+                .hasMessageContaining("must be an integer");
+    }
+
+    @Test
+    void decimalForIntParamIsRejectedNotTruncated() {
+        var series = Ta4jBars.toSeries(rising(30));
+        assertThatThrownBy(() -> resolver.resolve(json("{\"name\":\"rsi\",\"params\":{\"period\":2.7}}"), series))
+                .isInstanceOf(IndicatorExpressionResolver.SpecException.class)
+                .hasMessageContaining("must be an integer");
+    }
+
+    @Test
+    void decimalParamHappyPathAndTypeCheck() {
+        var series = Ta4jBars.toSeries(rising(30));
+        var r = resolver.resolve(json("{\"name\":\"bollinger\",\"params\":{\"k\":2.5}}"), series);
+        assertThat(r.outputs()).isNotEmpty();
+
+        assertThatThrownBy(() -> resolver.resolve(json("{\"name\":\"bollinger\",\"params\":{\"k\":true}}"), series))
+                .isInstanceOf(IndicatorExpressionResolver.SpecException.class)
+                .hasMessageContaining("must be a number");
+    }
+
+    @Test
     void minBarsPropagatesThroughChain() {
         var series = Ta4jBars.toSeries(rising(30));
         var r = resolver.resolve(json("{\"name\":\"sma\",\"params\":{\"period\":2},\"of\":\"rsi\"}"), series);

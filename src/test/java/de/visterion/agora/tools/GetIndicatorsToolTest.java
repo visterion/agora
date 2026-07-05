@@ -187,6 +187,13 @@ class GetIndicatorsToolTest {
     }
 
     @Test
+    void nonNumericSeriesIsCallLevelUnavailable() {
+        ObjectNode args = mapper.createObjectNode().put("symbol", "A").put("series", "abc");
+        var r = tool(rising(30)).call(args);
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test
     void namespaceIsGeneral() {
         assertThat(tool(rising(30)).namespace()).isEqualTo("general");
     }

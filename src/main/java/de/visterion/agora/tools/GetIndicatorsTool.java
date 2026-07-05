@@ -90,11 +90,21 @@ public class GetIndicatorsTool implements AgoraTool {
         if (args == null || !args.hasNonNull("symbol")) return ToolResult.unavailable("no symbol provided");
         String symbol = args.get("symbol").asString();
 
-        int seriesN = intArg(args, "series", 0);
+        int seriesN;
+        try {
+            seriesN = intArg(args, "series", 0);
+        } catch (IllegalArgumentException e) {
+            return ToolResult.unavailable("invalid series");
+        }
         if (seriesN < 0 || seriesN > MAX_SERIES) {
             return ToolResult.unavailable("series must be 0.." + MAX_SERIES);
         }
-        int days = intArg(args, "fetchDays", fetchDays);
+        int days;
+        try {
+            days = intArg(args, "fetchDays", fetchDays);
+        } catch (IllegalArgumentException e) {
+            return ToolResult.unavailable("invalid fetchDays");
+        }
         if (days <= 0) return ToolResult.unavailable("invalid fetchDays");
 
         JsonNode indicatorsNode;
@@ -206,6 +216,11 @@ public class GetIndicatorsTool implements AgoraTool {
     }
 
     private static int intArg(JsonNode args, String field, int fallback) {
-        return (args.has(field) && !args.get(field).isNull()) ? args.get(field).asInt() : fallback;
+        if (!args.has(field) || args.get(field).isNull()) return fallback;
+        JsonNode node = args.get(field);
+        if (!node.isNumber() || !node.canConvertToExactIntegral()) {
+            throw new IllegalArgumentException("field '" + field + "' must be an integer");
+        }
+        return node.asInt();
     }
 }

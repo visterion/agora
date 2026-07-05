@@ -54,11 +54,16 @@ public class IndicatorExpressionResolver {
         if (spec != null && spec.isString()) {
             name = spec.asString();
         } else if (spec != null && spec.isObject()) {
-            if (!spec.hasNonNull("name")) throw new SpecException("indicator spec needs a name");
+            if (!spec.hasNonNull("name") || !spec.get("name").isString()) {
+                throw new SpecException("indicator spec needs a name");
+            }
             name = spec.get("name").asString();
             paramsNode = spec.get("params");
             ofNode = spec.get("of");
-            if (spec.hasNonNull("label")) explicitLabel = spec.get("label").asString();
+            if (spec.hasNonNull("label")) {
+                if (!spec.get("label").isString()) throw new SpecException("label must be a string");
+                explicitLabel = spec.get("label").asString();
+            }
         } else {
             throw new SpecException("indicator spec must be a string or an object");
         }
@@ -116,9 +121,21 @@ public class IndicatorExpressionResolver {
                         .filter(d -> d.name().equals(e.getKey())).findFirst()
                         .orElseThrow(() -> new SpecException("unknown param '" + e.getKey()
                                 + "' for '" + def.name() + "'"));
-                BigDecimal v = pd.type() == ParamDef.Type.INT
-                        ? BigDecimal.valueOf(e.getValue().asInt())
-                        : new BigDecimal(e.getValue().asString());
+                JsonNode valueNode = e.getValue();
+                BigDecimal v;
+                if (pd.type() == ParamDef.Type.INT) {
+                    if (!valueNode.isNumber() || !valueNode.canConvertToExactIntegral()) {
+                        throw new SpecException("param '" + pd.name() + "' for '" + def.name()
+                                + "' must be an integer");
+                    }
+                    v = BigDecimal.valueOf(valueNode.asInt());
+                } else {
+                    if (!valueNode.isNumber()) {
+                        throw new SpecException("param '" + pd.name() + "' for '" + def.name()
+                                + "' must be a number");
+                    }
+                    v = new BigDecimal(valueNode.asString());
+                }
                 if ((pd.min() != null && v.compareTo(pd.min()) < 0)
                         || (pd.max() != null && v.compareTo(pd.max()) > 0)) {
                     throw new SpecException("param '" + pd.name() + "' out of range ["

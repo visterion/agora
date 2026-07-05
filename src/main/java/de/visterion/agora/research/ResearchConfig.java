@@ -11,8 +11,9 @@ import java.util.List;
  * Wires the default {@link IndicatorService.Params} from {@code agora.research.*}
  * properties and exposes an {@link IndicatorService} bean.
  *
- * <p>The four research tools inject this bean and may override individual params
- * per-call by constructing a new {@code Params} from the injected defaults.</p>
+ * <p>Only {@code get_r_framework} injects this bean's {@link ResearchDefaults} to seed its
+ * call-time defaults; indicator params for {@code get_indicators} live in the indicator
+ * catalog instead.</p>
  */
 @Configuration
 public class ResearchConfig {
