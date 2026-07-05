@@ -27,7 +27,7 @@ agora:
   data:
     yahoo:
       base-url: ${AGORA_DATA_YAHOO_BASE_URL:https://query1.finance.yahoo.com}
-      user-agent: ${AGORA_DATA_YAHOO_USER_AGENT:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36}
+      user-agent: ${AGORA_DATA_YAHOO_USER_AGENT:agora/0.1 (+https://github.com/visterion/agora)}
     twelvedata:
       base-url: ${AGORA_DATA_TWELVEDATA_BASE_URL:https://api.twelvedata.com}
       key: ${AGORA_DATA_TWELVEDATA_KEY:}
