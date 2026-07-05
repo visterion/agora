@@ -120,11 +120,34 @@ public class EdgarService {
     }
 
     private List<EpsPoint> fetchEps(String padded) {
+        List<EpsPoint> firstNonEmpty = null;
         for (String tag : EPS_TAGS) {
             List<EpsPoint> points = fetchConcept(padded, tag);
-            if (!points.isEmpty()) return points;
+            if (points.isEmpty()) continue;
+            if (firstNonEmpty == null) firstNonEmpty = points;
+            // Prefer a tag with genuine quarterly facts; a concept carrying only
+            // annual/YTD facts (e.g. Diluted reported solely on a 10-K) must fall
+            // back to the next tag even though its raw series is non-empty.
+            if (hasQuarterly(points)) return points;
         }
-        return List.of();
+        return firstNonEmpty != null ? firstNonEmpty : List.of();
+    }
+
+    /** Duration in days for period-end dedup preference; null periodStart (instant facts) is
+     *  treated as longest/least-preferred since EPS facts are durations, not instants. */
+    private static long durationDays(EpsPoint p) {
+        if (p.periodStart() == null) return Long.MAX_VALUE;
+        return java.time.temporal.ChronoUnit.DAYS.between(p.periodStart(), p.periodEnd());
+    }
+
+    /** True if any point's period spans roughly one fiscal quarter (80-100 days, inclusive). */
+    private static boolean hasQuarterly(List<EpsPoint> points) {
+        for (EpsPoint p : points) {
+            if (p.periodStart() == null) continue;
+            long days = java.time.temporal.ChronoUnit.DAYS.between(p.periodStart(), p.periodEnd());
+            if (days >= 80 && days <= 100) return true;
+        }
+        return false;
     }
 
     private List<EpsPoint> fetchConcept(String padded, String tag) {
@@ -153,8 +176,15 @@ public class EdgarService {
                     String fp = row.path("fp").asString(null);
                     String form = row.path("form").asString(null);
                     LocalDate filed = parseDate(row.path("filed").asString(""));
-                    byEnd.put(periodEnd, new EpsPoint(periodEnd, periodStart,
-                            row.path("val").decimalValue(), fy, fp, form, filed));
+                    EpsPoint candidate = new EpsPoint(periodEnd, periodStart,
+                            row.path("val").decimalValue(), fy, fp, form, filed);
+                    // EDGAR may emit multiple facts sharing a period-end (e.g. a 3-month
+                    // quarterly fact and a 6-/9-month YTD fact). Prefer the SHORTEST
+                    // duration so the quarterly fact always wins regardless of emission order.
+                    EpsPoint existing = byEnd.get(periodEnd);
+                    if (existing == null || durationDays(candidate) < durationDays(existing)) {
+                        byEnd.put(periodEnd, candidate);
+                    }
                 } catch (Exception rowError) {
                     // skip malformed row, keep the rest
                 }
