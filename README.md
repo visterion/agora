@@ -1,7 +1,8 @@
 # Agora
 
 > **A broker- and provider-agnostic MCP tool suite for market data, quant research, and
-> trade execution. Register a tool once in Agora; every consumer gets it — no consumer rebuild.**
+> trade execution. Register a tool once in Agora and every consumer can use it, with no
+> consumer rebuild.**
 
 [![docker](https://github.com/visterion/agora/actions/workflows/docker.yml/badge.svg)](https://github.com/visterion/agora/actions/workflows/docker.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -14,11 +15,11 @@
 
 ---
 
-Agora is a standalone service that exposes a catalog of financial tools — quotes, OHLC,
-technical indicators, fundamentals, SEC filings, earnings calendars, and broker execution —
+Agora is a standalone service that exposes a catalog of financial tools (quotes, OHLC,
+technical indicators, fundamentals, SEC filings, earnings calendars, and broker execution)
 over the [Model Context Protocol](https://modelcontextprotocol.io) (MCP) and a plain HTTP
-webhook. Consumers (AI agents, trading systems) call these tools without knowing which
-data provider or broker sits behind them.
+webhook. Consumers such as AI agents and trading systems call these tools without knowing
+which data provider or broker sits behind them.
 
 It is built as a single Spring Boot 4 / JDK 25 application and ships as one Docker image.
 
@@ -32,19 +33,19 @@ Agora is one product in a family of sibling services:
 |---|---|
 | **Vistierie** | Infrastructure / agent platform |
 | **HiveMem** | Long-term memory |
-| **Agora** | Market data, quant, and execution — **this repo** |
-| **Dracul** | A *consumer* — an investment-research agent that uses Agora |
+| **Agora** | Market data, quant, and execution (**this repo**) |
+| **Dracul** | A *consumer*: an investment-research agent that uses Agora |
 
 The guiding principle (the **Nordstern**):
 
 > A new tool, provider, broker, or quant building block is registered **in Agora**.
-> The consumer stays untouched. **No consumer rebuild.**
+> The consumer stays untouched, and no consumer rebuild is required.
 
-Dracul (and any future consumer) gets richer capabilities purely by Agora adding a tool —
-never by changing consumer code. This is what makes Agora worth having as a separate
-service instead of a library baked into each agent.
+Dracul, and any future consumer, gains capabilities purely by Agora adding a tool, never
+by changing consumer code. That is why Agora is a separate service rather than a library
+baked into each agent.
 
-### Scope discipline — the hard boundary
+### Scope discipline: the hard boundary
 
 Agora is **generic**. It owns raw market data, execution, and neutral quant math. It must
 **never** contain investment domain vocabulary.
@@ -59,14 +60,16 @@ Agora is **generic**. It owns raw market data, execution, and neutral quant math
 Agora tool name, schema, or code, that is a layer-violation bug. Investment provenance
 lives only in the consumer, which passes an opaque `client_ref` that Agora merely echoes.
 
-The **two-consumer rule** keeps Agora honest: the moment a second consumer exists alongside
+The **two-consumer rule** keeps Agora honest: once a second consumer exists alongside
 Dracul, it validates that the API is truly neutral.
 
 ---
 
 ## Architecture
 
-One Spring Boot app. One tool registry. Two front-doors sharing the same tool truth.
+Agora runs as one Spring Boot application. A single tool registry is served through two
+front-doors, the MCP endpoint and an HTTP webhook, and both expose the identical set of
+tools.
 
 ```
                        ┌──────────────────────────────────────────┐
@@ -82,7 +85,7 @@ One Spring Boot app. One tool registry. Two front-doors sharing the same tool tr
                        │                                 │         │
                        │                                 ▼         │
                        │                          broker plugins   │
-                       │                          (Alpaca → IBKR)  │
+                       │                          (Alpaca, IBKR)   │
                        └──────────────────────────────────────────┘
 ```
 
@@ -105,8 +108,9 @@ tool on **both** front-doors at once:
 - `ToolWebhookController` serves each tool at `POST /tools/{name}` (Vistierie-compatible).
 - `ToolCatalogController` mirrors the catalog at `GET /tools` for discovery.
 
-Both the MCP adapter and the catalog **filter out `trading`-namespace tools** — execution is
-never exposed over MCP or the public catalog, only over the authenticated webhook.
+Both the MCP adapter and the catalog **filter out `trading`-namespace tools**, so execution
+is never exposed over MCP or the public catalog. It is reachable only over the authenticated
+webhook.
 
 ### Logical grouping
 
@@ -123,7 +127,7 @@ design spec:
 
 ## Tool catalog
 
-38 tools today. `general` tools are on MCP + webhook + catalog; `trading` tools are
+38 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
 webhook-only and require a trading token.
 
 ### Market data (`agora-data`)
@@ -170,7 +174,7 @@ webhook-only and require a trading token.
 | `get_williams_r` | Williams %R |
 | `get_obv` | On-Balance Volume |
 | `get_r_framework` | Risk unit and R-multiple price levels |
-| `ping` | Liveness probe — returns `pong` plus any echoed message |
+| `ping` | Liveness probe that returns `pong` plus any echoed message |
 
 ### Trading / execution (`agora-trading`, trading token required)
 
@@ -193,7 +197,7 @@ provider.
 
 | Domain | Plugins |
 |---|---|
-| Quotes / OHLC / intraday | Yahoo Finance, TwelveData, Finnhub (fallback chain) |
+| Quotes / OHLC / intraday | TwelveData, Finnhub, then keyless Yahoo Finance as last-resort fallback |
 | Company profile / news / fundamentals / estimates | Finnhub |
 | Filings / XBRL concepts / EPS / Form-4 | SEC EDGAR |
 | Earnings calendar | Finnhub, Yahoo |
@@ -201,7 +205,7 @@ provider.
 | Execution | Alpaca (paper by default); IBKR planned |
 
 Responses are cached with per-family TTLs (prices 120s, news 15m, fundamentals 6h,
-filings 1h, constituents 24h — all configurable).
+filings 1h, constituents 24h), all configurable.
 
 ---
 
@@ -209,11 +213,11 @@ filings 1h, constituents 24h — all configurable).
 
 Guarded by `BearerTokenFilter` on `/tools/**` and `/mcp/**`:
 
-- **General tools & `/mcp`** — accept general **∪** trading tokens.
-- **Trading tools** (`/tools/{name}` where `namespace()=="trading"`) — accept **only**
+- **General tools and `/mcp`**: accept either a general or a trading token.
+- **Trading tools** (`/tools/{name}` where `namespace()=="trading"`): accept **only**
   trading tokens.
-- **`/actuator/health`** — public, no token.
-- Fail-closed: empty token config denies all tool calls.
+- **`/actuator/health`**: public, no token.
+- Fail-closed: an empty token config denies all tool calls.
 
 Tokens are comma-separated, one per consumer, supplied via env vars.
 
@@ -234,7 +238,7 @@ for the full list and defaults). Key ones:
 | `AGORA_DATA_TWELVEDATA_KEY` | TwelveData API key |
 | `AGORA_DATA_EDGAR_USER_AGENT` | SEC-required User-Agent for EDGAR |
 | `AGORA_DATA_CACHE_TTL_*` | Per-family cache TTLs |
-| `AGORA_RESEARCH_*` | Default indicator periods (ATR 22, MA 50/200, RSI 14, …) |
+| `AGORA_RESEARCH_*` | Default indicator periods (ATR 22, MA 50/200, RSI 14, and so on) |
 
 ---
 
@@ -284,7 +288,7 @@ curl -s http://localhost:8080/actuator/health
 
 ## Adding a new tool
 
-This is the whole point of Agora — one class, zero consumer changes.
+Adding a tool takes one new class and no consumer changes.
 
 1. Create a class in `de.visterion.agora.tools` implementing `AgoraTool`, annotated
    `@Component`.
@@ -313,32 +317,31 @@ The `ToolRegistry` picks it up automatically and it appears on `/mcp`, `/tools`,
 
 ## Disclaimer
 
-Agora is **open-source software, not a managed service.** You self-host your own
-instance and supply your own broker and data-provider API keys.
+Agora is **open-source software that you run yourself**, not a managed service. You
+self-host your own instance and supply your own broker and data-provider API keys.
 
 - **You run it; you own the data flow.** Agora ships code, not a data proxy. Market
   data and orders flow directly between *your* instance and the provider/broker APIs
-  (Alpaca, IBKR, Finnhub, TwelveData, SEC EDGAR, …). The maintainers do not operate a
+  (Alpaca, IBKR, Finnhub, TwelveData, SEC EDGAR). The maintainers do not operate a
   server and do not redistribute any market data.
 - **Your keys, your terms.** Because you configure your own API keys
-  (`AGORA_TRADING_ALPACA_KEY_ID`, `AGORA_DATA_FINNHUB_KEY`, …), you use your own
-  accounts and are bound by each provider's and broker's Terms of Service — including
-  any Professional / Non-Professional market-data classification. That is strictly
-  between you and them.
-- **Some data sources are unofficial.** A few bundled providers — notably the keyless
-  Yahoo Finance fallback — call **undocumented** endpoints that are not covered by a
-  developer agreement. Prefer the keyed providers (Finnhub, TwelveData) for anything
-  you depend on, and satisfy yourself that your use complies with each source's Terms
-  of Service. The operator, not the maintainers, is responsible for that compliance.
+  (`AGORA_TRADING_ALPACA_KEY_ID`, `AGORA_DATA_FINNHUB_KEY`, and so on), you use your own
+  accounts and are bound by each provider's and broker's Terms of Service, including any
+  Professional or Non-Professional market-data classification. That is strictly between
+  you and them.
+- **Some data sources are unofficial.** A few bundled providers, notably the keyless
+  Yahoo Finance fallback, call **undocumented** endpoints that are not covered by a
+  developer agreement. Prefer the keyed providers (Finnhub, TwelveData) for anything you
+  depend on, and satisfy yourself that your use complies with each source's Terms of
+  Service. The operator, not the maintainers, is responsible for that compliance.
 - **Trade execution is at your own risk.** The `trading` tools place **real orders**
   on whatever account your keys point to. A bug, a bad agent decision, or a provider
   outage can cause financial loss. You are solely responsible for every order placed
-  through your instance. Test against a paper account first — Alpaca paper is the
-  default.
+  through your instance. Test against a paper account first; Alpaca paper is the default.
 - **No affiliation.** Agora is an independent project. It is not affiliated with,
   endorsed by, or sponsored by Alpaca, Interactive Brokers, Yahoo, Finnhub, TwelveData,
-  or any other provider whose API it can call. All trademarks belong to their
-  respective owners.
+  or any other provider whose API it can call. All trademarks belong to their respective
+  owners.
 - **No warranty.** To the extent permitted by applicable law, the software is provided
   "AS IS" (see the MIT license), without warranty of any kind. It is **not** financial,
   investment, legal, or tax advice.
