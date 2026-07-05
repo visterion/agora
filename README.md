@@ -325,14 +325,23 @@ instance and supply your own broker and data-provider API keys.
   accounts and are bound by each provider's and broker's Terms of Service — including
   any Professional / Non-Professional market-data classification. That is strictly
   between you and them.
+- **Some data sources are unofficial.** A few bundled providers — notably the keyless
+  Yahoo Finance fallback — call **undocumented** endpoints that are not covered by a
+  developer agreement. Prefer the keyed providers (Finnhub, TwelveData) for anything
+  you depend on, and satisfy yourself that your use complies with each source's Terms
+  of Service. The operator, not the maintainers, is responsible for that compliance.
 - **Trade execution is at your own risk.** The `trading` tools place **real orders**
   on whatever account your keys point to. A bug, a bad agent decision, or a provider
   outage can cause financial loss. You are solely responsible for every order placed
   through your instance. Test against a paper account first — Alpaca paper is the
   default.
-- **No warranty.** As stated in the MIT license, the software is provided "AS IS",
-  without warranty of any kind. It is **not** financial, investment, legal, or tax
-  advice.
+- **No affiliation.** Agora is an independent project. It is not affiliated with,
+  endorsed by, or sponsored by Alpaca, Interactive Brokers, Yahoo, Finnhub, TwelveData,
+  or any other provider whose API it can call. All trademarks belong to their
+  respective owners.
+- **No warranty.** To the extent permitted by applicable law, the software is provided
+  "AS IS" (see the MIT license), without warranty of any kind. It is **not** financial,
+  investment, legal, or tax advice.
 
 ---
 
