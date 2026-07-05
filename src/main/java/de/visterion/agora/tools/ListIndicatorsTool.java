@@ -24,13 +24,16 @@ public class ListIndicatorsTool implements AgoraTool {
         this.registry = registry;
     }
 
+    @Override
     public String name() { return "list_indicators"; }
 
+    @Override
     public String description() {
         return "Lists the technical-indicator catalog (names, params with defaults, outputs). "
              + "Use these names in get_indicators specs. Optional: name (substring filter).";
     }
 
+    @Override
     public ObjectNode inputSchema() {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
@@ -40,6 +43,7 @@ public class ListIndicatorsTool implements AgoraTool {
         return schema;
     }
 
+    @Override
     public ToolResult call(JsonNode args) {
         String filter = (args != null && args.hasNonNull("name"))
                 ? args.get("name").asString() : null;
