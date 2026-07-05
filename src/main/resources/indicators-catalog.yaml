@@ -1,0 +1,108 @@
+# Built-in indicator catalog. One entry per simple ta4j indicator:
+#   class:  FQCN under org.ta4j.core.indicators.* (whitelisted)
+#   inputs: 1 = constructor takes (Indicator, int...); 0 = (BarSeries, int...)
+#   params: int params in constructor order (name, default, min, max)
+# Operators can extend/override via AGORA_RESEARCH_INDICATORS_FILE (same format).
+# Composite/multi-output indicators live in BuiltinIndicators.java instead.
+indicators:
+  rsi:
+    class: org.ta4j.core.indicators.RSIIndicator
+    description: "Relative Strength Index"
+    inputs: 1
+    params:
+      - { name: period, default: 14, min: 1, max: 500 }
+  sma:
+    class: org.ta4j.core.indicators.averages.SMAIndicator
+    description: "Simple Moving Average"
+    inputs: 1
+    params:
+      - { name: period, default: 20, min: 1, max: 1000 }
+  ema:
+    class: org.ta4j.core.indicators.averages.EMAIndicator
+    description: "Exponential Moving Average"
+    inputs: 1
+    params:
+      - { name: period, default: 20, min: 1, max: 1000 }
+  wma:
+    class: org.ta4j.core.indicators.averages.WMAIndicator
+    description: "Weighted Moving Average"
+    inputs: 1
+    params:
+      - { name: period, default: 20, min: 1, max: 1000 }
+  kama:
+    class: org.ta4j.core.indicators.averages.KAMAIndicator
+    description: "Kaufman Adaptive Moving Average"
+    inputs: 1
+    params:
+      - { name: barCount, default: 10, min: 1, max: 500 }
+      - { name: fastBarCount, default: 2, min: 1, max: 500 }
+      - { name: slowBarCount, default: 30, min: 1, max: 1000 }
+  roc:
+    class: org.ta4j.core.indicators.ROCIndicator
+    description: "Rate of Change (momentum)"
+    inputs: 1
+    params:
+      - { name: period, default: 12, min: 1, max: 500 }
+  ppo:
+    class: org.ta4j.core.indicators.PPOIndicator
+    description: "Percentage Price Oscillator"
+    inputs: 1
+    params:
+      - { name: fast, default: 12, min: 1, max: 500 }
+      - { name: slow, default: 26, min: 2, max: 1000 }
+  dpo:
+    class: org.ta4j.core.indicators.DPOIndicator
+    description: "Detrended Price Oscillator"
+    inputs: 1
+    params:
+      - { name: period, default: 20, min: 1, max: 500 }
+  stddev:
+    class: org.ta4j.core.indicators.statistics.StandardDeviationIndicator
+    description: "Standard deviation over a window"
+    inputs: 1
+    params:
+      - { name: period, default: 20, min: 2, max: 500 }
+  mean_deviation:
+    class: org.ta4j.core.indicators.statistics.MeanDeviationIndicator
+    description: "Mean absolute deviation over a window"
+    inputs: 1
+    params:
+      - { name: period, default: 20, min: 1, max: 500 }
+  highest:
+    class: org.ta4j.core.indicators.helpers.HighestValueIndicator
+    description: "Highest value over a window"
+    inputs: 1
+    params:
+      - { name: period, default: 20, min: 1, max: 1000 }
+  lowest:
+    class: org.ta4j.core.indicators.helpers.LowestValueIndicator
+    description: "Lowest value over a window"
+    inputs: 1
+    params:
+      - { name: period, default: 20, min: 1, max: 1000 }
+  cci:
+    class: org.ta4j.core.indicators.CCIIndicator
+    description: "Commodity Channel Index"
+    inputs: 0
+    params:
+      - { name: period, default: 20, min: 1, max: 500 }
+  adx:
+    class: org.ta4j.core.indicators.adx.ADXIndicator
+    description: "Average Directional Index"
+    inputs: 0
+    params:
+      - { name: period, default: 14, min: 1, max: 500 }
+  williams_r:
+    class: org.ta4j.core.indicators.WilliamsRIndicator
+    description: "Williams %R"
+    inputs: 0
+    params:
+      - { name: period, default: 14, min: 1, max: 500 }
+  obv:
+    class: org.ta4j.core.indicators.volume.OnBalanceVolumeIndicator
+    description: "On-Balance Volume"
+    inputs: 0
+  parabolic_sar:
+    class: org.ta4j.core.indicators.ParabolicSarIndicator
+    description: "Parabolic SAR (default acceleration settings)"
+    inputs: 0

@@ -51,4 +51,9 @@ public final class Ta4jBars {
     public static BigDecimal toBd(Num n, int scale) {
         return n.bigDecimalValue().setScale(scale, RoundingMode.HALF_UP);
     }
+
+    /** Convert a BigDecimal to the series' Num type (single point of API coupling). */
+    public static Num num(BarSeries series, BigDecimal value) {
+        return series.numFactory().numOf(value);
+    }
 }
