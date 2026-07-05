@@ -160,21 +160,17 @@ webhook-only and require a trading token.
 
 | Tool | Description |
 |---|---|
-| `get_indicators` | Bundled indicators (ATR, Chandelier stop, MA cross, 52-week) in one call |
-| `get_atr` | Average True Range (volatility) |
-| `get_chandelier_stop` | Chandelier Exit stop-loss level (`breached=true` when price is below) |
-| `get_ma_cross` | Moving-average cross state: BULLISH / BEARISH |
-| `get_52w_range` | 52-week high and low |
-| `get_rsi` | Relative Strength Index |
-| `get_macd` | Moving Average Convergence Divergence |
-| `get_bollinger` | Bollinger Bands (upper/middle/lower) |
-| `get_stochastic` | Stochastic Oscillator (%K / %D) |
-| `get_adx` | Average Directional Index |
-| `get_cci` | Commodity Channel Index |
-| `get_williams_r` | Williams %R |
-| `get_obv` | On-Balance Volume |
+| `list_indicators` | Machine-readable indicator catalog: names, params with defaults, outputs |
+| `get_indicators` | Computes any set of catalog indicators in one call — composable specs (`{name, params, of, label}`), optional `series=N` for the last N values |
 | `get_r_framework` | Risk unit and R-multiple price levels |
 | `ping` | Liveness probe that returns `pong` plus any echoed message |
+
+The catalog ships with ~26 indicators (ATR, Chandelier stop, MA cross, 52-week range,
+RSI, MACD, Bollinger, Stochastic, ADX, OBV, CCI, Williams %R, SMA/EMA/WMA/KAMA, ROC,
+PPO, DPO, Aroon, Ichimoku, Parabolic SAR, and more). Operators can add any simple
+ta4j indicator without a rebuild: mount a YAML file and set
+`AGORA_RESEARCH_INDICATORS_FILE` (same format as `indicators-catalog.yaml`), then
+restart. Composable: `{"name":"sma","params":{"period":5},"of":{"name":"rsi"}}`.
 
 ### Trading / execution (`agora-trading`, trading token required)
 
