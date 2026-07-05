@@ -30,6 +30,7 @@ public class WikipediaService {
     private static final Logger log = LoggerFactory.getLogger(WikipediaService.class);
     private static final Pattern ISO_DATE = Pattern.compile("(\\d{4}-\\d{2}-\\d{2})");
     private static final Pattern WIKILINK = Pattern.compile("\\[\\[([^\\]]+)\\]\\]");
+    private static final Pattern TEMPLATE = Pattern.compile("\\{\\{([^{}]+)\\}\\}");
     private static final Pattern REF = Pattern.compile("<ref.*?(</ref>|/>)");
 
     private final RestClient http;
@@ -95,11 +96,20 @@ public class WikipediaService {
     }
 
     private List<Constituent> parse(String wikitext) {
-        int dateHdr = wikitext.indexOf("Date added");
-        if (dateHdr < 0) return List.of();
-        int tableStart = wikitext.lastIndexOf("{|", dateHdr);
-        int tableEnd = wikitext.indexOf("|}", dateHdr);
-        if (tableStart < 0 || tableEnd < 0 || tableEnd <= tableStart) return List.of();
+        // Anchor on the table's stable id rather than a column-header phrase: "Date added"
+        // also occurs in the lead-section <!--EDITORS...--> comment, which would send the
+        // backward {| search past the real table and yield an empty list.
+        int anchor = wikitext.indexOf("id=\"constituents\"");
+        if (anchor < 0) {
+            log.warn("Wikipedia S&P 500: constituents table anchor id=\"constituents\" not found");
+            return List.of();
+        }
+        int tableStart = wikitext.lastIndexOf("{|", anchor);
+        int tableEnd = wikitext.indexOf("|}", anchor);
+        if (tableStart < 0 || tableEnd < 0 || tableEnd <= tableStart) {
+            log.warn("Wikipedia S&P 500: constituents table bounds not found (start={}, end={})", tableStart, tableEnd);
+            return List.of();
+        }
         String block = wikitext.substring(tableStart, tableEnd);
 
         String[] rows = block.split("\\n\\|-");
@@ -165,13 +175,29 @@ public class WikipediaService {
 
     private static String stripWiki(String cell) {
         if (cell == null) return "";
-        String s = REF.matcher(cell).replaceAll("").trim();
-        Matcher m = WIKILINK.matcher(s);
-        if (m.find()) {
-            String inner = m.group(1);
+        String s = REF.matcher(cell).replaceAll("");
+        // {{NyseSymbol|MMM}} / {{NasdaqSymbol|AOS}} -> last template parameter (the ticker).
+        s = replaceInline(TEMPLATE, s, inner -> {
+            int pipe = inner.lastIndexOf('|');
+            return pipe >= 0 ? inner.substring(pipe + 1) : inner;
+        });
+        // [[target|display]] -> display, [[target]] -> target, replaced INLINE so surrounding
+        // cell text survives: "[[..|GICS]] Sector" -> "GICS Sector" (not just "GICS").
+        s = replaceInline(WIKILINK, s, inner -> {
             int pipe = inner.indexOf('|');
-            s = pipe >= 0 ? inner.substring(pipe + 1) : inner;
-        }
+            return pipe >= 0 ? inner.substring(pipe + 1) : inner;
+        });
         return s.trim();
+    }
+
+    /** Replace every match of {@code p} inline with a value derived from its first capture group. */
+    private static String replaceInline(Pattern p, String s, java.util.function.UnaryOperator<String> fn) {
+        Matcher m = p.matcher(s);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            m.appendReplacement(sb, Matcher.quoteReplacement(fn.apply(m.group(1)).trim()));
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 }
