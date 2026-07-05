@@ -308,3 +308,34 @@ The `ToolRegistry` picks it up automatically and it appears on `/mcp`, `/tools`,
 - **ta4j** for technical indicators
 - Apache HttpClient 5 for provider calls; WireMock for provider tests
 - Packaged as a single Docker image (`ghcr.io/visterion/agora:main`)
+
+---
+
+## Disclaimer
+
+Agora is **open-source software, not a managed service.** You self-host your own
+instance and supply your own broker and data-provider API keys.
+
+- **You run it; you own the data flow.** Agora ships code, not a data proxy. Market
+  data and orders flow directly between *your* instance and the provider/broker APIs
+  (Alpaca, IBKR, Finnhub, TwelveData, SEC EDGAR, …). The maintainers do not operate a
+  server and do not redistribute any market data.
+- **Your keys, your terms.** Because you configure your own API keys
+  (`AGORA_TRADING_ALPACA_KEY_ID`, `AGORA_DATA_FINNHUB_KEY`, …), you use your own
+  accounts and are bound by each provider's and broker's Terms of Service — including
+  any Professional / Non-Professional market-data classification. That is strictly
+  between you and them.
+- **Trade execution is at your own risk.** The `trading` tools place **real orders**
+  on whatever account your keys point to. A bug, a bad agent decision, or a provider
+  outage can cause financial loss. You are solely responsible for every order placed
+  through your instance. Test against a paper account first — Alpaca paper is the
+  default.
+- **No warranty.** As stated in the MIT license, the software is provided "AS IS",
+  without warranty of any kind. It is **not** financial, investment, legal, or tax
+  advice.
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 vivu
