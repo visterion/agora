@@ -37,12 +37,13 @@ class GetIndicatorsWebhookIT {
                 public String name() { return "indicators-stub"; }
                 public Quote quote(String s) { return new Quote(s, new BigDecimal("42.00"), BigDecimal.ZERO, "USD"); }
                 public List<OhlcBar> ohlc(String s, int d) {
-                    // 30 strictly rising closes → TR=2 each → ATR=2 (deterministic)
+                    // 30 strictly rising closes → RSI = 100 (deterministic)
                     List<OhlcBar> bars = new ArrayList<>(30);
                     LocalDate base = LocalDate.of(2025, 1, 2);
                     for (int i = 0; i < 30; i++) {
                         BigDecimal c = new BigDecimal(100 + i);
-                        bars.add(new OhlcBar(base.plusDays(i), c, c.add(BigDecimal.ONE), c.subtract(BigDecimal.ONE), c, 1000L));
+                        bars.add(new OhlcBar(base.plusDays(i), c, c.add(BigDecimal.ONE),
+                                c.subtract(BigDecimal.ONE), c, 1000L));
                     }
                     return bars;
                 }
@@ -50,27 +51,30 @@ class GetIndicatorsWebhookIT {
         }
     }
 
-    @Test void getIndicatorsOverWebhookWithBearer() {
+    @Test
+    void genericSpecOverWebhookWithBearer() {
         RestClient http = RestClient.create();
         ResponseEntity<String> resp = http.post()
                 .uri("http://localhost:" + port + "/tools/get_indicators")
                 .header("Authorization", "Bearer test-token")
                 .contentType(MediaType.APPLICATION_JSON)
-                .body("{\"symbol\":\"AAPL\"}")
+                .body("{\"symbol\":\"AAPL\",\"indicators\":[\"rsi\"]}")
                 .retrieve().toEntity(String.class);
         assertThat(resp.getStatusCode().value()).isEqualTo(200);
         assertThat(resp.getBody())
                 .contains("\"symbol\":\"AAPL\"")
-                .contains("\"available\":true")
-                .contains("\"atr\":2")
-                .contains("\"maCrossState\":");
+                .contains("\"label\":\"rsi\"")
+                .contains("\"value\":100")
+                .contains("\"available\":true");
     }
 
-    @Test void rejectsWithoutBearer() {
+    @Test
+    void rejectsWithoutBearer() {
         RestClient http = RestClient.create();
         try {
             http.post().uri("http://localhost:" + port + "/tools/get_indicators")
-                    .contentType(MediaType.APPLICATION_JSON).body("{\"symbol\":\"AAPL\"}")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body("{\"symbol\":\"AAPL\",\"indicators\":[\"rsi\"]}")
                     .retrieve().toBodilessEntity();
             fail("expected 401");
         } catch (HttpClientErrorException e) {
