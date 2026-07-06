@@ -30,6 +30,7 @@ class EdgarSearchServiceTest {
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000050:aapl-1012b.htm","_source":{
+                         "ciks":["0000320193"],
                          "display_names":["Apple Spinco Inc. (CIK 0000320193)"],
                          "tickers":["SPNC"],"file_date":"2025-05-02","file_type":"10-12B"}}
                     ]}}
@@ -105,7 +106,8 @@ class EdgarSearchServiceTest {
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000099:form4.xml","_source":{
-                         "display_names":["Cook Timothy (CIK 0000000001)"],"tickers":["AAPL"],
+                         "ciks":["0000320193"],
+                         "display_names":["Cook Timothy (CIK 0000000001)"],
                          "file_date":"2025-05-05","file_type":"4"}}
                     ]}}
                     """)));
@@ -113,6 +115,7 @@ class EdgarSearchServiceTest {
         wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml"))
                 .willReturn(aResponse().withStatus(200).withHeader("Content-Type","application/xml").withBody("""
                     <ownershipDocument>
+                      <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
                       <reportingOwner><reportingOwnerId><rptOwnerName>Cook Timothy</rptOwnerName></reportingOwnerId>
                         <reportingOwnerRelationship><officerTitle>CEO</officerTitle></reportingOwnerRelationship></reportingOwner>
                       <nonDerivativeTable><nonDerivativeTransaction>
@@ -139,13 +142,90 @@ class EdgarSearchServiceTest {
         assertThat(t.dollarValue()).isEqualByComparingTo("190000"); // 1000 * 190
     }
 
+    @Test void form4RealEftsStructureParsesTickerFromXml() {
+        // Real efts Form-4 _source: has `ciks` (array), `display_names`, file_type/file_date —
+        // but NO `tickers` field. The ticker must come from the fetched XML (issuerTradingSymbol).
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000099:form4.xml","_source":{
+                         "ciks":["0000320193"],
+                         "display_names":["Apple Inc.  (CIK 0000320193)"],
+                         "file_date":"2025-05-05","file_type":"4"}}
+                    ]}}
+                    """)));
+        // Archive path derived from ciks[0] (320193), not from an absent tickers field.
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type","application/xml").withBody("""
+                    <ownershipDocument>
+                      <issuer><issuerCik>0000320193</issuerCik><issuerName>Apple Inc.</issuerName>
+                        <issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerName>Cook Timothy</rptOwnerName></reportingOwnerId>
+                        <reportingOwnerRelationship><officerTitle>CEO</officerTitle></reportingOwnerRelationship></reportingOwner>
+                      <nonDerivativeTable><nonDerivativeTransaction>
+                        <transactionDate><value>2025-05-05</value></transactionDate>
+                        <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                        <transactionAmounts>
+                          <transactionShares><value>1000</value></transactionShares>
+                          <transactionPricePerShare><value>190.00</value></transactionPricePerShare>
+                        </transactionAmounts>
+                      </nonDerivativeTransaction></nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis);
+        List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
+        assertThat(tx).hasSize(1);
+        assertThat(tx.get(0).ticker()).isEqualTo("AAPL");
+        assertThat(tx.get(0).filerName()).isEqualTo("Cook Timothy");
+        assertThat(tx.get(0).code()).isEqualTo("P");
+    }
+
+    @Test void form4UsesCiksNotAccessionPrefixForArchiveUrl() {
+        // Accession prefix is the filing-agent CIK (1140361); the correct archive-path CIK is
+        // ciks[0] (2140696). The old code built the URL from the accession prefix → 404 → empty.
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0001140361-26-025622:form4.xml","_source":{
+                         "ciks":["0002140696"],
+                         "display_names":["Some Filer (CIK 0002140696)"],
+                         "file_date":"2026-01-05","file_type":"4"}}
+                    ]}}
+                    """)));
+        // Only the ciks[0]-derived path is stubbed; the accession-prefix path (1140361) is not.
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/2140696/000114036126025622/form4.xml"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type","application/xml").withBody("""
+                    <ownershipDocument>
+                      <issuer><issuerTradingSymbol>NPB</issuerTradingSymbol></issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerName>Jane Filer</rptOwnerName></reportingOwnerId></reportingOwner>
+                      <nonDerivativeTable><nonDerivativeTransaction>
+                        <transactionDate><value>2026-01-05</value></transactionDate>
+                        <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+                        <transactionAmounts>
+                          <transactionShares><value>500</value></transactionShares>
+                          <transactionPricePerShare><value>10.00</value></transactionPricePerShare>
+                        </transactionAmounts>
+                      </nonDerivativeTransaction></nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis);
+        List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100);
+        assertThat(tx).hasSize(1);
+        assertThat(tx.get(0).ticker()).isEqualTo("NPB");
+    }
+
     @Test void form4WithDoctypeExternalEntityIsSkipped() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
                 .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000099:form4.xml","_source":{
-                         "display_names":["Cook Timothy (CIK 0000000001)"],"tickers":["AAPL"],
+                         "ciks":["0000320193"],
+                         "display_names":["Cook Timothy (CIK 0000000001)"],
                          "file_date":"2025-05-05","file_type":"4"}}
                     ]}}
                     """)));
