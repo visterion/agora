@@ -142,12 +142,18 @@ public class EdgarSearchService {
         String[] parts = id.split(":");
         if (parts.length == 2) {
             accession = parts[0];
-            try {
-                String accessionNoDashes = accession.replace("-", "");
-                long cik = Long.parseLong(accessionNoDashes.substring(0, Math.min(10, accessionNoDashes.length())));
-                url = archiveBase + "/Archives/edgar/data/" + cik + "/" + accessionNoDashes + "/" + parts[1];
-            } catch (Exception e) {
-                // url stays empty when the accession is non-numeric; hit is still returned
+            // Archive-path CIK comes from _source.ciks[0], NOT the accession prefix: the accession
+            // prefix is the filing-agent CIK, which is often not the archive path CIK. Long.parseLong
+            // strips the leading zeros that SEC archive paths omit (/data/320193/, not /data/0000320193/).
+            JsonNode ciks = src.path("ciks");
+            if (ciks.isArray() && !ciks.isEmpty()) {
+                try {
+                    String accessionNoDashes = accession.replace("-", "");
+                    long cik = Long.parseLong(ciks.get(0).asString(""));
+                    url = archiveBase + "/Archives/edgar/data/" + cik + "/" + accessionNoDashes + "/" + parts[1];
+                } catch (Exception e) {
+                    // url stays empty when ciks[0] is non-numeric; hit is still returned
+                }
             }
         }
 
@@ -180,8 +186,6 @@ public class EdgarSearchService {
     }
 
     private void parseForm4(FilingHit hit, List<Form4Transaction> out) throws Exception {
-        String ticker = hit.ticker();
-        if (ticker == null || ticker.isEmpty()) return;
         if (hit.url() == null || hit.url().isEmpty()) return;
 
         String xml;
@@ -195,6 +199,12 @@ public class EdgarSearchService {
 
         var doc = DBF.newDocumentBuilder()
                 .parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+        // The efts _source has no ticker; it lives in the fetched Form-4 XML. May be empty
+        // (e.g. some amendments) — emit the transaction anyway, filer/issuer are still known.
+        String ticker = "";
+        var symbols = doc.getElementsByTagName("issuerTradingSymbol");
+        if (symbols.getLength() > 0) ticker = symbols.item(0).getTextContent().trim();
+
         var owners = doc.getElementsByTagName("reportingOwner");
         String filerName = "";
         String filerRole = "";
