@@ -65,6 +65,7 @@ public class GetRFrameworkTool implements AgoraTool {
         props.putObject("symbol").put("type", "string").put("description", "Ticker symbol");
         props.putObject("stopLevel").put("type", "number").put("description", "explicit stop price (else derived from ATR)");
         props.putObject("atrMultiple").put("type", "number").put("description", "ATR multiple for derived stop (default " + defaultAtrMultiple + ")");
+        props.putObject("direction").put("type", "string").put("description", "long (default) or short");
         ObjectNode rm = props.putObject("rMultiples");
         rm.put("type", "array").put("description", "R multiples for target levels (default " + defaultRMultiples + ")");
         rm.putObject("items").put("type", "number");
@@ -93,19 +94,28 @@ public class GetRFrameworkTool implements AgoraTool {
         if (ind.currentClose() == null) return ToolResult.unavailable("no price for " + symbol);
         BigDecimal price = ind.currentClose();
 
+        String direction = args.hasNonNull("direction") ? args.get("direction").asString() : "long";
+        boolean isShort = "short".equalsIgnoreCase(direction);
+
         BigDecimal stopLevel;
         if (args.has("stopLevel") && !args.get("stopLevel").isNull()) {
             stopLevel = new BigDecimal(args.get("stopLevel").asString());
+            if (!isShort && stopLevel.compareTo(price) >= 0)
+                return ToolResult.unavailable("stopLevel must be below price for a long");
+            if (isShort && stopLevel.compareTo(price) <= 0)
+                return ToolResult.unavailable("stopLevel must be above price for a short");
         } else if (ind.atrAvailable()) {
-            stopLevel = price.subtract(atrMultiple.multiply(ind.atr(), MC));
+            BigDecimal delta = atrMultiple.multiply(ind.atr(), MC);
+            stopLevel = isShort ? price.add(delta) : price.subtract(delta);
         } else {
             return ToolResult.unavailable("insufficient history to derive stop and no stopLevel provided");
         }
 
-        BigDecimal riskPerUnit = price.subtract(stopLevel);
+        BigDecimal riskPerUnit = isShort ? stopLevel.subtract(price) : price.subtract(stopLevel);
 
         ObjectNode out = mapper.createObjectNode();
         out.put("symbol", symbol);
+        out.put("direction", isShort ? "short" : "long");
         out.put("price", price);
         out.put("stopLevel", stopLevel);
         out.put("riskPerUnit", riskPerUnit);
@@ -113,7 +123,8 @@ public class GetRFrameworkTool implements AgoraTool {
         for (BigDecimal m : rMultiples) {
             ObjectNode t = targets.addObject();
             t.put("rMultiple", m);
-            t.put("level", price.add(m.multiply(riskPerUnit, MC)));
+            t.put("level", isShort ? price.subtract(m.multiply(riskPerUnit, MC))
+                                   : price.add(m.multiply(riskPerUnit, MC)));
         }
         out.put("available", true);
         return ToolResult.ok(out);
