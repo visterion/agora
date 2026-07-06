@@ -13,4 +13,5 @@ public interface BrokerProvider {
     List<Order> orders(String status);
     Account account();
     Order orderByClientRef(String clientRef);
+    OrderResult cancel(String brokerOrderId);
 }

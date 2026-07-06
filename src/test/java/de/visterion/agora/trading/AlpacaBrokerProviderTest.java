@@ -320,4 +320,33 @@ class AlpacaBrokerProviderTest {
                 .isInstanceOfSatisfying(BrokerException.class, ex ->
                         assertThat(ex.kind()).isEqualTo(BrokerException.Kind.NOT_FOUND));
     }
+
+    // ---- cancel ----
+
+    @Test
+    void cancel_204_returnsAccepted() {
+        wm.stubFor(delete(urlEqualTo("/orders/oid-1")).willReturn(aResponse().withStatus(204)));
+        var r = provider.cancel("oid-1");
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.brokerOrderId()).isEqualTo("oid-1");
+        assertThat(r.status()).isEqualTo("canceled");
+    }
+
+    @Test
+    void cancel_404_throwsNotFound() {
+        wm.stubFor(delete(urlEqualTo("/orders/missing")).willReturn(aResponse().withStatus(404)));
+        assertThatThrownBy(() -> provider.cancel("missing"))
+            .isInstanceOf(BrokerException.class);
+    }
+
+    @Test
+    void cancel_422_returnsRejected() {
+        wm.stubFor(delete(urlEqualTo("/orders/filled"))
+            .willReturn(aResponse().withStatus(422).withHeader("Content-Type","application/json")
+                .withBody("{\"message\":\"order is already filled\"}")));
+        var r = provider.cancel("filled");
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectReason()).contains("already filled");
+        assertThat(r.rejectCode()).isEqualTo("422");
+    }
 }

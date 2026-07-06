@@ -83,6 +83,11 @@ class PlaceBracketWebhookIT {
                 public de.visterion.agora.trading.Order orderByClientRef(String clientRef) {
                     return new de.visterion.agora.trading.Order("oid-1", clientRef, "AAPL", "buy", BigDecimal.ONE, "limit", "new");
                 }
+
+                @Override
+                public OrderResult cancel(String brokerOrderId) {
+                    return OrderResult.accepted(brokerOrderId, null, "canceled");
+                }
             };
         }
     }

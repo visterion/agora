@@ -129,6 +129,22 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         }
     }
 
+    @Override
+    public OrderResult cancel(String brokerOrderId) {
+        try {
+            client.delete()
+                    .uri("/orders/{id}", brokerOrderId)
+                    .retrieve()
+                    .toBodilessEntity();
+            return OrderResult.accepted(brokerOrderId, null, "canceled");
+        } catch (RestClientResponseException e) {
+            return handleWriteError(e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "Alpaca cancel failed: " + e.getMessage(), e);
+        }
+    }
+
     // ---- Read operations ----
 
     @Override
