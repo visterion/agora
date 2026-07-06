@@ -18,3 +18,5 @@ dist/
 /*-preview.png
 # Added by code-review-graph
 .code-review-graph/
+# Local Claude Code settings (deploy permissions, host-specific — never public)
+.claude/settings.local.json
