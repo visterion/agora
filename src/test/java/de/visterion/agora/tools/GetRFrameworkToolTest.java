@@ -25,6 +25,17 @@ class GetRFrameworkToolTest {
         return bars;
     }
 
+    private List<OhlcBar> flatCloseWithAtr(int n, String close, String halfBand) {
+        // high/low band ±halfBand so TR = 2*halfBand each bar → ATR = 2*halfBand
+        List<OhlcBar> bars = new ArrayList<>();
+        BigDecimal c = new BigDecimal(close);
+        BigDecimal h = new BigDecimal(halfBand);
+        for (int i = 0; i < n; i++)
+            bars.add(new OhlcBar(LocalDate.parse("2025-01-01").plusDays(i),
+                    c, c.add(h), c.subtract(h), c, 1000L));
+        return bars;
+    }
+
     private MarketDataService svcWith(List<OhlcBar> bars) {
         MarketDataProvider p = new MarketDataProvider() {
             public String name() { return "stub"; }
@@ -39,6 +50,12 @@ class GetRFrameworkToolTest {
                 3, new BigDecimal("3.0"), 2, 4, 5));
         return new GetRFrameworkTool(svcWith(bars), ind, new BigDecimal("3.0"),
                 List.of(BigDecimal.ONE, new BigDecimal("2")), 260);
+    }
+
+    private GetRFrameworkTool toolWithMultiples(List<OhlcBar> bars, List<BigDecimal> multiples) {
+        IndicatorService ind = new IndicatorService(new IndicatorService.Params(
+                3, new BigDecimal("3.0"), 2, 4, 5));
+        return new GetRFrameworkTool(svcWith(bars), ind, new BigDecimal("3.0"), multiples, 260);
     }
 
     @Test void explicitStopComputesRiskAndTargets() {
@@ -72,5 +89,47 @@ class GetRFrameworkToolTest {
         // only 2 bars, atrPeriod=3 → ATR unavailable, no explicit stop → unavailable
         var r = tool(flatClose(2, "100")).call(mapper.createObjectNode().put("symbol", "AAPL"));
         assertThat(r.available()).isFalse();
+    }
+
+    @Test void short_derivesStopAbovePrice_andDescendingTargets() {
+        // price=100, atr=10, atrMultiple=3 → stop=130, risk=30, targets: 70, 40, 10
+        var bars = flatCloseWithAtr(10, "100", "5");
+        var t = toolWithMultiples(bars, List.of(BigDecimal.ONE, new BigDecimal("2"), new BigDecimal("3")));
+        var args = mapper.createObjectNode();
+        args.put("symbol", "X");
+        args.put("direction", "short");
+        var r = t.call(args);
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().path("direction").asString()).isEqualTo("short");
+        assertThat(r.output().path("stopLevel").decimalValue()).isEqualByComparingTo("130");
+        assertThat(r.output().path("riskPerUnit").decimalValue()).isEqualByComparingTo("30");
+        assertThat(r.output().path("targets").get(0).path("level").decimalValue()).isEqualByComparingTo("70");
+        assertThat(r.output().path("targets").get(1).path("level").decimalValue()).isEqualByComparingTo("40");
+        assertThat(r.output().path("targets").get(2).path("level").decimalValue()).isEqualByComparingTo("10");
+    }
+
+    @Test void short_explicitStopBelowPrice_isRejected() {
+        var bars = flatCloseWithAtr(10, "100", "5");
+        var args = mapper.createObjectNode();
+        args.put("symbol", "X");
+        args.put("direction", "short");
+        args.put("stopLevel", 90); // must be ABOVE price for short
+        var r = tool(bars).call(args);
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test void long_withoutDirection_unchanged() {
+        // price=100, atr=10, atrMultiple=3 → stop=70, targets 130,160,190
+        var bars = flatCloseWithAtr(10, "100", "5");
+        var t = toolWithMultiples(bars, List.of(BigDecimal.ONE, new BigDecimal("2"), new BigDecimal("3")));
+        var args = mapper.createObjectNode();
+        args.put("symbol", "X");
+        var r = t.call(args);
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().path("stopLevel").decimalValue()).isEqualByComparingTo("70");
+        assertThat(r.output().path("direction").asString()).isEqualTo("long");
+        assertThat(r.output().path("targets").get(0).path("level").decimalValue()).isEqualByComparingTo("130");
+        assertThat(r.output().path("targets").get(1).path("level").decimalValue()).isEqualByComparingTo("160");
+        assertThat(r.output().path("targets").get(2).path("level").decimalValue()).isEqualByComparingTo("190");
     }
 }
