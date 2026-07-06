@@ -16,6 +16,7 @@ class BrokerServiceTest {
             public List<Order> orders(String status) { return List.of(); }
             public Account account() { return new Account("acc-1", BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, "USD", "ACTIVE"); }
             public Order orderByClientRef(String ref) { return new Order("oid-1", ref, "AAPL", "buy", BigDecimal.ONE, "limit", "new"); }
+            public OrderResult cancel(String brokerOrderId) { return OrderResult.accepted(brokerOrderId, null, "canceled"); }
         };
     }
 

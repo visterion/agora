@@ -17,4 +17,5 @@ public class BrokerService {
     public List<Order> orders(String status) { return provider.orders(status); }
     public Account account() { return provider.account(); }
     public Order orderByClientRef(String ref) { return provider.orderByClientRef(ref); }
+    public OrderResult cancel(String brokerOrderId) { return provider.cancel(brokerOrderId); }
 }
