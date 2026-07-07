@@ -193,4 +193,13 @@ class BearerTokenFilterTest {
         assertThat(res.getStatus()).isEqualTo(401);
         assertThat(req.getAttribute(BearerTokenFilter.TOKEN_ATTR)).isNull();
     }
+
+    @Test
+    void saxoAuthPathsArePublic() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/auth/saxo/callback");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        filter.doFilter(req, res, chain);          // no Authorization header
+        verify(chain).doFilter(any(), any());
+    }
 }
