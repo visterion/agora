@@ -60,6 +60,15 @@ class SaxoTokenStoreTest {
     }
 
     @Test
+    void updateLeavesNoTmpFileBehind() throws Exception {
+        var s = store("saxo-sim");
+        s.update("acc-1", 1200, "ref-1");
+        s.update("acc-2", 1200, "ref-2");
+        Path tmp = dir.resolve("saxo-sim.token.tmp");
+        assertThat(Files.exists(tmp)).isFalse();
+    }
+
+    @Test
     void updateOverwritesPreviousRefreshToken() {
         var s = store("saxo-sim");
         s.update("acc-1", 1200, "ref-1");
