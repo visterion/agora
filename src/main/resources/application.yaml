@@ -34,6 +34,10 @@ agora:
     finnhub:
       base-url: ${AGORA_DATA_FINNHUB_BASE_URL:https://finnhub.io/api/v1}
       key: ${AGORA_DATA_FINNHUB_KEY:}
+    alpaca:
+      base-url: ${AGORA_DATA_ALPACA_BASE_URL:https://data.alpaca.markets}
+      key-id: ${AGORA_DATA_ALPACA_KEY_ID:}
+      secret: ${AGORA_DATA_ALPACA_SECRET:}
     edgar:
       user-agent: ${AGORA_DATA_EDGAR_USER_AGENT:agora agora@visterion.de}
       efts-base-url: ${AGORA_DATA_EDGAR_EFTS_BASE_URL:https://efts.sec.gov}
