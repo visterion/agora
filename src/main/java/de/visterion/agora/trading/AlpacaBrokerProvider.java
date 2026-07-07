@@ -33,9 +33,9 @@ public class AlpacaBrokerProvider implements BrokerProvider {
      */
     @Autowired
     AlpacaBrokerProvider(
-            @Value("${agora.trading.alpaca.base-url}") String baseUrl,
-            @Value("${agora.trading.alpaca.key-id}") String keyId,
-            @Value("${agora.trading.alpaca.secret}") String secret) {
+            @Value("${agora.trading.connections.alpaca-paper.base-url}") String baseUrl,
+            @Value("${agora.trading.connections.alpaca-paper.key-id}") String keyId,
+            @Value("${agora.trading.connections.alpaca-paper.secret}") String secret) {
         this.client = RestClient.builder()
                 .requestFactory(new HttpComponentsClientHttpRequestFactory(
                         HttpClients.custom().disableAutomaticRetries().build()))
