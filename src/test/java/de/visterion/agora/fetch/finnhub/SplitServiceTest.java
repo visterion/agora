@@ -37,4 +37,16 @@ class SplitServiceTest {
         wm.stubFor(get(urlPathEqualTo("/stock/split")).willReturn(okJson("[]")));
         assertThat(svc("k").splits("NVDA")).isEmpty();
     }
+
+    @Test void malformedEntry_isSkipped_validEntryStillReturned() {
+        wm.stubFor(get(urlPathEqualTo("/stock/split"))
+            .withQueryParam("symbol", equalTo("NVDA"))
+            .willReturn(okJson("""
+                [{"symbol":"NVDA","date":"not-a-date","fromFactor":1,"toFactor":10},
+                 {"symbol":"NVDA","date":"2024-06-10","fromFactor":1,"toFactor":10}]
+                """)));
+        List<SplitEvent> s = svc("k").splits("NVDA");
+        assertThat(s).hasSize(1);
+        assertThat(s.get(0).date().toString()).isEqualTo("2024-06-10");
+    }
 }

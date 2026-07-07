@@ -79,6 +79,19 @@ class GetEpsHistoryToolTest {
         assertThat(r.output().path("eps").get(0).path("value").decimalValue()).isEqualByComparingTo("6.13");
     }
 
+    @Test void adjusted_splitFetchThrows_fallsBackToReported() {
+        EdgarService edgar = mock(EdgarService.class);
+        SplitService splits = mock(SplitService.class);
+        when(edgar.epsHistory("AAPL", null)).thenReturn(List.of(pt("2024-01-28", "6.13")));
+        when(splits.splits("AAPL")).thenThrow(new RuntimeException("boom"));
+        var tool = new GetEpsHistoryTool(edgar, splits);
+        ObjectNode args = mapper.createObjectNode(); args.put("symbol", "AAPL"); args.put("adjusted", true);
+        ToolResult r = tool.call(args);
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().path("adjusted").asBoolean()).isFalse();
+        assertThat(r.output().path("eps").get(0).path("value").decimalValue()).isEqualByComparingTo("6.13");
+    }
+
     @Test void default_isAsReported() {
         EdgarService edgar = mock(EdgarService.class);
         SplitService splits = mock(SplitService.class);

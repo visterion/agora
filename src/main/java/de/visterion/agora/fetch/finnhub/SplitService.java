@@ -56,10 +56,14 @@ public class SplitService {
         List<SplitEvent> out = new ArrayList<>();
         if (arr != null && arr.isArray()) {
             for (JsonNode n : arr) {
-                out.add(new SplitEvent(
-                        LocalDate.parse(n.path("date").asString()),
-                        n.path("fromFactor").decimalValue(),
-                        n.path("toFactor").decimalValue()));
+                try {
+                    out.add(new SplitEvent(
+                            LocalDate.parse(n.path("date").asString()),
+                            n.path("fromFactor").decimalValue(),
+                            n.path("toFactor").decimalValue()));
+                } catch (RuntimeException e) {
+                    continue; // skip malformed entry, keep well-formed ones
+                }
             }
         }
         return out;
