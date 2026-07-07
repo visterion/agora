@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PlaceBracketToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private PlaceBracketTool tool(BrokerProvider p) { return new PlaceBracketTool(new BrokerService(p)); }
+    private PlaceBracketTool tool(BrokerProvider p) { return new PlaceBracketTool(TestConnections.service(p)); }
 
     private BrokerProvider accepting() {
         return new StubBroker() {
@@ -23,7 +23,7 @@ class PlaceBracketToolTest {
 
     @Test void acceptedShape() {
         ObjectNode a = mapper.createObjectNode();
-        a.put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110).put("clientRef","ref-1");
+        a.put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110).put("clientRef","ref-1");
         var r = tool(accepting()).call(a);
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("accepted").asBoolean()).isTrue();
@@ -32,7 +32,7 @@ class PlaceBracketToolTest {
 
     @Test void rejectedShape() {
         var r = tool(new StubBroker(){ public OrderResult submitBracket(BracketOrderRequest req){ return OrderResult.rejected("insufficient buying power","403"); }})
-                .call(mapper.createObjectNode().put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
+                .call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("accepted").asBoolean()).isFalse();
         assertThat(r.output().get("rejectReason").asString()).contains("buying power");
@@ -40,41 +40,47 @@ class PlaceBracketToolTest {
 
     @Test void unavailableOnBrokerException() {
         var r = tool(new StubBroker(){ public OrderResult submitBracket(BracketOrderRequest req){ throw new BrokerException(BrokerException.Kind.UNAVAILABLE,"down",null); }})
-                .call(mapper.createObjectNode().put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
+                .call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
         assertThat(r.available()).isFalse();
     }
 
     @Test void unavailableOnMissingSymbol() {
-        var r = tool(accepting()).call(mapper.createObjectNode().put("side","buy").put("qty",1));
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("side","buy").put("qty",1));
         assertThat(r.available()).isFalse();
     }
 
     @Test void unavailableOnMissingSide() {
-        var r = tool(accepting()).call(mapper.createObjectNode().put("symbol","AAPL").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
         assertThat(r.available()).isFalse();
     }
 
     @Test void unavailableOnMissingQty() {
-        var r = tool(accepting()).call(mapper.createObjectNode().put("symbol","AAPL").put("side","buy").put("stopLossStop",95).put("takeProfitLimit",110));
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("stopLossStop",95).put("takeProfitLimit",110));
         assertThat(r.available()).isFalse();
     }
 
     @Test void unavailableOnMissingStopLossStop() {
-        var r = tool(accepting()).call(mapper.createObjectNode().put("symbol","AAPL").put("side","buy").put("qty",1).put("takeProfitLimit",110));
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("takeProfitLimit",110));
         assertThat(r.available()).isFalse();
     }
 
     @Test void unavailableOnMissingTakeProfitLimit() {
-        var r = tool(accepting()).call(mapper.createObjectNode().put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95));
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95));
         assertThat(r.available()).isFalse();
     }
 
     @Test void clientRefPassedThrough() {
         ObjectNode a = mapper.createObjectNode();
-        a.put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110).put("clientRef","my-ref");
+        a.put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110).put("clientRef","my-ref");
         var r = tool(accepting()).call(a);
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("clientRef").asString()).isEqualTo("my-ref");
+    }
+
+    @Test void missingConnectionUnavailable() {
+        var r = tool(accepting()).call(mapper.createObjectNode().put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("connection");
     }
 
     /** Stub with sensible defaults; tests override one method. */

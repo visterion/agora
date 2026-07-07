@@ -26,21 +26,27 @@ public class GetPositionsTool implements AgoraTool {
 
     @Override
     public String description() {
-        return "List all open positions held by the active broker account.";
+        return "List all open positions held by the account on the named connection.";
     }
 
     @Override
     public ObjectNode inputSchema() {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
-        schema.putObject("properties");
+        ObjectNode props = schema.putObject("properties");
+        props.putObject("connection").put("type", "string")
+                .put("description", "Target connection id (see list_connections)");
+        schema.putArray("required").add("connection");
         return schema;
     }
 
     @Override
     public ToolResult call(JsonNode args) {
+        if (args == null || !args.hasNonNull("connection"))
+            return ToolResult.unavailable("missing required argument: connection");
+        String connection = args.get("connection").asString();
         try {
-            List<Position> positions = broker.positions();
+            List<Position> positions = broker.positions(connection);
             ObjectNode out = mapper.createObjectNode();
             ArrayNode arr = out.putArray("positions");
             for (Position p : positions) {

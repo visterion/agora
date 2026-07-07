@@ -3,11 +3,8 @@ package de.visterion.agora.trading;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
-import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
@@ -16,26 +13,18 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Alpaca paper-trading broker provider.
+ * Alpaca broker provider (paper or live per connection config).
  * Auth via APCA-API-KEY-ID / APCA-API-SECRET-KEY default headers.
  * 3-outcome mapping: 2xx→accepted, 403/422→rejected, 404→NOT_FOUND, else→UNAVAILABLE.
  */
-@Component
 public class AlpacaBrokerProvider implements BrokerProvider {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final RestClient client;
 
-    /**
-     * Primary constructor — package-private so tests can construct directly.
-     * Spring uses it via @Autowired with @Value bindings.
-     */
-    @Autowired
-    AlpacaBrokerProvider(
-            @Value("${agora.trading.connections.alpaca-paper.base-url}") String baseUrl,
-            @Value("${agora.trading.connections.alpaca-paper.key-id}") String keyId,
-            @Value("${agora.trading.connections.alpaca-paper.secret}") String secret) {
+    /** Instances are built by AlpacaBrokerProviderFactory, one per active connection. */
+    AlpacaBrokerProvider(String baseUrl, String keyId, String secret) {
         this.client = RestClient.builder()
                 .requestFactory(new HttpComponentsClientHttpRequestFactory(
                         HttpClients.custom().disableAutomaticRetries().build()))

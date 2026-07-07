@@ -10,7 +10,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class FlattenToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private FlattenTool tool(BrokerProvider p) { return new FlattenTool(new BrokerService(p)); }
+    private FlattenTool tool(BrokerProvider p) { return new FlattenTool(TestConnections.service(p)); }
 
     private StubBroker accepting() {
         return new StubBroker() {
@@ -23,7 +23,7 @@ class FlattenToolTest {
     @Test void namespaceIsTrading() { assertThat(tool(accepting()).namespace()).isEqualTo("trading"); }
 
     @Test void acceptedShape() {
-        var r = tool(accepting()).call(mapper.createObjectNode().put("symbol","AAPL"));
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL"));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("accepted").asBoolean()).isTrue();
         assertThat(r.output().get("orderId").asString()).isEqualTo("oid-flat");
@@ -35,7 +35,7 @@ class FlattenToolTest {
                 return OrderResult.rejected("no position found", "422");
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode().put("symbol","AAPL"));
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL"));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("accepted").asBoolean()).isFalse();
         assertThat(r.output().get("rejectReason").asString()).contains("position");
@@ -47,13 +47,19 @@ class FlattenToolTest {
                 throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "down", null);
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode().put("symbol","AAPL"));
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL"));
         assertThat(r.available()).isFalse();
     }
 
     @Test void unavailableOnMissingSymbol() {
-        var r = tool(accepting()).call(mapper.createObjectNode());
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isFalse();
+    }
+
+    @Test void missingConnectionUnavailable() {
+        var r = tool(accepting()).call(mapper.createObjectNode().put("symbol","AAPL"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("connection");
     }
 
     static class StubBroker implements BrokerProvider {

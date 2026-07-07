@@ -26,7 +26,7 @@ public class PlaceBracketTool implements AgoraTool {
 
     @Override
     public String description() {
-        return "Place a bracket order (entry + stop-loss + take-profit) with the active broker.";
+        return "Place a bracket order (entry + stop-loss + take-profit) on the named connection.";
     }
 
     @Override
@@ -34,6 +34,8 @@ public class PlaceBracketTool implements AgoraTool {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        props.putObject("connection").put("type", "string")
+                .put("description", "Target connection id (see list_connections)");
         props.putObject("symbol").put("type", "string").put("description", "Ticker symbol");
         props.putObject("side").put("type", "string").put("description", "buy or sell");
         props.putObject("qty").put("type", "number").put("description", "Quantity");
@@ -44,13 +46,16 @@ public class PlaceBracketTool implements AgoraTool {
         props.putObject("stopLossLimit").put("type", "number").put("description", "Stop-loss limit price (optional)");
         props.putObject("takeProfitLimit").put("type", "number").put("description", "Take-profit limit price");
         props.putObject("clientRef").put("type", "string").put("description", "Client reference ID (optional)");
-        schema.putArray("required").add("symbol").add("side").add("qty").add("stopLossStop").add("takeProfitLimit");
+        schema.putArray("required").add("connection").add("symbol").add("side").add("qty").add("stopLossStop").add("takeProfitLimit");
         return schema;
     }
 
     @Override
     public ToolResult call(JsonNode args) {
-        if (args == null || !args.hasNonNull("symbol"))
+        if (args == null || !args.hasNonNull("connection"))
+            return ToolResult.unavailable("missing required argument: connection");
+        String connection = args.get("connection").asString();
+        if (!args.hasNonNull("symbol"))
             return ToolResult.unavailable("missing required argument: symbol");
         if (!args.hasNonNull("side"))
             return ToolResult.unavailable("missing required argument: side");
@@ -86,7 +91,7 @@ public class PlaceBracketTool implements AgoraTool {
                 stopLossStop, stopLossLimit, takeProfitLimit, clientRef);
 
         try {
-            OrderResult r = broker.submitBracket(req);
+            OrderResult r = broker.submitBracket(connection, req);
             return mapResult(r);
         } catch (BrokerException e) {
             return ToolResult.unavailable(e.getMessage());

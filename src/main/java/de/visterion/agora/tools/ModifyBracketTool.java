@@ -25,7 +25,7 @@ public class ModifyBracketTool implements AgoraTool {
 
     @Override
     public String description() {
-        return "Modify the stop-loss and/or take-profit levels of an existing bracket order.";
+        return "Modify the stop-loss and/or take-profit levels of an existing bracket order on the named connection.";
     }
 
     @Override
@@ -33,16 +33,21 @@ public class ModifyBracketTool implements AgoraTool {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        props.putObject("connection").put("type", "string")
+                .put("description", "Target connection id (see list_connections)");
         props.putObject("orderId").put("type", "string").put("description", "Broker order ID");
         props.putObject("stop").put("type", "number").put("description", "New stop-loss stop price");
         props.putObject("target").put("type", "number").put("description", "New take-profit limit price");
-        schema.putArray("required").add("orderId");
+        schema.putArray("required").add("connection").add("orderId");
         return schema;
     }
 
     @Override
     public ToolResult call(JsonNode args) {
-        if (args == null || !args.hasNonNull("orderId"))
+        if (args == null || !args.hasNonNull("connection"))
+            return ToolResult.unavailable("missing required argument: connection");
+        String connection = args.get("connection").asString();
+        if (!args.hasNonNull("orderId"))
             return ToolResult.unavailable("missing required argument: orderId");
 
         String orderId = args.get("orderId").asString();
@@ -53,7 +58,7 @@ public class ModifyBracketTool implements AgoraTool {
             return ToolResult.unavailable("must provide at least one of: stop, target");
 
         try {
-            OrderResult r = broker.modifyBracket(orderId, stop, target);
+            OrderResult r = broker.modifyBracket(connection, orderId, stop, target);
             return mapResult(r);
         } catch (BrokerException e) {
             return ToolResult.unavailable(e.getMessage());

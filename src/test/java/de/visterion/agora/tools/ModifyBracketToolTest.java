@@ -10,7 +10,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ModifyBracketToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private ModifyBracketTool tool(BrokerProvider p) { return new ModifyBracketTool(new BrokerService(p)); }
+    private ModifyBracketTool tool(BrokerProvider p) { return new ModifyBracketTool(TestConnections.service(p)); }
 
     private StubBroker accepting() {
         return new StubBroker() {
@@ -23,7 +23,7 @@ class ModifyBracketToolTest {
     @Test void namespaceIsTrading() { assertThat(tool(accepting()).namespace()).isEqualTo("trading"); }
 
     @Test void acceptedShape() {
-        var args = mapper.createObjectNode().put("orderId","oid-1").put("stop",95).put("target",110);
+        var args = mapper.createObjectNode().put("connection", TestConnections.CONN).put("orderId","oid-1").put("stop",95).put("target",110);
         var r = tool(accepting()).call(args);
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("accepted").asBoolean()).isTrue();
@@ -37,7 +37,7 @@ class ModifyBracketToolTest {
             }
         };
         // Must provide at least one of stop/target so the empty-adjustment guard does not fire
-        var r = tool(stub).call(mapper.createObjectNode().put("orderId","oid-1").put("stop", 95));
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("orderId","oid-1").put("stop", 95));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("accepted").asBoolean()).isFalse();
         assertThat(r.output().get("rejectReason").asString()).contains("not modifiable");
@@ -50,21 +50,27 @@ class ModifyBracketToolTest {
             }
         };
         // Provide stop so the guard passes and we reach the broker
-        var r = tool(stub).call(mapper.createObjectNode().put("orderId","oid-1").put("stop", 95));
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("orderId","oid-1").put("stop", 95));
         assertThat(r.available()).isFalse();
     }
 
     @Test void unavailableOnMissingOrderId() {
-        var r = tool(accepting()).call(mapper.createObjectNode().put("stop", 95));
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("stop", 95));
         assertThat(r.available()).isFalse();
     }
 
     @Test void unavailableWhenNeitherStopNorTargetProvided() {
         // orderId present but no stop/target → must return unavailable before calling broker
-        var r = tool(accepting()).call(mapper.createObjectNode().put("orderId", "oid-1"));
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("orderId", "oid-1"));
         assertThat(r.available()).isFalse();
         assertThat(r.error()).contains("stop");
         assertThat(r.error()).contains("target");
+    }
+
+    @Test void missingConnectionUnavailable() {
+        var r = tool(accepting()).call(mapper.createObjectNode().put("orderId","oid-1").put("stop",95).put("target",110));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("connection");
     }
 
     static class StubBroker implements BrokerProvider {

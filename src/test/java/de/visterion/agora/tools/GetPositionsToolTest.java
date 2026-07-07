@@ -10,14 +10,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GetPositionsToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private GetPositionsTool tool(BrokerProvider p) { return new GetPositionsTool(new BrokerService(p)); }
+    private GetPositionsTool tool(BrokerProvider p) { return new GetPositionsTool(TestConnections.service(p)); }
 
     @Test void namespaceIsTrading() {
         assertThat(tool(new StubBroker()).namespace()).isEqualTo("trading");
     }
 
     @Test void emptyPositionsShape() {
-        var r = tool(new StubBroker()).call(mapper.createObjectNode());
+        var r = tool(new StubBroker()).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("positions").isArray()).isTrue();
         assertThat(r.output().get("positions").size()).isEqualTo(0);
@@ -30,7 +30,7 @@ class GetPositionsToolTest {
                         new BigDecimal("1510.00"), new BigDecimal("100.00"), "USD"));
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode());
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isTrue();
         var positions = r.output().get("positions");
         assertThat(positions.size()).isEqualTo(1);
@@ -46,8 +46,14 @@ class GetPositionsToolTest {
                 throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "down", null);
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode());
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isFalse();
+    }
+
+    @Test void missingConnectionUnavailable() {
+        var r = tool(new StubBroker()).call(mapper.createObjectNode());
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("connection");
     }
 
     static class StubBroker implements BrokerProvider {

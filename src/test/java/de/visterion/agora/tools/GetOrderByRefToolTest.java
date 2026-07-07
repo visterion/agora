@@ -10,7 +10,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GetOrderByRefToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private GetOrderByRefTool tool(BrokerProvider p) { return new GetOrderByRefTool(new BrokerService(p)); }
+    private GetOrderByRefTool tool(BrokerProvider p) { return new GetOrderByRefTool(TestConnections.service(p)); }
 
     @Test void namespaceIsTrading() {
         assertThat(tool(new StubBroker()).namespace()).isEqualTo("trading");
@@ -22,7 +22,7 @@ class GetOrderByRefToolTest {
                 return new Order("oid-1", ref, "AAPL", "buy", new BigDecimal("3"), "limit", "filled");
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode().put("clientRef","my-ref"));
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("clientRef","my-ref"));
         assertThat(r.available()).isTrue();
         var order = r.output().get("order");
         assertThat(order).isNotNull();
@@ -39,7 +39,7 @@ class GetOrderByRefToolTest {
                 throw new BrokerException(BrokerException.Kind.NOT_FOUND, "not found", null);
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode().put("clientRef","my-ref"));
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("clientRef","my-ref"));
         assertThat(r.available()).isFalse();
     }
 
@@ -49,13 +49,19 @@ class GetOrderByRefToolTest {
                 throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "down", null);
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode().put("clientRef","my-ref"));
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("clientRef","my-ref"));
         assertThat(r.available()).isFalse();
     }
 
     @Test void unavailableOnMissingClientRef() {
-        var r = tool(new StubBroker()).call(mapper.createObjectNode());
+        var r = tool(new StubBroker()).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isFalse();
+    }
+
+    @Test void missingConnectionUnavailable() {
+        var r = tool(new StubBroker()).call(mapper.createObjectNode().put("clientRef","my-ref"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("connection");
     }
 
     static class StubBroker implements BrokerProvider {

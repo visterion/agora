@@ -26,7 +26,7 @@ public class GetOrdersTool implements AgoraTool {
 
     @Override
     public String description() {
-        return "List all open and recent orders for the active broker account.";
+        return "List all open and recent orders for the account on the named connection.";
     }
 
     @Override
@@ -34,17 +34,23 @@ public class GetOrdersTool implements AgoraTool {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        props.putObject("connection").put("type", "string")
+                .put("description", "Target connection id (see list_connections)");
         props.putObject("status").put("type", "string")
                 .put("description", "Filter by order status (e.g. open, closed, all). Optional.");
+        schema.putArray("required").add("connection");
         return schema;
     }
 
     @Override
     public ToolResult call(JsonNode args) {
-        String status = (args != null && args.hasNonNull("status"))
+        if (args == null || !args.hasNonNull("connection"))
+            return ToolResult.unavailable("missing required argument: connection");
+        String connection = args.get("connection").asString();
+        String status = args.hasNonNull("status")
                 ? args.get("status").asString(null) : null;
         try {
-            List<Order> orders = broker.orders(status);
+            List<Order> orders = broker.orders(connection, status);
             ObjectNode out = mapper.createObjectNode();
             ArrayNode arr = out.putArray("orders");
             for (Order o : orders) {

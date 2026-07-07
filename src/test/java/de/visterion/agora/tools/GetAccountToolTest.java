@@ -10,7 +10,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GetAccountToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private GetAccountTool tool(BrokerProvider p) { return new GetAccountTool(new BrokerService(p)); }
+    private GetAccountTool tool(BrokerProvider p) { return new GetAccountTool(TestConnections.service(p)); }
 
     @Test void namespaceIsTrading() {
         assertThat(tool(new StubBroker()).namespace()).isEqualTo("trading");
@@ -23,7 +23,7 @@ class GetAccountToolTest {
                         new BigDecimal("15000"), "USD", "ACTIVE");
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode());
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isTrue();
         var acct = r.output().get("account");
         assertThat(acct).isNotNull();
@@ -41,8 +41,14 @@ class GetAccountToolTest {
                 throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "down", null);
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode());
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isFalse();
+    }
+
+    @Test void missingConnectionUnavailable() {
+        var r = tool(new StubBroker()).call(mapper.createObjectNode());
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("connection");
     }
 
     static class StubBroker implements BrokerProvider {
