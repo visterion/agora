@@ -18,12 +18,21 @@ agora:
     # comma-separated accepted bearer tokens (one per consumer); empty = deny all tool calls
     tokens: ${AGORA_AUTH_TOKENS:}
   trading:
-    provider: ${AGORA_TRADING_PROVIDER:alpaca}
     tokens: ${AGORA_TRADING_TOKENS:}
-    alpaca:
-      base-url: ${AGORA_TRADING_ALPACA_BASE_URL:https://paper-api.alpaca.markets/v2}
-      key-id: ${AGORA_TRADING_ALPACA_KEY_ID:}
-      secret: ${AGORA_TRADING_ALPACA_SECRET:}
+    live-tokens: ${AGORA_TRADING_LIVE_TOKENS:}
+    connections:
+      alpaca-paper:
+        provider: alpaca
+        environment: paper
+        base-url: ${AGORA_TRADING_ALPACA_BASE_URL:https://paper-api.alpaca.markets/v2}
+        key-id: ${AGORA_TRADING_ALPACA_KEY_ID:}
+        secret: ${AGORA_TRADING_ALPACA_SECRET:}
+      alpaca-live:
+        provider: alpaca
+        environment: live
+        base-url: ${AGORA_TRADING_ALPACA_LIVE_BASE_URL:https://api.alpaca.markets/v2}
+        key-id: ${AGORA_TRADING_ALPACA_LIVE_KEY_ID:}
+        secret: ${AGORA_TRADING_ALPACA_LIVE_SECRET:}
   data:
     yahoo:
       base-url: ${AGORA_DATA_YAHOO_BASE_URL:https://query1.finance.yahoo.com}
