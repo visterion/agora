@@ -14,4 +14,7 @@ public interface BrokerProvider {
     Account account();
     Order orderByClientRef(String clientRef);
     OrderResult cancel(String brokerOrderId);
+    /** Cheap authenticated no-op call verifying connectivity + credentials.
+     *  Throws BrokerException on failure. */
+    void probe();
 }

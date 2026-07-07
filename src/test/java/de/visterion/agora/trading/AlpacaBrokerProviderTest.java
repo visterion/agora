@@ -349,4 +349,23 @@ class AlpacaBrokerProviderTest {
         assertThat(r.rejectReason()).contains("already filled");
         assertThat(r.rejectCode()).isEqualTo("422");
     }
+
+    // ---- probe ----
+
+    @Test
+    void probe_200_returnsQuietly() {
+        wm.stubFor(get(urlEqualTo("/clock")).willReturn(okJson("""
+            {"is_open":false}
+            """)));
+
+        assertThatCode(() -> provider.probe()).doesNotThrowAnyException();
+    }
+
+    @Test
+    void probe_401_throwsBrokerException() {
+        wm.stubFor(get(urlEqualTo("/clock")).willReturn(aResponse().withStatus(401)));
+
+        assertThatThrownBy(() -> provider.probe())
+                .isInstanceOf(BrokerException.class);
+    }
 }

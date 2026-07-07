@@ -145,6 +145,16 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         }
     }
 
+    @Override
+    public void probe() {
+        try {
+            client.get().uri("/clock").retrieve().toBodilessEntity();
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "Alpaca probe failed: " + e.getMessage(), e);
+        }
+    }
+
     // ---- Read operations ----
 
     @Override
