@@ -42,6 +42,26 @@ class SplitServiceTest {
         assertThat(svc(List.of(stub("a", List::of), stub("b", List::of))).splits("NVDA")).isEmpty();
     }
 
+    @Test void allProvidersThrow_propagatesAndIsNotCached() {
+        AtomicInteger aCalls = new AtomicInteger();
+        AtomicInteger bCalls = new AtomicInteger();
+        SplitProvider a = stub("a", () -> { aCalls.incrementAndGet(); throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "a down", null); });
+        SplitProvider b = stub("b", () -> { bCalls.incrementAndGet(); throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "b down", null); });
+        SplitService s = svc(List.of(a, b));
+
+        assertThatThrownBy(() -> s.splits("X")).isInstanceOf(MarketDataException.class);
+        assertThatThrownBy(() -> s.splits("X")).isInstanceOf(MarketDataException.class);
+
+        assertThat(aCalls.get()).isEqualTo(2);
+        assertThat(bCalls.get()).isEqualTo(2);
+    }
+
+    @Test void oneAnsweredEmpty_oneThrew_returnsEmptyNotThrow() {
+        SplitProvider a = stub("a", () -> { throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "a down", null); });
+        SplitProvider b = stub("b", List::of);
+        assertThat(svc(List.of(a, b)).splits("X")).isEmpty();
+    }
+
     @Test void cached_secondCallDoesNotReinvoke() {
         AtomicInteger calls = new AtomicInteger();
         SplitProvider p = stub("a", () -> { calls.incrementAndGet(); return List.of(ev()); });

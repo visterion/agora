@@ -49,7 +49,7 @@ public class FinnhubSplitProvider implements SplitProvider {
                             n.path("fromFactor").decimalValue(),
                             n.path("toFactor").decimalValue()));
                 } catch (RuntimeException e) {
-                    continue; // skip malformed entry
+                    // skip malformed entry
                 }
             }
         }
