@@ -2,6 +2,7 @@ package de.visterion.agora.fetch.finnhub;
 
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.TtlCache;
+import de.visterion.agora.fetch.split.SplitEvent;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;

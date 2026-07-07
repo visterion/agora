@@ -1,6 +1,7 @@
 package de.visterion.agora.fetch.finnhub;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import de.visterion.agora.fetch.split.SplitEvent;
 import org.junit.jupiter.api.*;
 import org.springframework.web.client.RestClient;
 
