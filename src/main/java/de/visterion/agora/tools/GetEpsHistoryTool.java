@@ -60,8 +60,8 @@ public class GetEpsHistoryTool implements AgoraTool {
                 try {
                     splits = splitService.splits(symbol);
                     adjusted = !splits.isEmpty();
-                } catch (MarketDataException e) {
-                    adjusted = false; // graceful fallback to as-reported
+                } catch (RuntimeException e) {
+                    adjusted = false; // graceful fallback to as-reported (fetch failure or malformed split data)
                 }
             }
 
