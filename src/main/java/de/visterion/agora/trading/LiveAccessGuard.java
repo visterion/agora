@@ -28,7 +28,7 @@ public class LiveAccessGuard {
         this(parseCsv(liveCsv), LiveAccessGuard::requestToken);
     }
 
-    LiveAccessGuard(Set<String> liveTokens, Supplier<String> callerToken) {
+    public LiveAccessGuard(Set<String> liveTokens, Supplier<String> callerToken) {
         this.liveTokens = liveTokens;
         this.callerToken = callerToken;
     }
