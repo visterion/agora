@@ -10,14 +10,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GetOrdersToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private GetOrdersTool tool(BrokerProvider p) { return new GetOrdersTool(new BrokerService(p)); }
+    private GetOrdersTool tool(BrokerProvider p) { return new GetOrdersTool(TestConnections.service(p)); }
 
     @Test void namespaceIsTrading() {
         assertThat(tool(new StubBroker()).namespace()).isEqualTo("trading");
     }
 
     @Test void emptyOrdersShape() {
-        var r = tool(new StubBroker()).call(mapper.createObjectNode());
+        var r = tool(new StubBroker()).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("orders").isArray()).isTrue();
         assertThat(r.output().get("orders").size()).isEqualTo(0);
@@ -30,7 +30,7 @@ class GetOrdersToolTest {
                         new BigDecimal("5"), "limit", "new"));
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode());
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isTrue();
         var orders = r.output().get("orders");
         assertThat(orders.size()).isEqualTo(1);
@@ -49,7 +49,7 @@ class GetOrdersToolTest {
                 return List.of();
             }
         };
-        var args = new ObjectMapper().createObjectNode().put("status", "all");
+        var args = new ObjectMapper().createObjectNode().put("connection", TestConnections.CONN).put("status", "all");
         tool(stub).call(args);
         assertThat(captured[0]).isEqualTo("all");
     }
@@ -62,7 +62,7 @@ class GetOrdersToolTest {
                 return List.of();
             }
         };
-        tool(stub).call(new ObjectMapper().createObjectNode());
+        tool(stub).call(new ObjectMapper().createObjectNode().put("connection", TestConnections.CONN));
         assertThat(captured[0]).isNull();
     }
 
@@ -72,8 +72,14 @@ class GetOrdersToolTest {
                 throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "down", null);
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode());
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isFalse();
+    }
+
+    @Test void missingConnectionUnavailable() {
+        var r = tool(new StubBroker()).call(mapper.createObjectNode().put("status", "all"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("connection");
     }
 
     static class StubBroker implements BrokerProvider {

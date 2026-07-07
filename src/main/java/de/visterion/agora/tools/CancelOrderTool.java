@@ -29,17 +29,22 @@ public class CancelOrderTool implements AgoraTool {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        props.putObject("connection").put("type", "string")
+                .put("description", "Target connection id (see list_connections)");
         props.putObject("orderId").put("type", "string").put("description", "Broker order ID to cancel");
-        schema.putArray("required").add("orderId");
+        schema.putArray("required").add("connection").add("orderId");
         return schema;
     }
 
     @Override public ToolResult call(JsonNode args) {
-        if (args == null || !args.hasNonNull("orderId"))
+        if (args == null || !args.hasNonNull("connection"))
+            return ToolResult.unavailable("missing required argument: connection");
+        String connection = args.get("connection").asString();
+        if (!args.hasNonNull("orderId"))
             return ToolResult.unavailable("missing required argument: orderId");
         String orderId = args.get("orderId").asString();
         try {
-            OrderResult r = broker.cancel(orderId);
+            OrderResult r = broker.cancel(connection, orderId);
             ObjectNode out = mapper.createObjectNode();
             out.put("accepted", r.accepted());
             if (r.accepted()) {

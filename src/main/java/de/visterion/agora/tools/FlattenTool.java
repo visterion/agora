@@ -23,7 +23,7 @@ public class FlattenTool implements AgoraTool {
 
     @Override
     public String description() {
-        return "Close (flatten) the entire position for a given symbol via market order.";
+        return "Close (flatten) the entire position for a given symbol via market order on the named connection.";
     }
 
     @Override
@@ -31,20 +31,25 @@ public class FlattenTool implements AgoraTool {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        props.putObject("connection").put("type", "string")
+                .put("description", "Target connection id (see list_connections)");
         props.putObject("symbol").put("type", "string").put("description", "Ticker symbol to flatten");
-        schema.putArray("required").add("symbol");
+        schema.putArray("required").add("connection").add("symbol");
         return schema;
     }
 
     @Override
     public ToolResult call(JsonNode args) {
-        if (args == null || !args.hasNonNull("symbol"))
+        if (args == null || !args.hasNonNull("connection"))
+            return ToolResult.unavailable("missing required argument: connection");
+        String connection = args.get("connection").asString();
+        if (!args.hasNonNull("symbol"))
             return ToolResult.unavailable("missing required argument: symbol");
 
         String symbol = args.get("symbol").asString();
 
         try {
-            OrderResult r = broker.flatten(symbol);
+            OrderResult r = broker.flatten(connection, symbol);
             ObjectNode out = mapper.createObjectNode();
             out.put("accepted", r.accepted());
             if (r.accepted()) {

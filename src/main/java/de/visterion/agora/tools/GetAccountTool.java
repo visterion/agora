@@ -23,21 +23,27 @@ public class GetAccountTool implements AgoraTool {
 
     @Override
     public String description() {
-        return "Retrieve account summary: equity, buying power, cash balance, and account status.";
+        return "Retrieve account summary: equity, buying power, cash balance, and account status for the named connection.";
     }
 
     @Override
     public ObjectNode inputSchema() {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
-        schema.putObject("properties");
+        ObjectNode props = schema.putObject("properties");
+        props.putObject("connection").put("type", "string")
+                .put("description", "Target connection id (see list_connections)");
+        schema.putArray("required").add("connection");
         return schema;
     }
 
     @Override
     public ToolResult call(JsonNode args) {
+        if (args == null || !args.hasNonNull("connection"))
+            return ToolResult.unavailable("missing required argument: connection");
+        String connection = args.get("connection").asString();
         try {
-            Account a = broker.account();
+            Account a = broker.account(connection);
             ObjectNode out = mapper.createObjectNode();
             ObjectNode acct = out.putObject("account");
             acct.put("accountId", a.accountId());

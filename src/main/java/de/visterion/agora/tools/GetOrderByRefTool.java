@@ -23,7 +23,7 @@ public class GetOrderByRefTool implements AgoraTool {
 
     @Override
     public String description() {
-        return "Look up an order by client reference ID (clientRef / client_order_id).";
+        return "Look up an order by client reference ID (clientRef / client_order_id) on the named connection.";
     }
 
     @Override
@@ -31,20 +31,25 @@ public class GetOrderByRefTool implements AgoraTool {
         ObjectNode schema = mapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
+        props.putObject("connection").put("type", "string")
+                .put("description", "Target connection id (see list_connections)");
         props.putObject("clientRef").put("type", "string").put("description", "Client reference ID");
-        schema.putArray("required").add("clientRef");
+        schema.putArray("required").add("connection").add("clientRef");
         return schema;
     }
 
     @Override
     public ToolResult call(JsonNode args) {
-        if (args == null || !args.hasNonNull("clientRef"))
+        if (args == null || !args.hasNonNull("connection"))
+            return ToolResult.unavailable("missing required argument: connection");
+        String connection = args.get("connection").asString();
+        if (!args.hasNonNull("clientRef"))
             return ToolResult.unavailable("missing required argument: clientRef");
 
         String clientRef = args.get("clientRef").asString();
 
         try {
-            Order o = broker.orderByClientRef(clientRef);
+            Order o = broker.orderByClientRef(connection, clientRef);
             ObjectNode out = mapper.createObjectNode();
             ObjectNode order = out.putObject("order");
             order.put("brokerOrderId", o.brokerOrderId());

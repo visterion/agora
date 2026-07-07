@@ -3,6 +3,7 @@ package de.visterion.agora.web;
 import de.visterion.agora.trading.Account;
 import de.visterion.agora.trading.BracketOrderRequest;
 import de.visterion.agora.trading.BrokerProvider;
+import de.visterion.agora.trading.BrokerProviderFactory;
 import de.visterion.agora.trading.OrderResult;
 import de.visterion.agora.trading.Position;
 import org.junit.jupiter.api.Test;
@@ -10,9 +11,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Primary;
-import org.springframework.core.Ordered;
-import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.client.HttpClientErrorException;
@@ -34,69 +32,81 @@ import static org.junit.jupiter.api.Assertions.fail;
  * exactly this value.</p>
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-        properties = {"agora.auth.tokens=gen-token", "agora.trading.tokens=trade-token"})
+        properties = {
+                "agora.auth.tokens=gen-token",
+                "agora.trading.tokens=trade-token",
+                "agora.trading.connections.test-conn.provider=stub",
+                "agora.trading.connections.test-conn.environment=paper",
+                "agora.trading.connections.test-conn.key-id=k",
+                "agora.trading.connections.test-conn.secret=s"
+        })
 class PlaceBracketWebhookIT {
 
     @LocalServerPort
     int port;
 
     /**
-     * Stub BrokerProvider annotated @Order(HIGHEST_PRECEDENCE) so it shadows
-     * AlpacaBrokerProvider in the Spring context.
+     * Stub BrokerProviderFactory registered under provider key "stub" so ConnectionRegistry
+     * resolves the "test-conn" connection to this stub instead of a real Alpaca provider.
      */
     @TestConfiguration
     static class StubBrokerConfig {
 
         @Bean
-        @Primary
-        @Order(Ordered.HIGHEST_PRECEDENCE)
-        BrokerProvider placeBracketStubBrokerProvider() {
-            return new BrokerProvider() {
-                @Override public String name() { return "stub"; }
+        BrokerProviderFactory stubBrokerProviderFactory() {
+            return new BrokerProviderFactory() {
+                @Override public String provider() { return "stub"; }
 
                 @Override
-                public OrderResult submitBracket(BracketOrderRequest req) {
-                    return OrderResult.accepted("oid-1", req.clientRef(), "accepted");
+                public BrokerProvider create(de.visterion.agora.trading.ConnectionConfig cfg) {
+                    return new BrokerProvider() {
+                        @Override public String name() { return "stub"; }
+
+                        @Override
+                        public OrderResult submitBracket(BracketOrderRequest req) {
+                            return OrderResult.accepted("oid-1", req.clientRef(), "accepted");
+                        }
+
+                        @Override
+                        public OrderResult modifyBracket(String brokerOrderId, BigDecimal newStop, BigDecimal newTarget) {
+                            return OrderResult.accepted(brokerOrderId, null, "replaced");
+                        }
+
+                        @Override
+                        public OrderResult flatten(String symbol) {
+                            return OrderResult.accepted("oid-2", null, "accepted");
+                        }
+
+                        @Override public List<Position> positions() { return List.of(); }
+
+                        @Override
+                        public List<de.visterion.agora.trading.Order> orders(String status) { return List.of(); }
+
+                        @Override
+                        public Account account() {
+                            return new Account("acc-1", BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, "USD", "ACTIVE");
+                        }
+
+                        @Override
+                        public de.visterion.agora.trading.Order orderByClientRef(String clientRef) {
+                            return new de.visterion.agora.trading.Order("oid-1", clientRef, "AAPL", "buy", BigDecimal.ONE, "limit", "new");
+                        }
+
+                        @Override
+                        public OrderResult cancel(String brokerOrderId) {
+                            return OrderResult.accepted(brokerOrderId, null, "canceled");
+                        }
+
+                        @Override
+                        public void probe() {}
+                    };
                 }
-
-                @Override
-                public OrderResult modifyBracket(String brokerOrderId, BigDecimal newStop, BigDecimal newTarget) {
-                    return OrderResult.accepted(brokerOrderId, null, "replaced");
-                }
-
-                @Override
-                public OrderResult flatten(String symbol) {
-                    return OrderResult.accepted("oid-2", null, "accepted");
-                }
-
-                @Override public List<Position> positions() { return List.of(); }
-
-                @Override
-                public List<de.visterion.agora.trading.Order> orders(String status) { return List.of(); }
-
-                @Override
-                public Account account() {
-                    return new Account("acc-1", BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, "USD", "ACTIVE");
-                }
-
-                @Override
-                public de.visterion.agora.trading.Order orderByClientRef(String clientRef) {
-                    return new de.visterion.agora.trading.Order("oid-1", clientRef, "AAPL", "buy", BigDecimal.ONE, "limit", "new");
-                }
-
-                @Override
-                public OrderResult cancel(String brokerOrderId) {
-                    return OrderResult.accepted(brokerOrderId, null, "canceled");
-                }
-
-                @Override
-                public void probe() {}
             };
         }
     }
 
     private static final String VALID_BODY = """
-            {"symbol":"AAPL","side":"buy","qty":1,"stopLossStop":95,"takeProfitLimit":110,"clientRef":"ref-1"}
+            {"connection":"test-conn","symbol":"AAPL","side":"buy","qty":1,"stopLossStop":95,"takeProfitLimit":110,"clientRef":"ref-1"}
             """;
 
     @Test
