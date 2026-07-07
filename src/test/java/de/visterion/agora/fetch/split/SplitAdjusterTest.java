@@ -1,4 +1,4 @@
-package de.visterion.agora.fetch.finnhub;
+package de.visterion.agora.fetch.split;
 
 import org.junit.jupiter.api.Test;
 

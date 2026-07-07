@@ -1,4 +1,4 @@
-package de.visterion.agora.fetch.finnhub;
+package de.visterion.agora.fetch.split;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
