@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.*;
 
 class ConnectionRegistryTest {
 
-    /** Minimal provider stub; probe() not yet in the SPI (Task 2 adds it). */
+    /** Minimal provider stub. */
     private static BrokerProvider dummyProvider() {
         return new BrokerProvider() {
             public String name() { return "stub"; }
@@ -23,6 +23,7 @@ class ConnectionRegistryTest {
             public Account account() { return new Account("a", BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, "USD", "ACTIVE"); }
             public Order orderByClientRef(String ref) { return new Order("o", ref, "AAPL", "buy", BigDecimal.ONE, "limit", "new"); }
             public OrderResult cancel(String id) { return OrderResult.accepted(id, null, "canceled"); }
+            public void probe() {}
         };
     }
 

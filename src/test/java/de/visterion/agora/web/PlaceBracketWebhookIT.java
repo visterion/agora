@@ -88,6 +88,9 @@ class PlaceBracketWebhookIT {
                 public OrderResult cancel(String brokerOrderId) {
                     return OrderResult.accepted(brokerOrderId, null, "canceled");
                 }
+
+                @Override
+                public void probe() {}
             };
         }
     }
