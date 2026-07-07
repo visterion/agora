@@ -1,0 +1,41 @@
+package de.visterion.agora.trading;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.stereotype.Component;
+
+import java.time.Instant;
+
+/**
+ * Probes every active connection once after startup (port already bound).
+ * Failure is informational: WARN + status "unreachable" — never blocks routing or startup.
+ */
+@Component
+public class ConnectionProbeRunner {
+
+    private static final Logger log = LoggerFactory.getLogger(ConnectionProbeRunner.class);
+
+    private final ConnectionRegistry registry;
+
+    public ConnectionProbeRunner(ConnectionRegistry registry) {
+        this.registry = registry;
+    }
+
+    @EventListener(ApplicationReadyEvent.class)
+    public void probeAll() {
+        for (RegisteredConnection c : registry.active()) {
+            long t0 = System.nanoTime();
+            try {
+                c.provider().probe();
+                long ms = (System.nanoTime() - t0) / 1_000_000;
+                c.setProbeStatus(ProbeStatus.ok(Instant.now()));
+                log.info("Connection '{}' probe OK ({}ms)", c.id(), ms);
+            } catch (Exception e) {
+                c.setProbeStatus(ProbeStatus.unreachable(Instant.now(), e.getMessage()));
+                log.warn("Connection '{}' probe FAILED: {}", c.id(), e.getMessage());
+            }
+        }
+    }
+}
