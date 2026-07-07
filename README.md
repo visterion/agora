@@ -127,7 +127,7 @@ design spec:
 
 ## Tool catalog
 
-38 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
+39 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
 webhook-only and require a trading token.
 
 ### Market data (`agora-data`)
@@ -155,6 +155,7 @@ webhook-only and require a trading token.
 | `get_form4_transactions` | Non-derivative SEC Form-4 transactions (beneficial-ownership changes) |
 | `get_earnings_calendar` | Recent and upcoming earnings events for a symbol |
 | `get_earnings_window` | Market-wide earnings events reported in a date window (one row per company) |
+| `get_fundamental_score` | Standardized fundamental-health scores computed from SEC XBRL company facts. Input: `symbol`. Output: a `scores` object; today `piotroskiF` (Piotroski F-score) with `score` (0-9), `criteriaAvailable` (0-9 — a criterion counts as available only if it could be strictly evaluated; met criteria still require verifiable evidence, otherwise they score 0), per-criterion `criteria.<name>.{met, available}`, and `raw` underlying figures (`roa`, `cfo`, `netIncome`, `accrualRatio`, `currentRatio`, `grossMargin`, `assetTurnover`). Degrades to `unavailable` on EDGAR errors. `scores` is extensible — future scores will be added as siblings of `piotroskiF`. |
 
 ### Research / technical indicators (`agora-research`)
 

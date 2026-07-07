@@ -36,10 +36,21 @@ public class EdgarService {
     private final TtlCache<String, List<FilingRef>> filingsCache;
     private final TtlCache<String, List<EpsPoint>> epsCache;
     private final TtlCache<String, ConceptSeries> conceptCache;
+    private final TtlCache<String, CompanyFacts> factsCache;
 
     /** An XBRL company-concept series: the reporting {@code unit} (e.g. "USD") plus its datapoints.
      *  unit is null and datapoints empty when the concept does not exist for the company. */
     public record ConceptSeries(String unit, List<ConceptDatapoint> datapoints) {}
+
+    /** All us-gaap concepts for a company from a single companyfacts fetch, keyed by tag. */
+    public record CompanyFacts(Map<String, ConceptSeries> byTag) {
+        public ConceptSeries series(String tag) {
+            return byTag.getOrDefault(tag, new ConceptSeries(null, List.of()));
+        }
+        public boolean isEmpty() {
+            return byTag.isEmpty();
+        }
+    }
 
     @Autowired
     public EdgarService(@Value("${agora.data.edgar.user-agent}") String userAgent,
@@ -57,6 +68,7 @@ public class EdgarService {
         this.filingsCache = new TtlCache<>(ttlSeconds * 1000L, now);
         this.epsCache = new TtlCache<>(ttlSeconds * 1000L, now);
         this.conceptCache = new TtlCache<>(ttlSeconds * 1000L, now);
+        this.factsCache = new TtlCache<>(ttlSeconds * 1000L, now);
     }
 
     /** cikOrSymbol: 10-digit CIK if all-digits, else resolved via ticker. */
@@ -225,18 +237,7 @@ public class EdgarService {
             unit = fields.next();                          // take the FIRST unit field name
             for (JsonNode row : units.path(unit)) {
                 try {
-                    String start = row.path("start").asString("");
-                    String end = row.path("end").asString("");
-                    if (end.isEmpty() || row.path("val").isMissingNode()) continue;
-                    LocalDate periodEnd = LocalDate.parse(end);
-                    LocalDate periodStart = start.isEmpty() ? null : LocalDate.parse(start);
-                    Integer fy = row.path("fy").isMissingNode() || row.path("fy").isNull()
-                            ? null : row.path("fy").asInt();
-                    String fp = row.path("fp").asString(null);
-                    String form = row.path("form").asString(null);
-                    LocalDate filed = parseDate(row.path("filed").asString(""));
-                    out.add(new ConceptDatapoint(periodStart, periodEnd,
-                            row.path("val").decimalValue(), fy, fp, form, filed));
+                    out.add(parseDatapoint(row));
                 } catch (Exception rowError) {
                     // skip malformed row, keep the rest
                 }
@@ -244,6 +245,67 @@ public class EdgarService {
         }
         out.sort(Comparator.comparing(ConceptDatapoint::periodEnd).reversed());
         return new ConceptSeries(unit, out);
+    }
+
+    /** All us-gaap concepts for a company (by symbol or CIK) from a single companyfacts fetch.
+     *  Cheaper than N calls to {@link #companyConcept} when several tags are needed for one company.
+     *  Unreachable/malformed EDGAR responses yield an empty CompanyFacts rather than an error. */
+    public CompanyFacts companyFacts(String symbol, String cik) {
+        String padded = resolveCik(symbol, cik);
+        return factsCache.get("facts:" + padded, () -> fetchCompanyFacts(padded));
+    }
+
+    private CompanyFacts fetchCompanyFacts(String padded) {
+        JsonNode body;
+        try {
+            String raw = http.get()
+                    .uri("/api/xbrl/companyfacts/CIK{cik}.json", padded)
+                    .retrieve().body(String.class);
+            body = raw == null ? null : EPS_MAPPER.readTree(raw);
+        } catch (Exception e) {
+            return new CompanyFacts(Map.of());   // 404/error → not fatal, treat as no facts
+        }
+        if (body == null) return new CompanyFacts(Map.of());
+
+        Map<String, ConceptSeries> byTag = new LinkedHashMap<>();
+        JsonNode usGaap = body.path("facts").path("us-gaap");
+        var tagNames = usGaap.propertyNames().iterator();
+        while (tagNames.hasNext()) {
+            String tag = tagNames.next();
+            JsonNode units = usGaap.path(tag).path("units");
+            String unit = null;
+            List<ConceptDatapoint> out = new ArrayList<>();
+            var unitNames = units.propertyNames().iterator();
+            if (unitNames.hasNext()) {
+                unit = unitNames.next();                    // take the FIRST unit field name
+                for (JsonNode row : units.path(unit)) {
+                    try {
+                        out.add(parseDatapoint(row));
+                    } catch (Exception rowError) {
+                        // skip malformed row, keep the rest
+                    }
+                }
+            }
+            out.sort(Comparator.comparing(ConceptDatapoint::periodEnd).reversed());
+            byTag.put(tag, new ConceptSeries(unit, out));
+        }
+        return new CompanyFacts(byTag);
+    }
+
+    private static ConceptDatapoint parseDatapoint(JsonNode row) {
+        String start = row.path("start").asString("");
+        String end = row.path("end").asString("");
+        if (end.isEmpty() || row.path("val").isMissingNode())
+            throw new IllegalArgumentException("missing end/val");
+        LocalDate periodEnd = LocalDate.parse(end);
+        LocalDate periodStart = start.isEmpty() ? null : LocalDate.parse(start);
+        Integer fy = row.path("fy").isMissingNode() || row.path("fy").isNull()
+                ? null : row.path("fy").asInt();
+        String fp = row.path("fp").asString(null);
+        String form = row.path("form").asString(null);
+        LocalDate filed = parseDate(row.path("filed").asString(""));
+        return new ConceptDatapoint(periodStart, periodEnd,
+                row.path("val").decimalValue(), fy, fp, form, filed);
     }
 
     private static LocalDate parseDate(String s) {
