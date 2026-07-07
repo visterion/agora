@@ -23,10 +23,21 @@ public class SaxoAuthState {
     SaxoAuthState(LongSupplier nowMillis) { this.nowMillis = nowMillis; }
 
     public String issue(String connectionId) {
+        // Lazy sweep: remove all expired entries before issuing new state
+        long now = nowMillis.getAsLong();
+        pending.entrySet().removeIf(e -> now > e.getValue().expiresAt());
+
+        // Hard cap: if at capacity, evict oldest expired entry (or arbitrary if none)
+        if (pending.size() >= 1000) {
+            pending.entrySet().stream()
+                .min((e1, e2) -> Long.compare(e1.getValue().expiresAt(), e2.getValue().expiresAt()))
+                .ifPresent(e -> pending.remove(e.getKey()));
+        }
+
         byte[] b = new byte[16];
         random.nextBytes(b);
         String state = HexFormat.of().formatHex(b);
-        pending.put(state, new Pending(connectionId, nowMillis.getAsLong() + TTL_MILLIS));
+        pending.put(state, new Pending(connectionId, now + TTL_MILLIS));
         return state;
     }
 
