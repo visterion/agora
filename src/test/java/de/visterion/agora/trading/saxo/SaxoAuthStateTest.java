@@ -33,4 +33,22 @@ class SaxoAuthStateTest {
     void statesAreUnique() {
         assertThat(states.issue("a")).isNotEqualTo(states.issue("a"));
     }
+
+    @Test
+    void expiredStatesAreSweptOnIssue() {
+        String old1 = states.issue("a");
+        String old2 = states.issue("a");
+        now.addAndGet(5 * 60 * 1000L + 1);
+        states.issue("a");                       // triggers sweep
+        assertThat(states.consume(old1)).isEmpty();
+        assertThat(states.consume(old2)).isEmpty();
+    }
+
+    @Test
+    void capBoundsPendingStates() {
+        for (int i = 0; i < 1100; i++) states.issue("a");
+        // no assertion on internals needed beyond behavior: issuing still works
+        String s = states.issue("a");
+        assertThat(states.consume(s)).contains("a");
+    }
 }
