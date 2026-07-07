@@ -59,7 +59,7 @@ public class AlpacaSplitProvider implements SplitProvider {
                         n.path("old_rate").decimalValue(),
                         n.path("new_rate").decimalValue()));
             } catch (RuntimeException e) {
-                continue; // skip malformed entry
+                // skip malformed entry
             }
         }
     }

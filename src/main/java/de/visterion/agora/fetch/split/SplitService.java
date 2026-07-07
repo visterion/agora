@@ -10,7 +10,9 @@ import java.util.List;
 import java.util.function.LongSupplier;
 
 /** Orchestrates split providers as an ordered fallback chain (first non-empty wins),
- *  cached (splits TTL). A provider that throws is skipped; all-empty yields empty. */
+ *  cached (splits TTL). A provider that throws is skipped; if at least one provider
+ *  answered, all-empty yields empty (cached). If every provider threw, resolve()
+ *  throws instead of returning empty, so the failure is not cached and gets retried. */
 @Component
 public class SplitService {
 
@@ -33,14 +35,19 @@ public class SplitService {
     }
 
     private List<SplitEvent> resolve(String symbol) {
+        boolean anyAnswered = false;
         for (SplitProvider p : providers) {
             try {
                 List<SplitEvent> r = p.splits(symbol);
+                anyAnswered = true;
                 if (r != null && !r.isEmpty()) return r;   // first non-empty wins
             } catch (MarketDataException e) {
                 // provider unconfigured/unreachable → skip to next
             }
         }
+        if (!anyAnswered)
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    "no split provider could answer " + symbol, null);
         return List.of();
     }
 }
