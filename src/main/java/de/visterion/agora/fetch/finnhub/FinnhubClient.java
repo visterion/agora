@@ -23,8 +23,8 @@ public class FinnhubClient {
         this.apiKey = apiKey;
     }
 
-    // Test ctor.
-    FinnhubClient(RestClient http, String apiKey) { this.http = http; this.apiKey = apiKey; }
+    // Test ctor. Public so test code in sibling packages (e.g. fetch.split) can construct it directly.
+    public FinnhubClient(RestClient http, String apiKey) { this.http = http; this.apiKey = apiKey; }
 
     public boolean configured() { return apiKey != null && !apiKey.isBlank(); }
     public RestClient http() { return http; }
