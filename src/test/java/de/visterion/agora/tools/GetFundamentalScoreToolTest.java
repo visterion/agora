@@ -1,5 +1,6 @@
 package de.visterion.agora.tools;
 
+import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.research.fundamentals.FundamentalScoreService;
 import de.visterion.agora.research.fundamentals.PiotroskiFScore;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,14 @@ class GetFundamentalScoreToolTest {
     @Test void blankSymbolUnavailable() {
         var r = new GetFundamentalScoreTool(Mockito.mock(FundamentalScoreService.class))
                 .call(mapper.createObjectNode().put("symbol", ""));
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test void marketDataExceptionUnavailable() {
+        FundamentalScoreService svc = Mockito.mock(FundamentalScoreService.class);
+        when(svc.piotroski(anyString()))
+                .thenThrow(new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR down", null));
+        var r = new GetFundamentalScoreTool(svc).call(mapper.createObjectNode().put("symbol", "AAPL"));
         assertThat(r.available()).isFalse();
     }
 
