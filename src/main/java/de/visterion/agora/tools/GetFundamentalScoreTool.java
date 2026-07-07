@@ -1,5 +1,6 @@
 package de.visterion.agora.tools;
 
+import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.research.fundamentals.FundamentalScoreService;
 import de.visterion.agora.research.fundamentals.PiotroskiFScore;
 import de.visterion.agora.tool.AgoraTool;
@@ -40,27 +41,31 @@ public class GetFundamentalScoreTool implements AgoraTool {
             return ToolResult.unavailable("symbol required");
         }
 
-        PiotroskiFScore s = service.piotroski(symbol);
+        try {
+            PiotroskiFScore s = service.piotroski(symbol);
 
-        ObjectNode out = mapper.createObjectNode();
-        out.put("symbol", symbol);
-        ObjectNode scores = out.putObject("scores");
-        ObjectNode piotroskiF = scores.putObject("piotroskiF");
-        piotroskiF.put("score", s.score());
-        piotroskiF.put("criteriaAvailable", s.criteriaAvailable());
+            ObjectNode out = mapper.createObjectNode();
+            out.put("symbol", symbol);
+            ObjectNode scores = out.putObject("scores");
+            ObjectNode piotroskiF = scores.putObject("piotroskiF");
+            piotroskiF.put("score", s.score());
+            piotroskiF.put("criteriaAvailable", s.criteriaAvailable());
 
-        ObjectNode criteria = piotroskiF.putObject("criteria");
-        for (Map.Entry<String, PiotroskiFScore.Criterion> e : s.criteria().entrySet()) {
-            ObjectNode c = criteria.putObject(e.getKey());
-            c.put("met", e.getValue().met());
-            c.put("available", e.getValue().available());
+            ObjectNode criteria = piotroskiF.putObject("criteria");
+            for (Map.Entry<String, PiotroskiFScore.Criterion> e : s.criteria().entrySet()) {
+                ObjectNode c = criteria.putObject(e.getKey());
+                c.put("met", e.getValue().met());
+                c.put("available", e.getValue().available());
+            }
+
+            ObjectNode raw = piotroskiF.putObject("raw");
+            for (Map.Entry<String, BigDecimal> e : s.raw().entrySet()) {
+                raw.put(e.getKey(), e.getValue());
+            }
+
+            return ToolResult.ok(out);
+        } catch (MarketDataException e) {
+            return ToolResult.unavailable(e.getMessage());
         }
-
-        ObjectNode raw = piotroskiF.putObject("raw");
-        for (Map.Entry<String, BigDecimal> e : s.raw().entrySet()) {
-            raw.put(e.getKey(), e.getValue());
-        }
-
-        return ToolResult.ok(out);
     }
 }
