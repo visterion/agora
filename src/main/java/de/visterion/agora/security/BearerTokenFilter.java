@@ -21,29 +21,36 @@ import java.util.Set;
 /**
  * Guards /tools/** and /mcp/** with bearer tokens.
  * <ul>
- *   <li>General tools (and /mcp, unknown paths) → accept general ∪ trading tokens.</li>
- *   <li>Trading tools (/tools/{name} where namespace()=="trading") → accept only trading tokens.</li>
+ *   <li>General tools (and /mcp, unknown paths) → accept general ∪ trading ∪ live tokens.</li>
+ *   <li>Trading tools (/tools/{name} where namespace()=="trading") → accept trading ∪ live tokens.</li>
  *   <li>/actuator/health → public (no token required).</li>
  * </ul>
  */
 @Component
 public class BearerTokenFilter extends OncePerRequestFilter {
 
+    /** Request attribute carrying the raw presented bearer token (set only when authorized). */
+    public static final String TOKEN_ATTR = "agora.bearerToken";
+
     private final List<String> generalTokens;
     private final List<String> tradingTokens;
+    private final List<String> liveTokens;
     private final ToolRegistry registry;
 
     @Autowired
     public BearerTokenFilter(
             @Value("${agora.auth.tokens:}") String general,
             @Value("${agora.trading.tokens:}") String trading,
+            @Value("${agora.trading.live-tokens:}") String live,
             ToolRegistry registry) {
-        this(parseCsv(general), parseCsv(trading), registry);
+        this(parseCsv(general), parseCsv(trading), parseCsv(live), registry);
     }
 
-    BearerTokenFilter(List<String> generalTokens, List<String> tradingTokens, ToolRegistry registry) {
+    BearerTokenFilter(List<String> generalTokens, List<String> tradingTokens,
+                      List<String> liveTokens, ToolRegistry registry) {
         this.generalTokens = generalTokens;
         this.tradingTokens = tradingTokens;
+        this.liveTokens = liveTokens;
         this.registry = registry;
     }
 
@@ -69,22 +76,27 @@ public class BearerTokenFilter extends OncePerRequestFilter {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             return;
         }
+        request.setAttribute(TOKEN_ATTR, token);
         chain.doFilter(request, response);
     }
 
     /**
      * Determines which token set is accepted for the given path.
-     * /tools/{name} where name resolves to a trading-namespace tool → trading only.
-     * Everything else → general ∪ trading.
+     * /tools/{name} where name resolves to a trading-namespace tool → trading ∪ live.
+     * Everything else → general ∪ trading ∪ live.
      */
     private Set<String> requiredTokens(String path) {
         String toolName = extractToolName(path);
         if (toolName != null && isTradingTool(toolName)) {
-            return new HashSet<>(tradingTokens);
+            // trading ∪ live — a live token is self-contained for the trading namespace
+            Set<String> t = new HashSet<>(tradingTokens);
+            t.addAll(liveTokens);
+            return t;
         }
-        // general ∪ trading
+        // general ∪ trading ∪ live
         Set<String> all = new HashSet<>(generalTokens);
         all.addAll(tradingTokens);
+        all.addAll(liveTokens);
         return all;
     }
 

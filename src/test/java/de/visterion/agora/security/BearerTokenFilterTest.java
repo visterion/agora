@@ -53,7 +53,7 @@ class BearerTokenFilterTest {
     private final ToolRegistry emptyRegistry = registryWith();
 
     private final BearerTokenFilter filter =
-            new BearerTokenFilter(List.of("good-token"), List.of(), emptyRegistry);
+            new BearerTokenFilter(List.of("good-token"), List.of(), List.of(), emptyRegistry);
 
     @Test
     void rejectsMissingToken() throws Exception {
@@ -89,7 +89,7 @@ class BearerTokenFilterTest {
 
     private BearerTokenFilter guardFilter() {
         ToolRegistry registry = registryWith(generalTool("gen"), tradingTool("trade"));
-        return new BearerTokenFilter(List.of("gen-token"), List.of("trade-token"), registry);
+        return new BearerTokenFilter(List.of("gen-token"), List.of("trade-token"), List.of("live-token"), registry);
     }
 
     @Test
@@ -147,5 +147,50 @@ class BearerTokenFilterTest {
         guardFilter().doFilter(req, res, chain);
         assertThat(res.getStatus()).isEqualTo(200);
         verify(chain).doFilter(any(), any());
+    }
+
+    // --- Live-token tests (connection router) ---
+
+    @Test
+    void tradingToolWithLiveToken_proceeds() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/tools/trade");
+        req.addHeader("Authorization", "Bearer live-token");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        guardFilter().doFilter(req, res, chain);
+        assertThat(res.getStatus()).isEqualTo(200);
+        verify(chain).doFilter(any(), any());
+    }
+
+    @Test
+    void generalToolWithLiveToken_proceeds() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/tools/gen");
+        req.addHeader("Authorization", "Bearer live-token");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        guardFilter().doFilter(req, res, chain);
+        assertThat(res.getStatus()).isEqualTo(200);
+        verify(chain).doFilter(any(), any());
+    }
+
+    @Test
+    void authorizedRequestCarriesTokenAttribute() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/tools/trade");
+        req.addHeader("Authorization", "Bearer trade-token");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        guardFilter().doFilter(req, res, chain);
+        assertThat(req.getAttribute(BearerTokenFilter.TOKEN_ATTR)).isEqualTo("trade-token");
+    }
+
+    @Test
+    void unauthorizedRequestHasNoTokenAttribute() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/tools/trade");
+        req.addHeader("Authorization", "Bearer wrong-token");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        guardFilter().doFilter(req, res, chain);
+        assertThat(res.getStatus()).isEqualTo(401);
+        assertThat(req.getAttribute(BearerTokenFilter.TOKEN_ATTR)).isNull();
     }
 }
