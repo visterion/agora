@@ -292,4 +292,79 @@ class SaxoBrokerProviderTest {
                 .extracting(e -> ((BrokerException) e).kind())
                 .isEqualTo(BrokerException.Kind.NOT_FOUND);
     }
+
+    // ---- modifyBracket ----
+
+    private void stubBracketChildren() {
+        // SIM-verified shape: pre-fill, only the parent is top-level (IfDoneMaster);
+        // children are embedded in RelatedOpenOrders (OrderPrice there, not Price).
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"9001","OpenOrderType":"Limit","Status":"Working","Uic":211,"AssetType":"Stock",
+               "BuySell":"Buy","Amount":1.0,"OrderRelation":"IfDoneMaster","Price":100.0,
+               "DisplayAndFormat":{"Symbol":"AAPL:xnas"},
+               "RelatedOpenOrders":[
+                 {"OrderId":"9002","OpenOrderType":"Limit","OrderPrice":110.0,"Status":"NotWorking",
+                  "Amount":1.0,"Duration":{"DurationType":"GoodTillCancel"}},
+                 {"OrderId":"9003","OpenOrderType":"StopIfTraded","OrderPrice":90.0,"Status":"NotWorking",
+                  "Amount":1.0,"Duration":{"DurationType":"GoodTillCancel"}}]}
+            ]}
+            """)));
+    }
+
+    @Test
+    void modifyBracketPatchesStopAndTargetLegs() {
+        stubBracketChildren();
+        wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9002\"}")));
+
+        var r = provider.modifyBracket("9001",
+                new java.math.BigDecimal("85"), new java.math.BigDecimal("115"));
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.status()).isEqualTo("replaced");
+        wm.verify(2, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
+        wm.verify(patchRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderId", equalTo("9003")))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded")))
+                .withRequestBody(matchingJsonPath("$.OrderPrice", equalTo("85")))
+                .withRequestBody(matchingJsonPath("$.OrderDuration.DurationType", equalTo("GoodTillCancel"))));
+        wm.verify(patchRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderId", equalTo("9002")))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Limit")))
+                .withRequestBody(matchingJsonPath("$.OrderPrice", equalTo("115"))));
+        // Minimal PATCH body (SIM-verified): no Uic, no Amount, no BuySell
+        wm.verify(patchRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(notMatching(".*\"Uic\".*")));
+    }
+
+    @Test
+    void modifyBracketOnlyStopPatchesOneLeg() {
+        stubBracketChildren();
+        wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9003\"}")));
+        var r = provider.modifyBracket("9001", new java.math.BigDecimal("85"), null);
+        assertThat(r.accepted()).isTrue();
+        wm.verify(1, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void modifyBracketWithoutChildrenIsNotFound() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me"))
+                .willReturn(okJson("{\"Data\":[]}")));
+        assertThatThrownBy(() -> provider.modifyBracket("9001",
+                new java.math.BigDecimal("85"), null))
+                .isInstanceOf(BrokerException.class)
+                .extracting(e -> ((BrokerException) e).kind())
+                .isEqualTo(BrokerException.Kind.NOT_FOUND);
+    }
+
+    @Test
+    void modifyBracketPatch400IsRejected() {
+        stubBracketChildren();
+        wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)
+                .withHeader("Content-Type", "application/json")
+                .withBody("{\"ErrorInfo\":{\"ErrorCode\":\"TooLateToChange\",\"Message\":\"too late\"}}")));
+        var r = provider.modifyBracket("9001", new java.math.BigDecimal("85"), null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("TooLateToChange");
+    }
 }
