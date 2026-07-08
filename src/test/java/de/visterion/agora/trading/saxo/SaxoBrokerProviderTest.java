@@ -111,7 +111,7 @@ class SaxoBrokerProviderTest {
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
             {"Data":[{"NetPositionId":"AAPL:xnas__Stock",
                       "NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
-                      "NetPositionView":{"AverageOpenPrice":150.0,"CurrentMarketValue":1510.0,
+                      "NetPositionView":{"AverageOpenPrice":150.0,"Exposure":1510.0,
                                          "ProfitLossOnTrade":100.0,"ExposureCurrency":"USD"},
                       "DisplayAndFormat":{"Symbol":"AAPL:xnas","Currency":"USD"}}]}
             """)));
@@ -163,5 +163,133 @@ class SaxoBrokerProviderTest {
     void serverErrorOnReadIsUnavailable() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(aResponse().withStatus(503)));
         assertThatThrownBy(() -> provider.positions()).isInstanceOf(BrokerException.class);
+    }
+
+    // ---- submitBracket ----
+
+    private de.visterion.agora.trading.BracketOrderRequest bracketReq() {
+        return new de.visterion.agora.trading.BracketOrderRequest(
+                "AAPL", "buy", new java.math.BigDecimal("1"), "limit", "gtc",
+                new java.math.BigDecimal("100"), new java.math.BigDecimal("90"), null,
+                new java.math.BigDecimal("110"), "ref-1");
+        // TP/SL near entry: Saxo enforces a proximity band (TooFarFromEntryOrder)
+    }
+
+    private void stubInstrument() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("""
+            {"Data":[{"Identifier":211,"AssetType":"Stock","Symbol":"AAPL:xnas"}]}
+            """)));
+    }
+
+    @Test
+    void submitBracketPostsEntryWithTwoRelatedOrders() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
+            """)));
+
+        var r = provider.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.brokerOrderId()).isEqualTo("9001");
+        assertThat(r.clientRef()).isEqualTo("ref-1");
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withHeader("X-Request-ID", equalTo("ref-1"))
+                .withRequestBody(matchingJsonPath("$.Uic", equalTo("211")))
+                .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Buy")))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Limit")))
+                .withRequestBody(matchingJsonPath("$.ExternalReference", equalTo("ref-1")))
+                .withRequestBody(matchingJsonPath("$.OrderDuration.DurationType", equalTo("GoodTillCancel")))
+                .withRequestBody(matchingJsonPath("$.Orders[0].OrderType", equalTo("Limit")))
+                .withRequestBody(matchingJsonPath("$.Orders[0].BuySell", equalTo("Sell")))
+                .withRequestBody(matchingJsonPath("$.Orders[1].OrderType", equalTo("StopIfTraded"))));
+    }
+
+    @Test
+    void submitBracketUnknownSymbolIsRejectedNotUnavailable() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("{\"Data\":[]}")));
+        var r = provider.submitBracket(bracketReq());
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectReason()).contains("unknown symbol");
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void submitBracket400MapsErrorInfoToRejected() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                    {"ErrorInfo":{"ErrorCode":"IllegalInstrumentId","Message":"Instrument not tradable"}}
+                    """)));
+        var r = provider.submitBracket(bracketReq());
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectReason()).isEqualTo("Instrument not tradable");
+        assertThat(r.rejectCode()).isEqualTo("IllegalInstrumentId");
+    }
+
+    @Test
+    void submitBracket409IsUnavailable() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(409)));
+        assertThatThrownBy(() -> provider.submitBracket(bracketReq()))
+                .isInstanceOf(BrokerException.class)
+                .hasMessageContaining("duplicate");
+    }
+
+    // ---- cancel ----
+
+    @Test
+    void cancelDeletesWithAccountKey() {
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/9001"))
+                .willReturn(aResponse().withStatus(200)));
+        var r = provider.cancel("9001");
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.status()).isEqualTo("canceled");
+        wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/9001"))
+                .withQueryParam("AccountKey", equalTo("Acc+Key/1==")));
+    }
+
+    @Test
+    void cancel404IsNotFound() {
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/9001"))
+                .willReturn(aResponse().withStatus(404)));
+        assertThatThrownBy(() -> provider.cancel("9001"))
+                .isInstanceOf(BrokerException.class)
+                .extracting(e -> ((BrokerException) e).kind())
+                .isEqualTo(BrokerException.Kind.NOT_FOUND);
+    }
+
+    // ---- flatten ----
+
+    @Test
+    void flattenSendsOppositeMarketOrder() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        var r = provider.flatten("AAPL");
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell")))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("10.0"))));
+    }
+
+    @Test
+    void flattenWithoutPositionIsNotFound() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions"))
+                .willReturn(okJson("{\"Data\":[]}")));
+        assertThatThrownBy(() -> provider.flatten("AAPL"))
+                .isInstanceOf(BrokerException.class)
+                .extracting(e -> ((BrokerException) e).kind())
+                .isEqualTo(BrokerException.Kind.NOT_FOUND);
     }
 }
