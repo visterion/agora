@@ -1,5 +1,6 @@
 package de.visterion.agora.trading.saxo;
 
+import de.visterion.agora.trading.BrokerException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
@@ -85,6 +86,30 @@ public final class SaxoTokenStore {
             return Optional.empty();
         }
         return Optional.of(s.accessToken());
+    }
+
+    /**
+     * The Authorization header value ("Bearer <access>") for a valid session, or a
+     * state-aware BrokerException: NOT_READY when the connection is authorized but the
+     * access token is still being refreshed; UNAVAILABLE otherwise (never authorized or dead).
+     */
+    public String authorizationHeaderValue() {
+        if (dead()) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo connection needs re-authorization — visit /auth/saxo/login?connection="
+                            + connectionId, null);
+        }
+        Optional<String> access = validAccessToken();
+        if (access.isPresent()) {
+            return "Bearer " + access.get();
+        }
+        if (!hasRefreshToken()) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo connection not authorized — visit /auth/saxo/login?connection="
+                            + connectionId, null);
+        }
+        throw new BrokerException(BrokerException.Kind.NOT_READY,
+                "saxo connection authorized, token refresh pending — retry shortly", null);
     }
 
     public boolean hasRefreshToken() { return state.refreshToken() != null; }
