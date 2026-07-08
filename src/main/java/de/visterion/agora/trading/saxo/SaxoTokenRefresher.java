@@ -5,6 +5,9 @@ import de.visterion.agora.trading.ProbeStatus;
 import de.visterion.agora.trading.RegisteredConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
+import org.springframework.core.annotation.Order;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -31,8 +34,20 @@ public class SaxoTokenRefresher {
         this.oauth = oauth;
     }
 
+    /**
+     * Warm the Saxo sessions up before the startup probe runs. tick() already treats a
+     * missing access token as a refresh trigger, so at boot it exchanges the persisted
+     * refresh token for a fresh access token. @Order(0) runs this before ConnectionProbeRunner
+     * (@Order(100)) so the probe sees a valid token instead of a warming-up connection.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    @Order(0)
+    public void warmUp() {
+        tick();
+    }
+
     @Scheduled(fixedDelayString = "${agora.trading.saxo.refresh-check-ms:30000}")
-    public void tick() {
+    public synchronized void tick() {
         for (RegisteredConnection c : registry.active()) {
             if (!"saxo".equals(c.config().getProvider())) continue;
             SaxoTokenStore store = stores.forConnection(c.id());
