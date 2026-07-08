@@ -176,47 +176,49 @@ one or more named outputs.
 
 | Indicator | Description | Default params | Outputs |
 |---|---|---|---|
-| `sma` | Simple Moving Average | `period` 20 | `value` |
-| `ema` | Exponential Moving Average | `period` 20 | `value` |
-| `wma` | Weighted Moving Average | `period` 20 | `value` |
-| `kama` | Kaufman Adaptive Moving Average | `barCount` 10, `fastBarCount` 2, `slowBarCount` 30 | `value` |
-| `ma_cross` | Moving-average cross | `fast` 50, `slow` 200 | `fast`, `slow` |
-| `parabolic_sar` | Parabolic SAR | default acceleration | `value` |
-| `ichimoku` | Ichimoku Kinkō Hyō | defaults | `tenkan`, `kijun`, `senkou_a`, `senkou_b`, `chikou` |
+| `sma` | [Simple Moving Average](https://en.wikipedia.org/wiki/Moving_average) | `period` 20 | `value` |
+| `ema` | [Exponential Moving Average](https://en.wikipedia.org/wiki/Moving_average) | `period` 20 | `value` |
+| `wma` | [Weighted Moving Average](https://en.wikipedia.org/wiki/Moving_average) | `period` 20 | `value` |
+| `kama` | [Kaufman Adaptive Moving Average](https://en.wikipedia.org/wiki/Moving_average) | `barCount` 10, `fastBarCount` 2, `slowBarCount` 30 | `value` |
+| `ma_cross` | [Moving-average cross](https://en.wikipedia.org/wiki/Moving_average) | `fast` 50, `slow` 200 | `fast`, `slow` |
+| `parabolic_sar` | [Parabolic SAR](https://en.wikipedia.org/wiki/Parabolic_SAR) | default acceleration | `value` |
+| `ichimoku` | [Ichimoku Kinkō Hyō](https://en.wikipedia.org/wiki/Ichimoku_Kink%C5%8D_Hy%C5%8D) | defaults | `tenkan`, `kijun`, `senkou_a`, `senkou_b`, `chikou` |
 
 **Momentum & oscillators**
 
 | Indicator | Description | Default params | Outputs |
 |---|---|---|---|
-| `rsi` | Relative Strength Index | `period` 14 | `value` |
-| `roc` | Rate of Change (momentum) | `period` 12 | `value` |
-| `ppo` | Percentage Price Oscillator | `fast` 12, `slow` 26 | `value` |
-| `dpo` | Detrended Price Oscillator | `period` 20 | `value` |
-| `macd` | MACD line, signal & histogram | `fast` 12, `slow` 26, `signal` 9 | `macd`, `signal`, `histogram` |
-| `stochastic` | Stochastic oscillator | `k` 14, `d` 3 | `k`, `d` |
-| `cci` | Commodity Channel Index | `period` 20 | `value` |
-| `williams_r` | Williams %R | `period` 14 | `value` |
-| `aroon` | Aroon up/down/oscillator | `period` 25 | `up`, `down`, `oscillator` |
+| `rsi` | [Relative Strength Index](https://en.wikipedia.org/wiki/Relative_strength_index) | `period` 14 | `value` |
+| `roc` | [Rate of Change (momentum)](https://en.wikipedia.org/wiki/Momentum_%28technical_analysis%29) | `period` 12 | `value` |
+| `ppo` | [Percentage Price Oscillator](https://en.wikipedia.org/wiki/MACD) | `fast` 12, `slow` 26 | `value` |
+| `dpo` | [Detrended Price Oscillator](https://en.wikipedia.org/wiki/Detrended_price_oscillator) | `period` 20 | `value` |
+| `macd` | [MACD line, signal & histogram](https://en.wikipedia.org/wiki/MACD) | `fast` 12, `slow` 26, `signal` 9 | `macd`, `signal`, `histogram` |
+| `stochastic` | [Stochastic oscillator](https://en.wikipedia.org/wiki/Stochastic_oscillator) | `k` 14, `d` 3 | `k`, `d` |
+| `cci` | [Commodity Channel Index](https://en.wikipedia.org/wiki/Commodity_channel_index) | `period` 20 | `value` |
+| `williams_r` | [Williams %R](https://en.wikipedia.org/wiki/Williams_%25R) | `period` 14 | `value` |
+| `aroon` | [Aroon up/down/oscillator](https://en.wikipedia.org/wiki/Technical_analysis) | `period` 25 | `up`, `down`, `oscillator` |
 
 **Trend strength & volatility**
 
 | Indicator | Description | Default params | Outputs |
 |---|---|---|---|
-| `adx` | Average Directional Index | `period` 14 | `value` |
-| `atr` | Average True Range (SMA of True Range) | `period` 22 | `value` |
-| `bollinger` | Bollinger Bands | `period` 20, `k` 2.0 | `upper`, `middle`, `lower` |
-| `stddev` | Standard deviation over a window | `period` 20 | `value` |
-| `mean_deviation` | Mean absolute deviation over a window | `period` 20 | `value` |
-| `chandelier_stop` | Chandelier stop (ATR-based trailing stop) | `period` 22, `multiple` 3.0 | `value` |
+| `adx` | [Average Directional Index](https://en.wikipedia.org/wiki/Average_directional_movement_index) | `period` 14 | `value` |
+| `atr` | [Average True Range (SMA of True Range)](https://en.wikipedia.org/wiki/Average_true_range) | `period` 22 | `value` |
+| `bollinger` | [Bollinger Bands](https://en.wikipedia.org/wiki/Bollinger_Bands) | `period` 20, `k` 2.0 | `upper`, `middle`, `lower` |
+| `stddev` | [Standard deviation over a window](https://en.wikipedia.org/wiki/Standard_deviation) | `period` 20 | `value` |
+| `mean_deviation` | [Mean absolute deviation over a window](https://en.wikipedia.org/wiki/Average_absolute_deviation) | `period` 20 | `value` |
+| `chandelier_stop` | [Chandelier stop (ATR-based trailing stop)](https://en.wikipedia.org/wiki/Average_true_range) | `period` 22, `multiple` 3.0 | `value` |
 
 **Range, volume & helpers**
 
 | Indicator | Description | Default params | Outputs |
 |---|---|---|---|
-| `highest` | Highest value over a window | `period` 20 | `value` |
-| `lowest` | Lowest value over a window | `period` 20 | `value` |
-| `52w_range` | 52-week high/low over fetched history | `minBars` 250 | `high`, `low` |
-| `obv` | On-Balance Volume | — | `value` |
+| `highest` | [Highest value over a window](https://en.wikipedia.org/wiki/Donchian_channel) | `period` 20 | `value` |
+| `lowest` | [Lowest value over a window](https://en.wikipedia.org/wiki/Donchian_channel) | `period` 20 | `value` |
+| `52w_range` | [52-week high/low over fetched history](https://en.wikipedia.org/wiki/Donchian_channel) | `minBars` 250 | `high`, `low` |
+| `obv` | [On-Balance Volume](https://en.wikipedia.org/wiki/On-balance_volume) | — | `value` |
+
+<sub>Wikipedia links are English. A few indicators (`kama`, `ma_cross`, `ppo`, `aroon`, `chandelier_stop`, `52w_range`) have no dedicated English Wikipedia article and link to the closest related concept.</sub>
 
 Beyond these, `get_r_framework` returns risk-unit and R-multiple price levels.
 
