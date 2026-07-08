@@ -240,8 +240,73 @@ public class SaxoBrokerProvider implements BrokerProvider {
         }
     }
 
+    /**
+     * SIM-verified (see saxo-sim-spike.md Q2/Q3): pre-fill, only the parent shows up in
+     * /port/v1/orders/me (OrderRelation "IfDoneMaster"); its children are EMBEDDED in
+     * RelatedOpenOrders — not separate top-level orders — so we fetch raw JsonNode (not
+     * parseOrder) to reach that array. There is no MasterOrderId anywhere; post-fill the
+     * parent id vanishes entirely and legs become sibling-referencing Oco orders, which is
+     * out of scope for v1 (NOT_FOUND, matching "filled orders' protection legs must be
+     * modified individually"). Each present leg is PATCHed individually with the SIM-minimal
+     * body (no Uic/Amount/BuySell/ManualOrder) using the child's own OpenOrderType/Duration.
+     */
     @Override
-    public OrderResult modifyBracket(String id, BigDecimal stop, BigDecimal target) { throw notYet("modifyBracket"); }
+    public OrderResult modifyBracket(String id, BigDecimal stop, BigDecimal target) {
+        AccountContext ctx = accountContext();
+        JsonNode resp = getJson("/port/v1/orders/me");
+        JsonNode parent = null;
+        for (JsonNode n : resp.path("Data")) {
+            if (id.equals(n.path("OrderId").asString(null))) { parent = n; break; }
+        }
+        JsonNode children = parent == null ? null : parent.path("RelatedOpenOrders");
+        if (parent == null || !children.isArray() || children.isEmpty()) {
+            throw new BrokerException(BrokerException.Kind.NOT_FOUND,
+                    "no open bracket parent: " + id
+                            + " (filled orders' protection legs must be modified individually)", null);
+        }
+
+        JsonNode slLeg = null;
+        JsonNode tpLeg = null;
+        for (JsonNode child : children) {
+            String type = child.path("OpenOrderType").asString("");
+            if (type.contains("Stop")) slLeg = child;
+            else if ("Limit".equals(type)) tpLeg = child;
+        }
+
+        if (stop != null && slLeg != null) {
+            OrderResult r = patchLeg(ctx, slLeg, stop);
+            if (!r.accepted()) return r;
+        }
+        if (target != null && tpLeg != null) {
+            OrderResult r = patchLeg(ctx, tpLeg, target);
+            if (!r.accepted()) return r;
+        }
+        return OrderResult.accepted(id, null, "replaced");
+    }
+
+    private OrderResult patchLeg(AccountContext ctx, JsonNode child, BigDecimal newPrice) {
+        String durationType = child.path("Duration").path("DurationType").asString("GoodTillCancel");
+        ObjectNode body = MAPPER.createObjectNode();
+        body.put("AccountKey", ctx.accountKey());
+        body.put("OrderId", child.path("OrderId").asString(""));
+        body.put("AssetType", "Stock");
+        body.put("OrderType", child.path("OpenOrderType").asString(""));
+        body.put("OrderPrice", newPrice);
+        body.set("OrderDuration", durationNode(durationType));
+        try {
+            client.patch().uri("/trade/v2/orders")
+                    .header("Authorization", bearer())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .retrieve().body(JsonNode.class);
+            return OrderResult.accepted(null, null, "replaced");
+        } catch (RestClientResponseException e) {
+            return writeError(e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo modifyBracket failed: " + e.getMessage(), e);
+        }
+    }
 
     @Override
     public OrderResult flatten(String symbol) {
