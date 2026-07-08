@@ -252,6 +252,11 @@ public class SaxoBrokerProvider implements BrokerProvider {
      */
     @Override
     public OrderResult modifyBracket(String id, BigDecimal stop, BigDecimal target) {
+        // Guard: both params null → nothing to modify
+        if (stop == null && target == null) {
+            return OrderResult.rejected("nothing to modify — provide stop and/or target", "NO_CHANGES");
+        }
+
         AccountContext ctx = accountContext();
         JsonNode resp = getJson("/port/v1/orders/me");
         JsonNode parent = null;
@@ -271,6 +276,15 @@ public class SaxoBrokerProvider implements BrokerProvider {
             String type = child.path("OpenOrderType").asString("");
             if (type.contains("Stop")) slLeg = child;
             else if ("Limit".equals(type)) tpLeg = child;
+        }
+
+        // Guard: stop requested but no SL leg found
+        if (stop != null && slLeg == null) {
+            return OrderResult.rejected("no stop-loss leg on bracket " + id, "LEG_NOT_FOUND");
+        }
+        // Guard: target requested but no TP leg found
+        if (target != null && tpLeg == null) {
+            return OrderResult.rejected("no take-profit leg on bracket " + id, "LEG_NOT_FOUND");
         }
 
         if (stop != null && slLeg != null) {

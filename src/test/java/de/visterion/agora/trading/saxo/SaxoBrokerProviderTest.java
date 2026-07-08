@@ -367,4 +367,57 @@ class SaxoBrokerProviderTest {
         assertThat(r.accepted()).isFalse();
         assertThat(r.rejectCode()).isEqualTo("TooLateToChange");
     }
+
+    @Test
+    void modifyBracketBothNullIsRejectedWithoutAnyCall() {
+        // Guard: both stop and target null → rejected without hitting /port/v1/orders/me
+        var r = provider.modifyBracket("9001", null, null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("NO_CHANGES");
+        assertThat(r.rejectReason()).containsIgnoringCase("nothing to modify");
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/port/v1/orders/me")));
+        wm.verify(0, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void modifyBracketMissingStopLegIsRejected() {
+        // Stub: parent with only TP (Limit) child, no SL child
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"9001","OpenOrderType":"Limit","Status":"Working","Uic":211,"AssetType":"Stock",
+               "BuySell":"Buy","Amount":1.0,"OrderRelation":"IfDoneMaster","Price":100.0,
+               "DisplayAndFormat":{"Symbol":"AAPL:xnas"},
+               "RelatedOpenOrders":[
+                 {"OrderId":"9002","OpenOrderType":"Limit","OrderPrice":110.0,"Status":"NotWorking",
+                  "Amount":1.0,"Duration":{"DurationType":"GoodTillCancel"}}]}
+            ]}
+            """)));
+        // Request stop modification when no SL leg exists
+        var r = provider.modifyBracket("9001", new java.math.BigDecimal("85"), null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
+        assertThat(r.rejectReason()).containsIgnoringCase("no stop-loss leg");
+        wm.verify(0, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void modifyBracketMissingTargetLegIsRejected() {
+        // Stub: parent with only SL (StopIfTraded) child, no TP child
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"9001","OpenOrderType":"Limit","Status":"Working","Uic":211,"AssetType":"Stock",
+               "BuySell":"Buy","Amount":1.0,"OrderRelation":"IfDoneMaster","Price":100.0,
+               "DisplayAndFormat":{"Symbol":"AAPL:xnas"},
+               "RelatedOpenOrders":[
+                 {"OrderId":"9003","OpenOrderType":"StopIfTraded","OrderPrice":90.0,"Status":"NotWorking",
+                  "Amount":1.0,"Duration":{"DurationType":"GoodTillCancel"}}]}
+            ]}
+            """)));
+        // Request target modification when no TP leg exists
+        var r = provider.modifyBracket("9001", null, new java.math.BigDecimal("115"));
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
+        assertThat(r.rejectReason()).containsIgnoringCase("no take-profit leg");
+        wm.verify(0, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
 }
