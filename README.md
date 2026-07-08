@@ -86,7 +86,7 @@ tools.
                        │                                 │         │
                        │                                 ▼         │
                        │                          broker plugins   │
-                       │                          (Alpaca, IBKR)   │
+                       │                          (Alpaca, Saxo)   │
                        └──────────────────────────────────────────┘
 ```
 
@@ -122,13 +122,13 @@ design spec:
 |---|---|---|
 | **agora-data** | `data`, `fetch/*` | Read-only market data: quotes, OHLC, intraday, FX, news, fundamentals, filings, earnings, index constituents. Provider plugins. |
 | **agora-research** | `research` | Pure quant/analysis: ATR, Chandelier, MA-cross, RSI, MACD, Bollinger, ADX, CCI, Stochastic, Williams %R, OBV, 52-week range, R-framework. Built on [ta4j](https://github.com/ta4j/ta4j). |
-| **agora-trading** ⚠ | `tools` (namespace `trading`) | Execution: account, positions, orders, bracket place/modify, flatten. Broker plugins (Alpaca now, IBKR later). |
+| **agora-trading** ⚠ | `tools` (namespace `trading`) | Execution: account, positions, orders, bracket place/modify, flatten, cancel, list connections. Broker plugins (Alpaca and Saxo), selected per named connection. |
 
 ---
 
 ## Tool catalog
 
-40 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
+32 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
 webhook-only and require a trading token.
 
 ### Market data (`agora-data`)
@@ -143,6 +143,7 @@ webhook-only and require a trading token.
 | `get_company_news` | Recent company news headlines |
 | `get_fundamentals` | Fundamental metrics for a symbol |
 | `get_analyst_estimates` | Analyst recommendation trend |
+| `get_earnings_estimates` | Reported EPS vs. estimate per period with the raw surprise delta (actual − estimate) — raw passthrough, no scoring |
 | `get_index_constituents` | Constituents of a stock index (default S&P 500) |
 
 ### Fundamentals & SEC filings (`agora-data`)
@@ -239,6 +240,8 @@ is always available via `list_indicators`.
 | `place_bracket` | Place a bracket order (entry + stop-loss + take-profit) |
 | `modify_bracket` | Modify the stop-loss and/or take-profit of an existing bracket |
 | `flatten` | Close (flatten) the entire position for a symbol via market order |
+| `cancel_order` | Cancel an open order by broker order id |
+| `list_connections` | List active trading connections (id, provider, environment, probe status) visible to the caller |
 
 ---
 
@@ -254,7 +257,7 @@ provider.
 | Filings / XBRL concepts / EPS / Form-4 | SEC EDGAR |
 | Earnings calendar | Finnhub, Yahoo |
 | Index constituents | Wikipedia (S&P 500) |
-| Execution | Alpaca (paper by default); IBKR planned |
+| Execution | Alpaca and Saxo, selected per named connection (`alpaca-paper`, `alpaca-live`, `saxo-sim`, `saxo-live`) |
 
 Responses are cached with per-family TTLs (prices 120s, news 15m, fundamentals 6h,
 filings 1h, constituents 24h), all configurable.
@@ -268,6 +271,10 @@ Guarded by `BearerTokenFilter` on `/tools/**` and `/mcp/**`:
 - **General tools and `/mcp`**: accept either a general or a trading token.
 - **Trading tools** (`/tools/{name}` where `namespace()=="trading"`): accept **only**
   trading tokens.
+- **Live connections** (`saxo-live`, `alpaca-live` — real money): gated by a third,
+  disjoint token set `AGORA_TRADING_LIVE_TOKENS`. Only a token in that set can see or
+  call a live connection; a normal trading token sees the paper/sim connections only.
+  Enforced by `LiveAccessGuard`.
 - **`/actuator/health`**: public, no token.
 - Fail-closed: an empty token config denies all tool calls.
 
@@ -283,14 +290,38 @@ for the full list and defaults). Key ones:
 | Variable | Purpose |
 |---|---|
 | `AGORA_AUTH_TOKENS` | Comma-separated general (read/quant) bearer tokens |
-| `AGORA_TRADING_TOKENS` | Comma-separated execution bearer tokens |
-| `AGORA_TRADING_PROVIDER` | Broker plugin (default `alpaca`) |
-| `AGORA_TRADING_ALPACA_KEY_ID` / `_SECRET` / `_BASE_URL` | Alpaca credentials (defaults to paper API) |
+| `AGORA_TRADING_TOKENS` | Comma-separated execution bearer tokens (paper/sim connections) |
+| `AGORA_TRADING_LIVE_TOKENS` | Comma-separated tokens that unlock live connections (`saxo-live`, `alpaca-live`); a disjoint set from `AGORA_TRADING_TOKENS`, enforced by `LiveAccessGuard` |
+| `AGORA_TRADING_ALPACA_KEY_ID` / `_SECRET` / `_BASE_URL` | Alpaca **paper** credentials (`alpaca-paper`; defaults to paper API) |
+| `AGORA_TRADING_ALPACA_LIVE_KEY_ID` / `_SECRET` / `_BASE_URL` | Alpaca **live** credentials (`alpaca-live`) |
+| `AGORA_TRADING_SAXO_SIM_APP_KEY` / `_APP_SECRET` / `_BASE_URL` / `_REDIRECT_URI` | Saxo SIM developer-app credentials + OAuth redirect (`saxo-sim`) |
+| `AGORA_TRADING_SAXO_LIVE_APP_KEY` / `_APP_SECRET` / `_BASE_URL` / `_REDIRECT_URI` | Saxo LIVE developer-app credentials + OAuth redirect (`saxo-live`) |
+| `AGORA_TRADING_SAXO_TOKEN_DIR` | Directory for persisted Saxo OAuth tokens (default `/data/saxo`) |
+| `AGORA_TRADING_SAXO_REFRESH_CHECK_MS` | Saxo token auto-refresh check interval in ms (default `30000`) |
 | `AGORA_DATA_FINNHUB_KEY` | Finnhub API key |
 | `AGORA_DATA_TWELVEDATA_KEY` | TwelveData API key |
 | `AGORA_DATA_EDGAR_USER_AGENT` | SEC-required User-Agent for EDGAR |
 | `AGORA_DATA_CACHE_TTL_*` | Per-family cache TTLs |
 | `AGORA_RESEARCH_*` | Default indicator periods (ATR 22, MA 50/200, RSI 14, and so on) |
+
+### Saxo connections
+
+Saxo SIM and LIVE are **separate developer apps** with their own app key/secret. The
+connection's `environment` selects the endpoints:
+
+- **Token endpoint:** `sim.logonvalidation.net` (SIM) vs `live.logonvalidation.net` (LIVE).
+- **OpenAPI gateway:** `gateway.saxobank.com/sim/openapi` (SIM) vs `gateway.saxobank.com/openapi` (LIVE).
+
+Each connection needs a **one-time OAuth login**: open
+`GET /auth/saxo/login?connection=<name>` (e.g. `saxo-sim`), complete Saxo's login, and the
+callback `/auth/saxo/callback` stores tokens under the token-dir
+(`AGORA_TRADING_SAXO_TOKEN_DIR`, default `/data/saxo`). Tokens are auto-refreshed from
+there, so the login persists across restarts.
+
+Ambiguous cross-listed symbols must be disambiguated with a connection-level
+`extra.exchange-id` (e.g. `NASDAQ`); otherwise resolution fails with
+`ambiguous symbol: <symbol> — set extra.exchange-id`. The Saxo instrument resolver is
+**stock-only** (`AssetTypes=Stock`) — no FX or other asset types.
 
 ---
 
@@ -374,7 +405,7 @@ self-host your own instance and supply your own broker and data-provider API key
 
 - **You run it; you own the data flow.** Agora ships code, not a data proxy. Market
   data and orders flow directly between *your* instance and the provider/broker APIs
-  (Alpaca, IBKR, Finnhub, TwelveData, SEC EDGAR). The maintainers do not operate a
+  (Alpaca, Saxo, Finnhub, TwelveData, SEC EDGAR). The maintainers do not operate a
   server and do not redistribute any market data.
 - **Your keys, your terms.** Because you configure your own API keys
   (`AGORA_TRADING_ALPACA_KEY_ID`, `AGORA_DATA_FINNHUB_KEY`, and so on), you use your own
@@ -391,7 +422,7 @@ self-host your own instance and supply your own broker and data-provider API key
   outage can cause financial loss. You are solely responsible for every order placed
   through your instance. Test against a paper account first; Alpaca paper is the default.
 - **No affiliation.** Agora is an independent project. It is not affiliated with,
-  endorsed by, or sponsored by Alpaca, Interactive Brokers, Yahoo, Finnhub, TwelveData,
+  endorsed by, or sponsored by Alpaca, Saxo Bank, Yahoo, Finnhub, TwelveData,
   or any other provider whose API it can call. All trademarks belong to their respective
   owners.
 - **No warranty.** To the extent permitted by applicable law, the software is provided
