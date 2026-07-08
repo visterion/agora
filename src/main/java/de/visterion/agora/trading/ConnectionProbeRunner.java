@@ -10,8 +10,11 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 
 /**
- * Probes every active connection once after startup (port already bound).
- * Failure is informational: WARN + status "unreachable" — never blocks routing or startup.
+ * Probes every active connection once after startup (port already bound). Runs at
+ * {@code @Order(100)}, after the Saxo refresher's eager warm-up ({@code @Order(0)}).
+ * The outcome is informational and never blocks routing or startup: "ok" on success,
+ * "pending" + INFO for a NOT_READY connection (authorized but still warming up), and
+ * "unreachable" + WARN for any other failure.
  */
 @Component
 public class ConnectionProbeRunner {
