@@ -10,6 +10,7 @@
 [![Spring Boot](https://img.shields.io/badge/spring%20boot-4.0-6DB33F)](https://spring.io/projects/spring-boot)
 [![Spring AI](https://img.shields.io/badge/spring%20ai-2.0-6DB33F)](https://spring.io/projects/spring-ai)
 [![MCP](https://img.shields.io/badge/MCP-Streamable%20HTTP-6E56CF)](https://modelcontextprotocol.io)
+[![lines of code](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/visterion/agora/main/badges/loc.json&cacheSeconds=300)](https://github.com/visterion/agora)
 
 **Docker image:** [`ghcr.io/visterion/agora:main`](https://github.com/visterion/agora/pkgs/container/agora)
 
@@ -167,12 +168,63 @@ webhook-only and require a trading token.
 | `get_r_framework` | Risk unit and R-multiple price levels |
 | `ping` | Liveness probe that returns `pong` plus any echoed message |
 
-The catalog ships with ~26 indicators (ATR, Chandelier stop, MA cross, 52-week range,
-RSI, MACD, Bollinger, Stochastic, ADX, OBV, CCI, Williams %R, SMA/EMA/WMA/KAMA, ROC,
-PPO, DPO, Aroon, Ichimoku, Parabolic SAR, and more). Operators can add any simple
-ta4j indicator without a rebuild: mount a YAML file and set
-`AGORA_RESEARCH_INDICATORS_FILE` (same format as `indicators-catalog.yaml`), then
-restart. Composable: `{"name":"sma","params":{"period":5},"of":{"name":"rsi"}}`.
+The catalog ships with **26 built-in indicators**, computed via `get_indicators` (single
+values or `series=N` for the last N). Each indicator has named params (with defaults) and
+one or more named outputs.
+
+**Trend & moving averages**
+
+| Indicator | Description | Default params | Outputs |
+|---|---|---|---|
+| `sma` | Simple Moving Average | `period` 20 | `value` |
+| `ema` | Exponential Moving Average | `period` 20 | `value` |
+| `wma` | Weighted Moving Average | `period` 20 | `value` |
+| `kama` | Kaufman Adaptive Moving Average | `barCount` 10, `fastBarCount` 2, `slowBarCount` 30 | `value` |
+| `ma_cross` | Moving-average cross | `fast` 50, `slow` 200 | `fast`, `slow` |
+| `parabolic_sar` | Parabolic SAR | default acceleration | `value` |
+| `ichimoku` | Ichimoku Kinkō Hyō | defaults | `tenkan`, `kijun`, `senkou_a`, `senkou_b`, `chikou` |
+
+**Momentum & oscillators**
+
+| Indicator | Description | Default params | Outputs |
+|---|---|---|---|
+| `rsi` | Relative Strength Index | `period` 14 | `value` |
+| `roc` | Rate of Change (momentum) | `period` 12 | `value` |
+| `ppo` | Percentage Price Oscillator | `fast` 12, `slow` 26 | `value` |
+| `dpo` | Detrended Price Oscillator | `period` 20 | `value` |
+| `macd` | MACD line, signal & histogram | `fast` 12, `slow` 26, `signal` 9 | `macd`, `signal`, `histogram` |
+| `stochastic` | Stochastic oscillator | `k` 14, `d` 3 | `k`, `d` |
+| `cci` | Commodity Channel Index | `period` 20 | `value` |
+| `williams_r` | Williams %R | `period` 14 | `value` |
+| `aroon` | Aroon up/down/oscillator | `period` 25 | `up`, `down`, `oscillator` |
+
+**Trend strength & volatility**
+
+| Indicator | Description | Default params | Outputs |
+|---|---|---|---|
+| `adx` | Average Directional Index | `period` 14 | `value` |
+| `atr` | Average True Range (SMA of True Range) | `period` 22 | `value` |
+| `bollinger` | Bollinger Bands | `period` 20, `k` 2.0 | `upper`, `middle`, `lower` |
+| `stddev` | Standard deviation over a window | `period` 20 | `value` |
+| `mean_deviation` | Mean absolute deviation over a window | `period` 20 | `value` |
+| `chandelier_stop` | Chandelier stop (ATR-based trailing stop) | `period` 22, `multiple` 3.0 | `value` |
+
+**Range, volume & helpers**
+
+| Indicator | Description | Default params | Outputs |
+|---|---|---|---|
+| `highest` | Highest value over a window | `period` 20 | `value` |
+| `lowest` | Lowest value over a window | `period` 20 | `value` |
+| `52w_range` | 52-week high/low over fetched history | `minBars` 250 | `high`, `low` |
+| `obv` | On-Balance Volume | — | `value` |
+
+Beyond these, `get_r_framework` returns risk-unit and R-multiple price levels.
+
+Indicators are **composable** — feed one into another via `of`, e.g. an RSI-of-SMA:
+`{"name":"sma","params":{"period":5},"of":{"name":"rsi"}}`. Operators can add any simple
+ta4j indicator without a rebuild: mount a YAML file and set `AGORA_RESEARCH_INDICATORS_FILE`
+(same format as `indicators-catalog.yaml`), then restart. The live, machine-readable catalog
+is always available via `list_indicators`.
 
 ### Trading / execution (`agora-trading`, trading token required)
 
