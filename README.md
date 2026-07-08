@@ -1,8 +1,8 @@
 # Agora
 
-> **A broker- and provider-agnostic MCP tool suite for market data, quant research, and
-> trade execution. Register a tool once in Agora and every consumer can use it, with no
-> consumer rebuild.**
+> A broker and provider agnostic MCP tool suite for market data, quant research, and
+> trade execution. Register a tool once in Agora and every consumer can use it without a
+> rebuild.
 
 [![docker](https://github.com/visterion/agora/actions/workflows/docker.yml/badge.svg)](https://github.com/visterion/agora/actions/workflows/docker.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -22,7 +22,7 @@ over the [Model Context Protocol](https://modelcontextprotocol.io) (MCP) and a p
 webhook. Consumers such as AI agents and trading systems call these tools without knowing
 which data provider or broker sits behind them.
 
-It is built as a single Spring Boot 4 / JDK 25 application and ships as one Docker image.
+It's built as a single Spring Boot 4 / JDK 25 application and ships as one Docker image.
 
 ---
 
@@ -37,19 +37,19 @@ Agora is one product in a family of sibling services:
 | **Agora** | Market data, quant, and execution (**this repo**) |
 | **Dracul** | A *consumer*: an investment-research agent that uses Agora |
 
-The guiding principle (the **Nordstern**):
+The principle we build around (the **Nordstern**):
 
 > A new tool, provider, broker, or quant building block is registered **in Agora**.
 > The consumer stays untouched, and no consumer rebuild is required.
 
 Dracul, and any future consumer, gains capabilities purely by Agora adding a tool, never
-by changing consumer code. That is why Agora is a separate service rather than a library
+by changing consumer code. That's why Agora is a separate service rather than a library
 baked into each agent.
 
-### Scope discipline: the hard boundary
+### Scope discipline: the boundary
 
-Agora is **generic**. It owns raw market data, execution, and neutral quant math. It must
-**never** contain investment domain vocabulary.
+Agora is generic. It owns raw market data, execution, and neutral quant math. It must
+never contain investment domain vocabulary.
 
 | Agora owns | The consumer (e.g. Dracul) owns |
 |---|---|
@@ -57,20 +57,19 @@ Agora is **generic**. It owns raw market data, execution, and neutral quant math
 | Plugin registry, MCP transport, auth, health | Verdicts, decisions, provenance |
 | Normalized, broker-/provider-neutral domain (Account/Order/Position/Fill) | Anomaly screening, framing, prompts, orchestration |
 
-**Rule:** if a word like `spinoff`, `insider`, `PEAD`, `verdict`, or `thesis` appears in an
-Agora tool name, schema, or code, that is a layer-violation bug. Investment provenance
-lives only in the consumer, which passes an opaque `client_ref` that Agora merely echoes.
+**Rule:** if a word like `spinoff`, `insider`, `PEAD`, `verdict`, or `thesis` shows up in an
+Agora tool name, schema, or code, that's a layer-violation bug. Investment provenance
+lives only in the consumer, which passes an opaque `client_ref` that Agora just echoes back.
 
-The **two-consumer rule** keeps Agora honest: once a second consumer exists alongside
-Dracul, it validates that the API is truly neutral.
+The **two-consumer rule** is the check on this: once a second consumer exists alongside
+Dracul, it proves the API is genuinely neutral.
 
 ---
 
 ## Architecture
 
 Agora runs as one Spring Boot application. A single tool registry is served through two
-front-doors, the MCP endpoint and an HTTP webhook, and both expose the identical set of
-tools.
+front-doors, the MCP endpoint and an HTTP webhook, and both expose the same set of tools.
 
 ```
                        ┌──────────────────────────────────────────┐
@@ -103,7 +102,7 @@ public interface AgoraTool {
 ```
 
 Because the `ToolRegistry` collects every `AgoraTool` bean, adding one class exposes the
-tool on **both** front-doors at once:
+tool on both front-doors at once:
 
 - `McpToolAdapter` turns each tool into an MCP `SyncToolSpecification` on `/mcp`.
 - `ToolWebhookController` serves each tool at `POST /tools/{name}` (Vistierie-compatible).
@@ -115,7 +114,7 @@ webhook.
 
 ### Logical grouping
 
-Although it is one binary, the code is organized into the three logical servers from the
+Even though it's one binary, the code is organized into the three logical servers from the
 design spec:
 
 | Group | Package(s) | Content |
@@ -247,7 +246,7 @@ is always available via `list_indicators`.
 
 ## Providers & brokers (plugins)
 
-Data tools resolve through provider plugins with fallback; the consumer never picks a
+Data tools resolve through provider plugins with fallback, so the consumer never picks a
 provider.
 
 | Domain | Plugins |
@@ -371,7 +370,7 @@ curl -s http://localhost:8080/actuator/health
 
 ## Adding a new tool
 
-Adding a tool takes one new class and no consumer changes.
+A new tool is one new class and no consumer changes.
 
 1. Create a class in `de.visterion.agora.tools` implementing `AgoraTool`, annotated
    `@Component`.
