@@ -2,6 +2,7 @@ package de.visterion.agora.trading.saxo;
 
 import de.visterion.agora.trading.ConnectionConfig;
 import de.visterion.agora.trading.ConnectionRegistry;
+import de.visterion.agora.trading.ProbeStatus;
 import de.visterion.agora.trading.RegisteredConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,12 +12,18 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.time.Instant;
 import java.util.Optional;
 
 /**
  * OAuth code-flow front-door for saxo connections. The ONLY unauthenticated surface
  * besides /actuator/health; safety = one-shot state binding + Saxo one-time codes.
  * Responses never contain tokens, credentials, or exception details.
+ *
+ * <p>Accepted risk (2026-07-08): /auth/saxo/login is unauthenticated — anyone inside
+ * the trust boundary (private docker net/host) can initiate a pairing and bind their
+ * own Saxo account; accepted with the same reasoning as no-TLS-in-cluster v1. Optional
+ * future mitigation: token gate on /login.
  */
 @RestController
 public class SaxoAuthEndpoints {
@@ -67,6 +74,7 @@ public class SaxoAuthEndpoints {
         try {
             SaxoOAuthClient.SaxoTokens t = oauth.exchangeCode(cfg, code);
             stores.forConnection(id).update(t.accessToken(), t.expiresInSeconds(), t.refreshToken());
+            registry.get(id).ifPresent(c -> c.setProbeStatus(ProbeStatus.ok(Instant.now())));
             log.info("Saxo connection '{}' authorized via OAuth callback", id);
             return ResponseEntity.ok("connection " + id + " authorized");
         } catch (Exception e) {

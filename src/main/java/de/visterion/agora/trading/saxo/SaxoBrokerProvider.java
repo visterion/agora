@@ -400,11 +400,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
         }
     }
 
-    private static BrokerException notYet(String op) {
-        return new BrokerException(BrokerException.Kind.UNAVAILABLE,
-                "saxo " + op + " not implemented yet", null);
-    }
-
     private static String capitalize(String side) {
         if (side == null || side.isEmpty()) return side;
         return Character.toUpperCase(side.charAt(0)) + side.substring(1).toLowerCase(Locale.ROOT);
