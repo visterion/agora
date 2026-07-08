@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -177,6 +178,49 @@ class SaxoTokenRefresherTest {
 
         new SaxoTokenRefresher(registry(), stores, oauth).warmUp();
 
+        assertThat(store.validAccessToken()).contains("acc-1");
+    }
+
+    @Test
+    void concurrentWarmUpAndTickDoNotDoubleRefresh() throws InterruptedException {
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-0", 1200, "ref-0");
+        now.addAndGet(1_300_000L);                                  // no valid access, refresh present
+        SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+        when(oauth.refresh(any(), eq("ref-0"))).thenAnswer(invocation -> {
+            Thread.sleep(100);                                      // widen the overlap window
+            return new SaxoOAuthClient.SaxoTokens("acc-1", 1200, "ref-1");
+        });
+
+        SaxoTokenRefresher refresher = new SaxoTokenRefresher(registry(), stores, oauth);
+        CountDownLatch start = new CountDownLatch(1);
+        Runnable warmUpTask = () -> {
+            try {
+                start.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            refresher.warmUp();
+        };
+        Runnable tickTask = () -> {
+            try {
+                start.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            refresher.tick();
+        };
+        Thread t1 = new Thread(warmUpTask);
+        Thread t2 = new Thread(tickTask);
+        t1.start();
+        t2.start();
+        start.countDown();
+        t1.join();
+        t2.join();
+
+        verify(oauth, times(1)).refresh(any(), any());
+        assertThat(store.dead()).isFalse();
         assertThat(store.validAccessToken()).contains("acc-1");
     }
 }
