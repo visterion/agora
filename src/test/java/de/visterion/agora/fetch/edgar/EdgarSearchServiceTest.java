@@ -259,4 +259,36 @@ class EdgarSearchServiceTest {
         // The external entity file must never have been fetched (no XXE resolution).
         wm.verify(0, getRequestedFor(urlPathEqualTo("/secret.txt")));
     }
+
+    @Test void filingTextFetchesArchiveDocAndExtracts() {
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/1/x.htm"))
+                .willReturn(aResponse().withHeader("Content-Type", "text/html").withBody(
+                    "<html><body><p>cover</p><p>SUMMARY TERM SHEET</p>"
+                  + "<p>The offer is $52.00 in cash per share.</p></body></html>")));
+        var svc = new EdgarSearchService(
+                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis);
+
+        var ft = svc.filingText(wm.baseUrl() + "/Archives/edgar/data/1/x.htm");
+
+        assertThat(ft.sectionFound()).isTrue();
+        assertThat(ft.text()).contains("SUMMARY TERM SHEET").contains("$52.00");
+        assertThat(ft.charCount()).isEqualTo(ft.text().length());
+        assertThat(ft.sourceUrl()).endsWith("/Archives/edgar/data/1/x.htm");
+    }
+
+    @Test void filingTextRejectsNonArchiveUrl() {
+        var svc = new EdgarSearchService(
+                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis);
+        assertThatThrownBy(() -> svc.filingText("https://evil.example/secret"))
+                .isInstanceOf(MarketDataException.class);
+    }
+
+    @Test void filingTextEmptyDocumentIsUnavailable() {
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/2/empty.htm"))
+                .willReturn(aResponse().withBody("")));
+        var svc = new EdgarSearchService(
+                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis);
+        assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/2/empty.htm"))
+                .isInstanceOf(MarketDataException.class);
+    }
 }

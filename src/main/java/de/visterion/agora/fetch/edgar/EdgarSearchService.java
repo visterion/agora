@@ -44,6 +44,7 @@ public class EdgarSearchService {
     private final String archiveBase;
     private final TtlCache<String, List<FilingHit>> searchCache;
     private final TtlCache<String, List<Form4Transaction>> form4Cache;
+    private final TtlCache<String, FilingText> filingTextCache;
 
     @Autowired
     public EdgarSearchService(
@@ -69,6 +70,7 @@ public class EdgarSearchService {
         this.archiveBase = archiveBase;
         this.searchCache = new TtlCache<>(ttlSeconds * 1000L, now);
         this.form4Cache = new TtlCache<>(ttlSeconds * 1000L, now);
+        this.filingTextCache = new TtlCache<>(ttlSeconds * 1000L, now);
     }
 
     /** Full-text filing search on efts. ticker on a hit may be empty (fresh registrations). */
@@ -183,6 +185,35 @@ public class EdgarSearchService {
             }
         }
         return out;
+    }
+
+    /** A filing's extracted summary/term-sheet text plus extraction metadata. */
+    public record FilingText(String text, boolean sectionFound, boolean truncated, int charCount, String sourceUrl) {}
+
+    /**
+     * Fetch a filing's primary document from the SEC archive and extract its summary/term-sheet
+     * text. {@code url} MUST be an archive URL under the configured archive base (SSRF guard).
+     * Throws {@link MarketDataException} on a non-archive url, a fetch failure, or an empty document.
+     */
+    public FilingText filingText(String url) {
+        if (url == null || !url.startsWith(archiveBase + "/Archives/")) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "not an SEC archive url: " + url, null);
+        }
+        return filingTextCache.get("text:" + url, () -> fetchFilingText(url));
+    }
+
+    private FilingText fetchFilingText(String url) {
+        String raw;
+        try {
+            raw = archiveHttp.get().uri(url).retrieve().body(String.class);
+        } catch (Exception e) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "filing fetch failed: " + e.getMessage(), e);
+        }
+        if (raw == null || raw.isBlank()) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "empty filing document: " + url, null);
+        }
+        var ex = FilingTextExtractor.extract(raw);
+        return new FilingText(ex.text(), ex.sectionFound(), ex.truncated(), ex.text().length(), url);
     }
 
     private void parseForm4(FilingHit hit, List<Form4Transaction> out) throws Exception {
