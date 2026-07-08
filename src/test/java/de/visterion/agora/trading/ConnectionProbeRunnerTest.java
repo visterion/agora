@@ -82,4 +82,38 @@ class ConnectionProbeRunnerTest {
         assertThat(reg.get("bad-1").orElseThrow().probeStatus().state()).isEqualTo("unreachable");
         assertThat(reg.get("good-1").orElseThrow().probeStatus().state()).isEqualTo("ok");
     }
+
+    @Test
+    void notReadyProbeSetsPendingNotUnreachable() {
+        ConnectionConfig c = cfg("pending");
+        ConnectionsProperties props = new ConnectionsProperties();
+        var conns = new LinkedHashMap<String, ConnectionConfig>();
+        conns.put("saxo-sim", c);
+        props.setConnections(conns);
+        BrokerProviderFactory f = new BrokerProviderFactory() {
+            public String provider() { return "pending"; }
+            public BrokerProvider create(ConnectionConfig cc) {
+                return new BrokerProvider() {
+                    public String name() { return "pending"; }
+                    public OrderResult submitBracket(BracketOrderRequest r) { return null; }
+                    public OrderResult modifyBracket(String id, BigDecimal s, BigDecimal t) { return null; }
+                    public OrderResult flatten(String sym) { return null; }
+                    public List<Position> positions() { return List.of(); }
+                    public List<Order> orders(String status) { return List.of(); }
+                    public Account account() { return null; }
+                    public Order orderByClientRef(String ref) { return null; }
+                    public OrderResult cancel(String id) { return null; }
+                    public void probe() {
+                        throw new BrokerException(BrokerException.Kind.NOT_READY,
+                                "saxo connection authorized, token refresh pending — retry shortly", null);
+                    }
+                };
+            }
+        };
+        var reg = new ConnectionRegistry(props, List.of(f));
+        new ConnectionProbeRunner(reg).probeAll();
+        var st = reg.get("saxo-sim").orElseThrow().probeStatus();
+        assertThat(st.state()).isEqualTo("pending");
+        assertThat(st.detail()).contains("refresh pending");
+    }
 }
