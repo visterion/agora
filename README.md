@@ -261,6 +261,15 @@ provider.
 Responses are cached with per-family TTLs (prices 120s, news 15m, fundamentals 6h,
 filings 1h, constituents 24h), all configurable.
 
+**Supported brokers:** Alpaca and Saxo. Both expose headless, self-contained REST auth
+that Agora refreshes without a human in the loop, which fits the deployment model.
+
+> **Interactive Brokers (IBKR):** evaluated and dropped. IBKR restricts first-party
+> OAuth to Financial Advisor and Organizational accounts, so an individual account has
+> no sensible headless auth flow — the only officially supported path is the Client
+> Portal Gateway, a persistent local process with interactive login, which is
+> incompatible with Agora's headless model. Execution stays on Alpaca and Saxo.
+
 ---
 
 ## Security
@@ -421,9 +430,9 @@ self-host your own instance and supply your own broker and data-provider API key
   outage can cause financial loss. You are solely responsible for every order placed
   through your instance. Test against a paper account first; Alpaca paper is the default.
 - **No affiliation.** Agora is an independent project. It is not affiliated with,
-  endorsed by, or sponsored by Alpaca, Saxo Bank, Yahoo, Finnhub, TwelveData,
-  or any other provider whose API it can call. All trademarks belong to their respective
-  owners.
+  endorsed by, or sponsored by Alpaca, Saxo Bank, Interactive Brokers, Yahoo, Finnhub,
+  TwelveData, or any other provider whose API it can call. All trademarks belong to their
+  respective owners.
 - **No warranty.** To the extent permitted by applicable law, the software is provided
   "AS IS" (see the MIT license), without warranty of any kind. It is **not** financial,
   investment, legal, or tax advice.
