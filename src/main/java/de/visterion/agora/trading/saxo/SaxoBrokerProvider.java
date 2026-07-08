@@ -4,18 +4,16 @@ import de.visterion.agora.trading.*;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.util.UriBuilder;
-import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
 import java.net.URI;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 /**
  * Saxo OpenAPI broker provider (SIM or LIVE per connection config). Trades by Uic —
@@ -102,9 +100,16 @@ public class SaxoBrokerProvider implements BrokerProvider {
     @Override
     public Account account() {
         AccountContext ctx = accountContext();
-        String encoded = "/port/v1/balances?ClientKey=" + encodeQueryParam(ctx.clientKey())
-                + "&AccountKey=" + encodeQueryParam(ctx.accountKey());
-        JsonNode n = getJson(encoded);
+        // RestClient's DefaultUriBuilderFactory runs in TEMPLATE_AND_VALUES mode: a URI
+        // string passed to uri(String) is treated as a template and re-encoded wholesale,
+        // which double-encodes an already-percent-encoded query string. Query values bound
+        // via build(Object...) template variables are, by contrast, encoded exactly once
+        // (strictly, per RFC 3986) — so '+' in ClientKey/AccountKey becomes %2B on the wire
+        // instead of round-tripping as a literal '+' (which a server would decode as space).
+        JsonNode n = getJson(b -> b.path("/port/v1/balances")
+                .queryParam("ClientKey", "{ck}")
+                .queryParam("AccountKey", "{ak}")
+                .build(ctx.clientKey(), ctx.accountKey()));
         return new Account(ctx.accountKey(), bd(n.path("TotalValue")),
                 bd(n.path("MarginAvailableForTrading")), bd(n.path("CashBalance")),
                 n.path("Currency").asString("USD"), "ACTIVE");
@@ -113,10 +118,12 @@ public class SaxoBrokerProvider implements BrokerProvider {
     @Override
     public List<Position> positions() {
         AccountContext ctx = accountContext();
-        String encoded = "/port/v1/netpositions?ClientKey=" + encodeQueryParam(ctx.clientKey())
-                + "&AccountKey=" + encodeQueryParam(ctx.accountKey())
-                + "&FieldGroups=" + encodeQueryParam("NetPositionBase,NetPositionView,DisplayAndFormat");
-        JsonNode resp = getJson(encoded);
+        // See comment in account() re: TEMPLATE_AND_VALUES encoding.
+        JsonNode resp = getJson(b -> b.path("/port/v1/netpositions")
+                .queryParam("ClientKey", "{ck}")
+                .queryParam("AccountKey", "{ak}")
+                .queryParam("FieldGroups", "{fg}")
+                .build(ctx.clientKey(), ctx.accountKey(), "NetPositionBase,NetPositionView,DisplayAndFormat"));
         List<Position> out = new ArrayList<>();
         for (JsonNode n : resp.path("Data")) {
             JsonNode base = n.path("NetPositionBase");
@@ -173,32 +180,19 @@ public class SaxoBrokerProvider implements BrokerProvider {
 
     // ---- helpers ----
 
-    private static String encodeQueryParam(String value) {
-        return URLEncoder.encode(value, StandardCharsets.UTF_8);
-    }
-
-    JsonNode getJson(URI uri) {
-        try {
-            JsonNode n = client.get().uri(uri).header("Authorization", bearer())
-                    .retrieve().body(JsonNode.class);
-            if (n == null) {
-                throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "empty saxo response", null);
-            }
-            return n;
-        } catch (BrokerException e) {
-            throw e;
-        } catch (RestClientResponseException e) {
-            throw readError(e);
-        } catch (Exception e) {
-            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
-                    "saxo request failed: " + e.getMessage(), e);
-        }
-    }
-
     JsonNode getJson(String uri) {
+        return exchange(() -> client.get().uri(uri).header("Authorization", bearer())
+                .retrieve().body(JsonNode.class));
+    }
+
+    JsonNode getJson(Function<UriBuilder, URI> uriFn) {
+        return exchange(() -> client.get().uri(uriFn).header("Authorization", bearer())
+                .retrieve().body(JsonNode.class));
+    }
+
+    private JsonNode exchange(Supplier<JsonNode> call) {
         try {
-            JsonNode n = client.get().uri(uri).header("Authorization", bearer())
-                    .retrieve().body(JsonNode.class);
+            JsonNode n = call.get();
             if (n == null) {
                 throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "empty saxo response", null);
             }

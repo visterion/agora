@@ -96,8 +96,8 @@ class SaxoBrokerProviderTest {
         assertThat(a.buyingPower()).isEqualByComparingTo("9800.0");
         assertThat(a.currency()).isEqualTo("USD");
         wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/balances"))
-                .withQueryParam("ClientKey", equalTo("Cli%2BKey%2F1%3D%3D"))
-                .withQueryParam("AccountKey", equalTo("Acc%2BKey%2F1%3D%3D")));
+                .withQueryParam("ClientKey", equalTo("Cli+Key/1=="))
+                .withQueryParam("AccountKey", equalTo("Acc+Key/1==")));
     }
 
     @Test
@@ -117,9 +117,9 @@ class SaxoBrokerProviderTest {
         assertThat(ps.get(0).unrealizedPl()).isEqualByComparingTo("100.0");
         assertThat(ps.get(0).currency()).isEqualTo("USD");
         wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions"))
-                .withQueryParam("ClientKey", equalTo("Cli%2BKey%2F1%3D%3D"))
-                .withQueryParam("AccountKey", equalTo("Acc%2BKey%2F1%3D%3D"))
-                .withQueryParam("FieldGroups", equalTo("NetPositionBase%2CNetPositionView%2CDisplayAndFormat")));
+                .withQueryParam("ClientKey", equalTo("Cli+Key/1=="))
+                .withQueryParam("AccountKey", equalTo("Acc+Key/1=="))
+                .withQueryParam("FieldGroups", equalTo("NetPositionBase,NetPositionView,DisplayAndFormat")));
     }
 
     @Test
