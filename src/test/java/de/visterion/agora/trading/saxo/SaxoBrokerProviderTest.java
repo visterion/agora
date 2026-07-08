@@ -69,11 +69,19 @@ class SaxoBrokerProviderTest {
 
     @Test
     void noValidTokenIsUnavailableWithReAuthHint() {
-        now.addAndGet(2_000_000L);                    // access expired
+        store.markDead("test");                       // dead connection needs re-auth
         assertThatThrownBy(() -> provider.probe())
                 .isInstanceOf(BrokerException.class)
                 .hasMessageContaining("/auth/saxo/login")
                 .hasMessageNotContaining("acc-token");
+    }
+
+    @Test
+    void probePropagatesNotReadyWhenAccessPendingButRefreshPresent() {
+        now.addAndGet(1_300_000L);   // expire the access token set in setUp; refresh remains
+        assertThatThrownBy(() -> provider.probe())
+                .isInstanceOfSatisfying(BrokerException.class,
+                        e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.NOT_READY));
     }
 
     // ---- account context ----

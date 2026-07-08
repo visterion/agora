@@ -48,10 +48,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
     @Override public String name() { return "saxo"; }
 
     String bearer() {
-        return store.validAccessToken().map(t -> "Bearer " + t).orElseThrow(() ->
-                new BrokerException(BrokerException.Kind.UNAVAILABLE,
-                        "saxo connection not authorized — visit /auth/saxo/login?connection="
-                                + store.connectionId(), null));
+        return store.authorizationHeaderValue();
     }
 
     // ---- probe ----
