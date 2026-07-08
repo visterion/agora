@@ -3,13 +3,19 @@ package de.visterion.agora.trading.saxo;
 import de.visterion.agora.trading.*;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.util.UriBuilder;
+import org.springframework.web.util.UriComponentsBuilder;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.Function;
 
 /**
  * Saxo OpenAPI broker provider (SIM or LIVE per connection config). Trades by Uic —
@@ -96,8 +102,9 @@ public class SaxoBrokerProvider implements BrokerProvider {
     @Override
     public Account account() {
         AccountContext ctx = accountContext();
-        JsonNode n = getJson("/port/v1/balances?ClientKey=" + ctx.clientKey()
-                + "&AccountKey=" + ctx.accountKey());
+        String encoded = "/port/v1/balances?ClientKey=" + encodeQueryParam(ctx.clientKey())
+                + "&AccountKey=" + encodeQueryParam(ctx.accountKey());
+        JsonNode n = getJson(encoded);
         return new Account(ctx.accountKey(), bd(n.path("TotalValue")),
                 bd(n.path("MarginAvailableForTrading")), bd(n.path("CashBalance")),
                 n.path("Currency").asString("USD"), "ACTIVE");
@@ -106,9 +113,10 @@ public class SaxoBrokerProvider implements BrokerProvider {
     @Override
     public List<Position> positions() {
         AccountContext ctx = accountContext();
-        JsonNode resp = getJson("/port/v1/netpositions?ClientKey=" + ctx.clientKey()
-                + "&AccountKey=" + ctx.accountKey()
-                + "&FieldGroups=NetPositionBase,NetPositionView,DisplayAndFormat");
+        String encoded = "/port/v1/netpositions?ClientKey=" + encodeQueryParam(ctx.clientKey())
+                + "&AccountKey=" + encodeQueryParam(ctx.accountKey())
+                + "&FieldGroups=" + encodeQueryParam("NetPositionBase,NetPositionView,DisplayAndFormat");
+        JsonNode resp = getJson(encoded);
         List<Position> out = new ArrayList<>();
         for (JsonNode n : resp.path("Data")) {
             JsonNode base = n.path("NetPositionBase");
@@ -164,6 +172,28 @@ public class SaxoBrokerProvider implements BrokerProvider {
     }
 
     // ---- helpers ----
+
+    private static String encodeQueryParam(String value) {
+        return URLEncoder.encode(value, StandardCharsets.UTF_8);
+    }
+
+    JsonNode getJson(URI uri) {
+        try {
+            JsonNode n = client.get().uri(uri).header("Authorization", bearer())
+                    .retrieve().body(JsonNode.class);
+            if (n == null) {
+                throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "empty saxo response", null);
+            }
+            return n;
+        } catch (BrokerException e) {
+            throw e;
+        } catch (RestClientResponseException e) {
+            throw readError(e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo request failed: " + e.getMessage(), e);
+        }
+    }
 
     JsonNode getJson(String uri) {
         try {
