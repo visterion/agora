@@ -1,5 +1,6 @@
 package de.visterion.agora.trading.saxo;
 
+import de.visterion.agora.trading.BrokerException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -10,6 +11,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SaxoTokenStoreTest {
 
@@ -100,5 +102,44 @@ class SaxoTokenStoreTest {
         var stores = new SaxoTokenStores(dir, now::get);
         assertThat(stores.forConnection("a")).isSameAs(stores.forConnection("a"));
         assertThat(stores.forConnection("a")).isNotSameAs(stores.forConnection("b"));
+    }
+
+    @Test
+    void authHeaderReturnsBearerWhenAccessValid() {
+        SaxoTokenStore store = new SaxoTokenStore("saxo-sim", dir, now::get);
+        store.update("acc", 1200, "ref");
+        assertThat(store.authorizationHeaderValue()).isEqualTo("Bearer acc");
+    }
+
+    @Test
+    void authHeaderThrowsNotReadyWhenRefreshPresentButAccessMissing() {
+        SaxoTokenStore store = new SaxoTokenStore("saxo-sim", dir, now::get);
+        store.update("acc", 1200, "ref");
+        now.addAndGet(1_300_000L);                 // access expired, refresh remains
+        assertThatThrownBy(store::authorizationHeaderValue)
+                .isInstanceOfSatisfying(BrokerException.class,
+                        e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.NOT_READY))
+                .hasMessageContaining("refresh pending");
+    }
+
+    @Test
+    void authHeaderThrowsUnavailableNotAuthorizedWhenNoRefreshToken() {
+        SaxoTokenStore store = new SaxoTokenStore("saxo-sim", dir, now::get);
+        assertThatThrownBy(store::authorizationHeaderValue)
+                .isInstanceOfSatisfying(BrokerException.class,
+                        e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE))
+                .hasMessageContaining("not authorized")
+                .hasMessageContaining("saxo-sim");
+    }
+
+    @Test
+    void authHeaderThrowsReauthorizationWhenDead() {
+        SaxoTokenStore store = new SaxoTokenStore("saxo-sim", dir, now::get);
+        store.update("acc", 1200, "ref");
+        store.markDead("rejected");
+        assertThatThrownBy(store::authorizationHeaderValue)
+                .isInstanceOfSatisfying(BrokerException.class,
+                        e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE))
+                .hasMessageContaining("re-authorization");
     }
 }
