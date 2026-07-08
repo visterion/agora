@@ -127,7 +127,7 @@ design spec:
 
 ## Tool catalog
 
-39 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
+40 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
 webhook-only and require a trading token.
 
 ### Market data (`agora-data`)
@@ -150,6 +150,7 @@ webhook-only and require a trading token.
 |---|---|
 | `get_filings` | Recent SEC filings (by symbol or CIK), optionally filtered by form |
 | `search_filings` | SEC EDGAR full-text search by form type(s) and date window |
+| `get_filing_text` | Fetch a SEC filing's primary document as cleaned text, extracting the summary/term-sheet section when present (fallback: a leading text window), truncated to ~24k chars. Input `url` — an archive document URL as returned by `search_filings`. Neutral and form-agnostic. Output `{ text, section_found, truncated, char_count, source_url }`. SSRF-guarded: only URLs under the configured SEC archive base are fetched. |
 | `get_company_concept` | Full reported history of any XBRL company-concept (e.g. `us-gaap/Assets`) |
 | `get_eps_history` | Reported quarterly EPS history (by symbol or CIK) |
 | `get_form4_transactions` | Non-derivative SEC Form-4 transactions (beneficial-ownership changes) |
