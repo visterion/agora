@@ -1,17 +1,20 @@
 package de.visterion.agora.trading.saxo;
 
 import de.visterion.agora.trading.*;
+import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.util.UriBuilder;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.Supplier;
 
@@ -131,11 +134,12 @@ public class SaxoBrokerProvider implements BrokerProvider {
         for (JsonNode n : resp.path("Data")) {
             JsonNode base = n.path("NetPositionBase");
             JsonNode view = n.path("NetPositionView");
+            // Saxo has no CurrentMarketValue; Exposure = mark-to-market when price feed is live (0 with delayed SIM data)
             out.add(new Position(
                     baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString("")),
                     bd(base.path("Amount")),
                     bd(view.path("AverageOpenPrice")),
-                    bd(view.path("CurrentMarketValue")),
+                    bd(view.path("Exposure")),
                     bd(view.path("ProfitLossOnTrade")),
                     view.path("ExposureCurrency").asString(
                             n.path("DisplayAndFormat").path("Currency").asString("USD"))));
@@ -165,20 +169,222 @@ public class SaxoBrokerProvider implements BrokerProvider {
         throw new BrokerException(BrokerException.Kind.NOT_FOUND, "Order not found: " + clientRef, null);
     }
 
-    // ---- writes: Tasks 7/8 ----
+    // ---- writes: Task 7 (submitBracket/cancel/flatten); modifyBracket is Task 8 ----
 
     @Override
-    public OrderResult submitBracket(BracketOrderRequest req) { throw notYet("submitBracket"); }
+    public OrderResult submitBracket(BracketOrderRequest req) {
+        SaxoInstrumentResolver.ResolvedInstrument ri;
+        try {
+            ri = resolver.resolve(req.symbol());
+        } catch (SaxoInstrumentResolver.SymbolResolutionException e) {
+            return OrderResult.rejected(e.getMessage(), "SYMBOL");
+        }
+        AccountContext ctx = accountContext();
+        String side = capitalize(req.side());
+        String opposite = opposite(side);
+        boolean limit = req.limitPrice() != null;
+        boolean slLimit = req.stopLossLimit() != null;
+
+        ObjectNode body = MAPPER.createObjectNode();
+        body.put("Uic", ri.uic());
+        body.put("AssetType", ri.assetType());
+        body.put("BuySell", side);
+        body.put("Amount", req.qty());
+        body.put("OrderType", limit ? "Limit" : "Market");
+        if (limit) body.put("OrderPrice", req.limitPrice());
+        body.put("ManualOrder", false);
+        body.put("AccountKey", ctx.accountKey());
+        if (req.clientRef() != null) body.put("ExternalReference", req.clientRef());
+        body.set("OrderDuration", durationNode(mapTif(req.timeInForce())));
+
+        ObjectNode takeProfit = MAPPER.createObjectNode();
+        takeProfit.put("OrderType", "Limit");
+        takeProfit.put("OrderPrice", req.takeProfitLimit());
+        takeProfit.put("BuySell", opposite);
+        takeProfit.put("Amount", req.qty());
+        takeProfit.put("ManualOrder", false);
+        takeProfit.put("AccountKey", ctx.accountKey());
+        takeProfit.set("OrderDuration", durationNode("GoodTillCancel"));
+
+        ObjectNode stopLoss = MAPPER.createObjectNode();
+        stopLoss.put("OrderType", slLimit ? "StopLimit" : "StopIfTraded");
+        stopLoss.put("OrderPrice", req.stopLossStop());
+        if (slLimit) stopLoss.put("StopLimitPrice", req.stopLossLimit());
+        stopLoss.put("BuySell", opposite);
+        stopLoss.put("Amount", req.qty());
+        stopLoss.put("ManualOrder", false);
+        stopLoss.put("AccountKey", ctx.accountKey());
+        stopLoss.set("OrderDuration", durationNode("GoodTillCancel"));
+
+        var children = MAPPER.createArrayNode();
+        children.add(takeProfit);
+        children.add(stopLoss);
+        body.set("Orders", children);
+
+        String requestId = req.clientRef() != null ? req.clientRef() : UUID.randomUUID().toString();
+
+        try {
+            JsonNode resp = client.post().uri("/trade/v2/orders")
+                    .header("Authorization", bearer())
+                    .header("X-Request-ID", requestId)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .retrieve().body(JsonNode.class);
+            String orderId = resp == null ? null : resp.path("OrderId").asString(null);
+            return OrderResult.accepted(orderId, req.clientRef(), "accepted");
+        } catch (RestClientResponseException e) {
+            return writeError(e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo submitBracket failed: " + e.getMessage(), e);
+        }
+    }
+
     @Override
     public OrderResult modifyBracket(String id, BigDecimal stop, BigDecimal target) { throw notYet("modifyBracket"); }
+
     @Override
-    public OrderResult flatten(String symbol) { throw notYet("flatten"); }
+    public OrderResult flatten(String symbol) {
+        SaxoInstrumentResolver.ResolvedInstrument ri;
+        try {
+            ri = resolver.resolve(symbol);
+        } catch (SaxoInstrumentResolver.SymbolResolutionException e) {
+            return OrderResult.rejected(e.getMessage(), "SYMBOL");
+        }
+        AccountContext ctx = accountContext();
+        JsonNode resp = getJson(b -> b.path("/port/v1/netpositions")
+                .queryParam("ClientKey", "{ck}")
+                .queryParam("AccountKey", "{ak}")
+                .queryParam("FieldGroups", "{fg}")
+                .build(ctx.clientKey(), ctx.accountKey(), "NetPositionBase,NetPositionView,DisplayAndFormat"));
+
+        JsonNode match = null;
+        for (JsonNode n : resp.path("Data")) {
+            JsonNode base = n.path("NetPositionBase");
+            if (base.path("Uic").asLong(-1) == ri.uic() && bd(base.path("Amount")).signum() != 0) {
+                match = n;
+                break;
+            }
+        }
+        if (match == null) {
+            throw new BrokerException(BrokerException.Kind.NOT_FOUND, "no open position: " + symbol, null);
+        }
+        BigDecimal amount = bd(match.path("NetPositionBase").path("Amount"));
+        String opposite = amount.signum() > 0 ? "Sell" : "Buy";
+
+        ObjectNode body = MAPPER.createObjectNode();
+        body.put("Uic", ri.uic());
+        body.put("AssetType", ri.assetType());
+        body.put("BuySell", opposite);
+        body.put("Amount", amount.abs());
+        body.put("OrderType", "Market");
+        body.put("ManualOrder", false);
+        body.put("AccountKey", ctx.accountKey());
+        body.set("OrderDuration", durationNode("DayOrder"));
+
+        try {
+            JsonNode resp2 = client.post().uri("/trade/v2/orders")
+                    .header("Authorization", bearer())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .retrieve().body(JsonNode.class);
+            String orderId = resp2 == null ? null : resp2.path("OrderId").asString(null);
+            return OrderResult.accepted(orderId, null, "accepted");
+        } catch (RestClientResponseException e) {
+            return writeError(e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo flatten failed: " + e.getMessage(), e);
+        }
+    }
+
     @Override
-    public OrderResult cancel(String brokerOrderId) { throw notYet("cancel"); }
+    public OrderResult cancel(String brokerOrderId) {
+        AccountContext ctx = accountContext();
+        try {
+            // See account()/positions() re: TEMPLATE_AND_VALUES encoding — AccountKey is
+            // bound as a build(Object...) template variable, never concatenated/URLEncoder-escaped.
+            client.delete()
+                    .uri(b -> b.path("/trade/v2/orders/{id}")
+                            .queryParam("AccountKey", "{ak}")
+                            .build(brokerOrderId, ctx.accountKey()))
+                    .header("Authorization", bearer())
+                    .retrieve().toBodilessEntity();
+            return OrderResult.accepted(brokerOrderId, null, "canceled");
+        } catch (BrokerException e) {
+            throw e;
+        } catch (RestClientResponseException e) {
+            throw readError(e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo cancel failed: " + e.getMessage(), e);
+        }
+    }
 
     private static BrokerException notYet(String op) {
         return new BrokerException(BrokerException.Kind.UNAVAILABLE,
                 "saxo " + op + " not implemented yet", null);
+    }
+
+    private static String capitalize(String side) {
+        if (side == null || side.isEmpty()) return side;
+        return Character.toUpperCase(side.charAt(0)) + side.substring(1).toLowerCase(Locale.ROOT);
+    }
+
+    private static String opposite(String side) {
+        return "Buy".equals(side) ? "Sell" : "Buy";
+    }
+
+    private static String mapTif(String tif) {
+        if (tif == null) return "GoodTillCancel";
+        return switch (tif.toLowerCase(Locale.ROOT)) {
+            case "gtc" -> "GoodTillCancel";
+            case "day" -> "DayOrder";
+            default -> "GoodTillCancel";
+        };
+    }
+
+    private static ObjectNode durationNode(String durationType) {
+        ObjectNode d = MAPPER.createObjectNode();
+        d.put("DurationType", durationType);
+        return d;
+    }
+
+    /**
+     * Error mapping for order-placement writes (submitBracket/flatten): 400 → parsed
+     * ErrorInfo → OrderResult.rejected (an order-level rejection, not an outage); 409 →
+     * UNAVAILABLE (duplicate X-Request-ID replay); everything else delegates to readError
+     * (404 → NOT_FOUND, 401/403 → UNAVAILABLE re-auth hint, else → UNAVAILABLE).
+     */
+    private static OrderResult writeError(RestClientResponseException e) {
+        int status = e.getStatusCode().value();
+        if (status == 400) {
+            JsonNode errorBody = parseErrorBody(e);
+            String message = errorBody.path("ErrorInfo").path("Message").asString(null);
+            if (message == null) message = errorBody.path("Message").asString(null);
+            if (message == null) message = rawBody(e);
+            String code = errorBody.path("ErrorInfo").path("ErrorCode").asString(null);
+            if (code == null) code = String.valueOf(status);
+            return OrderResult.rejected(message, code);
+        }
+        if (status == 409) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo duplicate request (X-Request-ID replay?)", e);
+        }
+        throw readError(e);
+    }
+
+    private static JsonNode parseErrorBody(RestClientResponseException e) {
+        try {
+            byte[] body = e.getResponseBodyAsByteArray();
+            if (body != null && body.length > 0) return MAPPER.readTree(body);
+        } catch (Exception ignored) { /* fall through to raw/status fallback */ }
+        return MAPPER.createObjectNode();
+    }
+
+    private static String rawBody(RestClientResponseException e) {
+        String raw = e.getResponseBodyAsString();
+        return (raw == null || raw.isBlank()) ? e.getMessage() : raw;
     }
 
     // ---- helpers ----
