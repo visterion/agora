@@ -20,6 +20,9 @@ agora:
   trading:
     tokens: ${AGORA_TRADING_TOKENS:}
     live-tokens: ${AGORA_TRADING_LIVE_TOKENS:}
+    saxo:
+      token-dir: ${AGORA_TRADING_SAXO_TOKEN_DIR:/data/saxo}
+      refresh-check-ms: ${AGORA_TRADING_SAXO_REFRESH_CHECK_MS:30000}
     connections:
       alpaca-paper:
         provider: alpaca
@@ -33,6 +36,22 @@ agora:
         base-url: ${AGORA_TRADING_ALPACA_LIVE_BASE_URL:https://api.alpaca.markets/v2}
         key-id: ${AGORA_TRADING_ALPACA_LIVE_KEY_ID:}
         secret: ${AGORA_TRADING_ALPACA_LIVE_SECRET:}
+      saxo-sim:
+        provider: saxo
+        environment: paper
+        base-url: ${AGORA_TRADING_SAXO_SIM_BASE_URL:https://gateway.saxobank.com/sim/openapi}
+        key-id: ${AGORA_TRADING_SAXO_SIM_APP_KEY:}
+        secret: ${AGORA_TRADING_SAXO_SIM_APP_SECRET:}
+        extra:
+          redirect-uri: ${AGORA_TRADING_SAXO_SIM_REDIRECT_URI:http://localhost:8091/auth/saxo/callback}
+      saxo-live:
+        provider: saxo
+        environment: live
+        base-url: ${AGORA_TRADING_SAXO_LIVE_BASE_URL:https://gateway.saxobank.com/openapi}
+        key-id: ${AGORA_TRADING_SAXO_LIVE_APP_KEY:}
+        secret: ${AGORA_TRADING_SAXO_LIVE_APP_SECRET:}
+        extra:
+          redirect-uri: ${AGORA_TRADING_SAXO_LIVE_REDIRECT_URI:}
   data:
     yahoo:
       base-url: ${AGORA_DATA_YAHOO_BASE_URL:https://query1.finance.yahoo.com}
