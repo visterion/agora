@@ -1,5 +1,6 @@
 package de.visterion.agora.trading.saxo;
 
+import de.visterion.agora.trading.BrokerException;
 import de.visterion.agora.trading.BrokerProvider;
 import de.visterion.agora.trading.BrokerProviderFactory;
 import de.visterion.agora.trading.ConnectionConfig;
@@ -35,6 +36,14 @@ public class SaxoBrokerProviderFactory implements BrokerProviderFactory {
                         HttpClients.custom().disableAutomaticRetries().build()))
                 .baseUrl(cfg.getBaseUrl())
                 .build();
-        return new SaxoBrokerProvider(cfg, stores.forConnection(storeKey(cfg)), client);
+        SaxoTokenStore store = stores.forConnection(storeKey(cfg));
+        SaxoInstrumentResolver resolver = new SaxoInstrumentResolver(client,
+                () -> store.validAccessToken().map(t -> "Bearer " + t).orElseThrow(() ->
+                        new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                                "saxo connection not authorized — visit /auth/saxo/login?connection="
+                                        + store.connectionId(), null)),
+                cfg.getExtra() == null ? null : cfg.getExtra().get("exchange-id"),
+                86_400_000L, System::currentTimeMillis);
+        return new SaxoBrokerProvider(cfg, store, client, resolver);
     }
 }
