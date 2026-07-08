@@ -35,8 +35,14 @@ class SaxoBrokerProviderTest {
         cfg.setKeyId("k"); cfg.setSecret("s");
         store = new SaxoTokenStore("saxo-sim", dir, now::get);
         store.update("acc-token", 1200, "ref");
-        provider = new SaxoBrokerProvider(cfg, store, RestClient.builder().baseUrl(wm.baseUrl()).build());
+        provider = new SaxoBrokerProvider(cfg, store, RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                resolver());
         stubAccounts();
+    }
+
+    private SaxoInstrumentResolver resolver() {
+        return new SaxoInstrumentResolver(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                () -> "Bearer acc-token", null, 86_400_000L, now::get);
     }
 
     private void stubAccounts() {

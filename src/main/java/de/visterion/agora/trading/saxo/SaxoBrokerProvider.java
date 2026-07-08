@@ -29,14 +29,17 @@ public class SaxoBrokerProvider implements BrokerProvider {
     private final ConnectionConfig cfg;
     private final SaxoTokenStore store;
     private final RestClient client;
+    private final SaxoInstrumentResolver resolver;
     private volatile AccountContext accountContext;
 
     record AccountContext(String clientKey, String accountKey) {}
 
-    SaxoBrokerProvider(ConnectionConfig cfg, SaxoTokenStore store, RestClient client) {
+    SaxoBrokerProvider(ConnectionConfig cfg, SaxoTokenStore store, RestClient client,
+                        SaxoInstrumentResolver resolver) {
         this.cfg = cfg;
         this.store = store;
         this.client = client;
+        this.resolver = resolver;
     }
 
     @Override public String name() { return "saxo"; }
