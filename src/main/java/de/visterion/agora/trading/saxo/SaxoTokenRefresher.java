@@ -47,7 +47,7 @@ public class SaxoTokenRefresher {
     }
 
     @Scheduled(fixedDelayString = "${agora.trading.saxo.refresh-check-ms:30000}")
-    public void tick() {
+    public synchronized void tick() {
         for (RegisteredConnection c : registry.active()) {
             if (!"saxo".equals(c.config().getProvider())) continue;
             SaxoTokenStore store = stores.forConnection(c.id());
