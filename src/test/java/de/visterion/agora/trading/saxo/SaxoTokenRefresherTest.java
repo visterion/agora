@@ -164,4 +164,19 @@ class SaxoTokenRefresherTest {
 
         verifyNoInteractions(oauth);
     }
+
+    @Test
+    void warmUpRefreshesAtBootWhenAccessMissing() {
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-0", 1200, "ref-0");
+        now.addAndGet(1_300_000L);                 // no valid access, refresh present
+        SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+        when(oauth.refresh(any(), eq("ref-0")))
+                .thenReturn(new SaxoOAuthClient.SaxoTokens("acc-1", 1200, "ref-1"));
+
+        new SaxoTokenRefresher(registry(), stores, oauth).warmUp();
+
+        assertThat(store.validAccessToken()).contains("acc-1");
+    }
 }
