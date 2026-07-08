@@ -41,7 +41,7 @@ class SaxoBrokerProviderTest {
 
     private void stubAccounts() {
         wm.stubFor(get(urlEqualTo("/port/v1/accounts/me")).willReturn(okJson("""
-            {"Data":[{"AccountKey":"AccKey1==","ClientKey":"CliKey1==","AccountId":"123"}]}
+            {"Data":[{"AccountKey":"Acc+Key/1==","ClientKey":"Cli+Key/1==","AccountId":"123"}]}
             """)));
     }
 
@@ -90,14 +90,14 @@ class SaxoBrokerProviderTest {
             {"CashBalance":10000.5,"TotalValue":10500.25,"Currency":"USD","MarginAvailableForTrading":9800.0}
             """)));
         var a = provider.account();
-        assertThat(a.accountId()).isEqualTo("AccKey1==");
+        assertThat(a.accountId()).isEqualTo("Acc+Key/1==");
         assertThat(a.equity()).isEqualByComparingTo("10500.25");
         assertThat(a.cash()).isEqualByComparingTo("10000.5");
         assertThat(a.buyingPower()).isEqualByComparingTo("9800.0");
         assertThat(a.currency()).isEqualTo("USD");
         wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/balances"))
-                .withQueryParam("ClientKey", equalTo("CliKey1=="))
-                .withQueryParam("AccountKey", equalTo("AccKey1==")));
+                .withQueryParam("ClientKey", equalTo("Cli%2BKey%2F1%3D%3D"))
+                .withQueryParam("AccountKey", equalTo("Acc%2BKey%2F1%3D%3D")));
     }
 
     @Test
@@ -116,6 +116,10 @@ class SaxoBrokerProviderTest {
         assertThat(ps.get(0).avgEntryPrice()).isEqualByComparingTo("150.0");
         assertThat(ps.get(0).unrealizedPl()).isEqualByComparingTo("100.0");
         assertThat(ps.get(0).currency()).isEqualTo("USD");
+        wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions"))
+                .withQueryParam("ClientKey", equalTo("Cli%2BKey%2F1%3D%3D"))
+                .withQueryParam("AccountKey", equalTo("Acc%2BKey%2F1%3D%3D"))
+                .withQueryParam("FieldGroups", equalTo("NetPositionBase%2CNetPositionView%2CDisplayAndFormat")));
     }
 
     @Test
