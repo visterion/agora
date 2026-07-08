@@ -71,7 +71,8 @@ class SaxoAuthEndpointsTest {
                 .thenReturn(new SaxoOAuthClient.SaxoTokens("acc-1", 1200, "ref-1"));
         SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
         SaxoAuthState states = new SaxoAuthState(now::get);
-        SaxoAuthEndpoints ep = new SaxoAuthEndpoints(registry(saxoCfg()), stores, states, oauth);
+        ConnectionRegistry registry = registry(saxoCfg());
+        SaxoAuthEndpoints ep = new SaxoAuthEndpoints(registry, stores, states, oauth);
 
         String state = states.issue("saxo-sim");
         ResponseEntity<String> r = ep.callback("code-1", state);
@@ -79,6 +80,7 @@ class SaxoAuthEndpointsTest {
         assertThat(r.getStatusCode().value()).isEqualTo(200);
         assertThat(r.getBody()).contains("saxo-sim").doesNotContain("acc-1").doesNotContain("ref-1");
         assertThat(stores.forConnection("saxo-sim").validAccessToken()).contains("acc-1");
+        assertThat(registry.get("saxo-sim").orElseThrow().probeStatus().state()).isEqualTo("ok");
     }
 
     @Test

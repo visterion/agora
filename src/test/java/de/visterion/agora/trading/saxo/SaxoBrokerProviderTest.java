@@ -206,6 +206,48 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void submitBracketSellSideFlipsChildBuySell() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
+            """)));
+
+        var req = new de.visterion.agora.trading.BracketOrderRequest(
+                "AAPL", "sell", new java.math.BigDecimal("1"), "limit", "gtc",
+                new java.math.BigDecimal("100"), new java.math.BigDecimal("110"), null,
+                new java.math.BigDecimal("90"), "ref-2");
+
+        var r = provider.submitBracket(req);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell")))
+                .withRequestBody(matchingJsonPath("$.Orders[0].BuySell", equalTo("Buy")))
+                .withRequestBody(matchingJsonPath("$.Orders[1].BuySell", equalTo("Buy"))));
+    }
+
+    @Test
+    void submitBracketStopLossLimitEmitsStopLimitLeg() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
+            """)));
+
+        var req = new de.visterion.agora.trading.BracketOrderRequest(
+                "AAPL", "buy", new java.math.BigDecimal("1"), "limit", "gtc",
+                new java.math.BigDecimal("100"), new java.math.BigDecimal("90"),
+                new java.math.BigDecimal("89.5"),
+                new java.math.BigDecimal("110"), "ref-3");
+
+        var r = provider.submitBracket(req);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Orders[1].OrderType", equalTo("StopLimit")))
+                .withRequestBody(matchingJsonPath("$.Orders[1].StopLimitPrice", equalTo("89.5"))));
+    }
+
+    @Test
     void submitBracketUnknownSymbolIsRejectedNotUnavailable() {
         wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("{\"Data\":[]}")));
         var r = provider.submitBracket(bracketReq());

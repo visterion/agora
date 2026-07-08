@@ -1,11 +1,14 @@
 package de.visterion.agora.trading.saxo;
 
 import de.visterion.agora.trading.ConnectionRegistry;
+import de.visterion.agora.trading.ProbeStatus;
 import de.visterion.agora.trading.RegisteredConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+
+import java.time.Instant;
 
 /**
  * Keeps Saxo sessions alive: Saxo access tokens live ~20min and refresh tokens roll on
@@ -40,9 +43,12 @@ public class SaxoTokenRefresher {
             try {
                 SaxoOAuthClient.SaxoTokens t = oauth.refresh(c.config(), store.refreshToken());
                 store.update(t.accessToken(), t.expiresInSeconds(), t.refreshToken());
+                c.setProbeStatus(ProbeStatus.ok(Instant.now()));
                 log.info("Saxo connection '{}' token refreshed", c.id());
             } catch (SaxoOAuthClient.InvalidGrantException e) {
                 store.markDead("refresh rejected");
+                c.setProbeStatus(ProbeStatus.unreachable(Instant.now(),
+                        "refresh rejected — re-authorize via /auth/saxo/login"));
                 log.warn("Saxo connection '{}' refresh rejected — re-authorize via /auth/saxo/login?connection={}",
                         c.id(), c.id());
             } catch (Exception e) {

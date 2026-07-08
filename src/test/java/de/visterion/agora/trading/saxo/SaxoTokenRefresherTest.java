@@ -96,6 +96,38 @@ class SaxoTokenRefresherTest {
     }
 
     @Test
+    void successfulRefreshSetsProbeStatusOk() {
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-0", 1200, "ref-0");
+        now.addAndGet(1_300_000L);
+        SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+        when(oauth.refresh(any(), eq("ref-0")))
+                .thenReturn(new SaxoOAuthClient.SaxoTokens("acc-1", 1200, "ref-1"));
+        ConnectionRegistry registry = registry();
+
+        new SaxoTokenRefresher(registry, stores, oauth).tick();
+
+        assertThat(registry.get("saxo-sim").orElseThrow().probeStatus().state()).isEqualTo("ok");
+    }
+
+    @Test
+    void invalidGrantSetsProbeStatusUnreachable() {
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-0", 1200, "ref-0");
+        now.addAndGet(1_300_000L);
+        SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+        when(oauth.refresh(any(), any()))
+                .thenThrow(new SaxoOAuthClient.InvalidGrantException("rejected"));
+        ConnectionRegistry registry = registry();
+
+        new SaxoTokenRefresher(registry, stores, oauth).tick();
+
+        assertThat(registry.get("saxo-sim").orElseThrow().probeStatus().state()).isEqualTo("unreachable");
+    }
+
+    @Test
     void transientFailureRetriesNextTick() {
         SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
         SaxoTokenStore store = stores.forConnection("saxo-sim");

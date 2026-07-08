@@ -101,11 +101,6 @@ public final class SaxoTokenStore {
         return Math.max(0, s.accessExpiresAtMillis() - nowMillis.getAsLong());
     }
 
-    public synchronized void clearAccess() {
-        TokenState s = this.state;
-        this.state = new TokenState(null, 0L, 0L, s.refreshToken(), s.deadReason());
-    }
-
     public synchronized void markDead(String reason) {
         TokenState s = this.state;
         this.state = new TokenState(
