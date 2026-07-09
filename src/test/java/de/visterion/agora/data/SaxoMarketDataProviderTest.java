@@ -103,4 +103,63 @@ class SaxoMarketDataProviderTest {
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
+
+    static final String CHART_BARS = """
+        {"Data":[
+          {"Close":310.66,"High":315.48,"Interest":0.0,"Low":310.15,"Open":315.18,"Time":"2026-07-07T00:00:00Z","Volume":42083264.0},
+          {"Close":313.39,"High":314.82,"Interest":0.0,"Low":307.05,"Open":311.91,"Time":"2026-07-08T00:00:00Z","Volume":41240088.0},
+          {"Close":316.22,"High":316.53,"Interest":0.0,"Low":308.16,"Open":310.34,"Time":"2026-07-09T00:00:00Z","Volume":47952976.0}
+        ],"DataVersion":29721846}
+        """;
+
+    private void stubAccounts() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/accounts/me")).willReturn(okJson("""
+            {"Data":[{"AccountKey":"ACC-KEY","AccountType":"Normal","Active":true}]}
+            """)));
+    }
+
+    @Test void ohlcMapsBarsOldestFirst() {
+        stubSapSearch();
+        stubAccounts();
+        wm.stubFor(get(urlPathEqualTo("/chart/v3/charts"))
+                .withQueryParam("Uic", equalTo("1126"))
+                .withQueryParam("AssetType", equalTo("Stock"))
+                .withQueryParam("Horizon", equalTo("1440"))
+                .withQueryParam("Count", equalTo("3"))
+                .withQueryParam("AccountKey", equalTo("ACC-KEY"))
+                .willReturn(okJson(CHART_BARS)));
+        var bars = provider(true).ohlc("SAP.DE", 3);
+        assertThat(bars).hasSize(3);
+        assertThat(bars.get(0).date()).isEqualTo("2026-07-07");
+        assertThat(bars.get(0).open()).isEqualByComparingTo("315.18");
+        assertThat(bars.get(0).volume()).isEqualTo(42083264L);
+        assertThat(bars.get(2).date()).isEqualTo("2026-07-09");
+        assertThat(bars.get(2).close()).isEqualByComparingTo("316.22");
+    }
+
+    @Test void ohlcTrimsToRequestedDays() {
+        stubSapSearch();
+        stubAccounts();
+        wm.stubFor(get(urlPathEqualTo("/chart/v3/charts")).willReturn(okJson(CHART_BARS)));
+        var bars = provider(true).ohlc("SAP.DE", 2);
+        assertThat(bars).hasSize(2);
+        assertThat(bars.get(0).date()).isEqualTo("2026-07-08");   // oldest trimmed away
+    }
+
+    @Test void ohlcWithoutAccountKeyIsUnavailable() {
+        stubSapSearch();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/accounts/me")).willReturn(status(401)));
+        assertThatThrownBy(() -> provider(true).ohlc("SAP.DE", 3))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+    }
+
+    @Test void ohlcHttpErrorIsUnavailable() {
+        stubSapSearch();
+        stubAccounts();
+        wm.stubFor(get(urlPathEqualTo("/chart/v3/charts")).willReturn(status(429)));
+        assertThatThrownBy(() -> provider(true).ohlc("SAP.DE", 3))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+    }
 }
