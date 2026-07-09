@@ -146,6 +146,17 @@ class SaxoMarketDataProviderTest {
         assertThat(bars.get(0).date()).isEqualTo("2026-07-08");   // oldest trimmed away
     }
 
+    @Test void ohlcEmptyDataThrowsNotFound() {
+        stubSapSearch();
+        stubAccounts();
+        wm.stubFor(get(urlPathEqualTo("/chart/v3/charts")).willReturn(okJson("""
+            {"Data":[],"DataVersion":1}
+            """)));
+        assertThatThrownBy(() -> provider(true).ohlc("SAP.DE", 3))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
+    }
+
     @Test void ohlcWithoutAccountKeyIsUnavailable() {
         stubSapSearch();
         wm.stubFor(get(urlPathEqualTo("/port/v1/accounts/me")).willReturn(status(401)));

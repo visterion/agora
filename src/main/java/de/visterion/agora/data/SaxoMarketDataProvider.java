@@ -129,6 +129,12 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
                         (long) b.path("Volume").asDouble(0)));
             }
         }
+        // An empty chart (e.g. brand-new/illiquid instruments) means "not served here" — throw
+        // NOT_FOUND rather than caching an empty success, so the chain can still fall through.
+        if (out.isEmpty()) {
+            throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
+                    "Symbol " + symbol + " has no bars at Saxo", null);
+        }
         if (out.size() > days) {
             out = new ArrayList<>(out.subList(out.size() - days, out.size()));
         }
