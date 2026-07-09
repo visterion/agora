@@ -53,6 +53,8 @@ agora:
         extra:
           redirect-uri: ${AGORA_TRADING_SAXO_LIVE_REDIRECT_URI:}
   data:
+    # per-request read timeout for all market-data HTTP providers (fail fast into the next provider)
+    provider-timeout-ms: ${AGORA_DATA_PROVIDER_TIMEOUT_MS:4000}
     yahoo:
       base-url: ${AGORA_DATA_YAHOO_BASE_URL:https://query1.finance.yahoo.com}
       user-agent: ${AGORA_DATA_YAHOO_USER_AGENT:agora/0.1 (+https://github.com/visterion/agora)}
