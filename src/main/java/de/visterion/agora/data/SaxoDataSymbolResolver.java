@@ -107,6 +107,9 @@ public class SaxoDataSymbolResolver {
             if (!exchangeId.equals(hit.path("ExchangeId").asString(""))) continue;
             long id = hit.path("Identifier").asLong(0);
             if (id == 0) continue;
+            // NOTE: for German symbols the Yahoo query ticker (SAP) intentionally differs from
+            // the Saxo symbol (SAPG:xetr), so this exact-match branch rarely fires — first-hit-
+            // in-exchange below is the expected resolution mechanism. Do not "fix" this.
             if (tickerOf(hit).equalsIgnoreCase(ticker)) return Optional.of(id);
             if (first == null) first = id;
         }
