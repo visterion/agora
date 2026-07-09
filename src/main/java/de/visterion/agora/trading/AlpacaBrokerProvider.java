@@ -191,7 +191,10 @@ public class AlpacaBrokerProvider implements BrokerProvider {
                     .body(JsonNode.class);
             // Alpaca returns the closing order; parse it if present, else accepted
             if (resp != null && resp.hasNonNull("id")) {
-                return parseAcceptedFlatten(resp);
+                OrderResult base = parseAcceptedFlatten(resp);
+                BigDecimal remaining = remainingAfterClose(symbol);
+                return OrderResult.accepted(base.brokerOrderId(), base.clientRef(), base.status(),
+                        base.closedQty(), remaining, base.avgFillPrice());
             }
             return OrderResult.accepted(null, null, "accepted", null, null, null);
         } catch (RestClientResponseException e) {
@@ -399,8 +402,9 @@ public class AlpacaBrokerProvider implements BrokerProvider {
      * Parse a flatten (DELETE /positions/{symbol}) response: the closing order object.
      * {@code qty} is the requested close size; {@code filled_avg_price} is present only
      * once the closing order actually fills (often not synchronous with the DELETE call),
-     * hence nullable. Alpaca's response carries no "remaining position size" field, so
-     * remainingQty is always null here — a genuine gap, documented in exit-tools.md.
+     * hence nullable. Alpaca's response carries no "remaining position size" field; the
+     * caller backfills it with a follow-up {@code GET /positions/{symbol}} (see
+     * {@link #remainingAfterClose(String)}).
      */
     private static OrderResult parseAcceptedFlatten(JsonNode n) {
         String id = n.path("id").asString(null);
@@ -409,6 +413,17 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         BigDecimal closedQty = n.hasNonNull("qty") ? bd(n.path("qty")) : null;
         BigDecimal avgFillPrice = n.hasNonNull("filled_avg_price") ? bd(n.path("filled_avg_price")) : null;
         return OrderResult.accepted(id, clientOrderId, status, closedQty, null, avgFillPrice);
+    }
+
+    /** After a close, the live remaining position size (0 when the position is fully gone). */
+    private BigDecimal remainingAfterClose(String symbol) {
+        try {
+            JsonNode n = client.get().uri("/positions/{s}", symbol).retrieve().body(JsonNode.class);
+            return (n != null && n.hasNonNull("qty")) ? bd(n.path("qty")) : null;
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 404) return BigDecimal.ZERO;
+            return null; // don't fail the close over a follow-up read
+        }
     }
 
     /**

@@ -44,11 +44,11 @@ The DELETE response is the resulting closing order object:
 - `closedQty` ← `qty` on that response (the requested close size).
 - `avgFillPrice` ← `filled_avg_price`, when present (often null — market close orders are
   frequently still working when the DELETE call returns, so the fill is not synchronous).
-- `remainingQty` is **always null for Alpaca** — Alpaca's closing-order response carries
-  no "remaining position size" field, and this provider does not make an extra
-  `GET /positions/{symbol}` call to compute it (would double the request cost per
-  flatten). **Genuine gap**: if Dracul needs remaining size after a partial Alpaca close,
-  it must call `get_positions` itself afterward.
+- `remainingQty` — Alpaca's closing-order response carries no "remaining position size"
+  field, so this provider backfills it with a follow-up `GET /positions/{symbol}` after
+  the DELETE is accepted (one extra request, only on the close path). Returns the live
+  `qty` on that position, or `0` when the position is fully gone (404). If that follow-up
+  read itself errors, `remainingQty` comes back `null` rather than failing the close.
 
 ### Saxo
 
@@ -209,10 +209,8 @@ effect, or (once available) a Saxo activity/trades endpoint — not covered by t
 
 ## Summary of gaps left explicitly documented (not guessed, not fixed)
 
-1. **Alpaca flatten** never returns `remainingQty` (broker response doesn't carry it);
-   Dracul must call `get_positions` separately if it needs that number.
-2. **Saxo flatten** partial-close truncates to whole units with no lot-size table —
+1. **Saxo flatten** partial-close truncates to whole units with no lot-size table —
    fine for ordinary equities, unverified/likely-wrong for fractional-unit asset classes.
-3. **Saxo orders** never expose `filledQty`/`avgFillPrice` — `/port/v1/orders/me` is an
+2. **Saxo orders** never expose `filledQty`/`avgFillPrice` — `/port/v1/orders/me` is an
    open-orders view and a verified fill-detail field could not be confirmed without live
    credentials.
