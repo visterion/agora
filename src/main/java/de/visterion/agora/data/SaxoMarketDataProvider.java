@@ -19,6 +19,11 @@ import java.util.List;
  * <p>"falls vorhanden": no authorized session, unmapped suffix, NoAccess price type, or any
  * HTTP failure/timeout → UNAVAILABLE so MarketDataService falls through silently. This
  * provider can never block or hard-error the chain.
+ *
+ * <p>Cold-cache worst case: a first-ever {@code ohlc} for a symbol makes up to three
+ * sequential Saxo calls (instrument search, accounts/me, chart), each bounded by the 4s
+ * read timeout — up to ~12s if the gateway stalls all three. Steady state is one call:
+ * the UIC is cached 24h and the AccountKey forever; a dead session fails instantly.
  */
 @Component
 @Order(7)

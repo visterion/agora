@@ -5,7 +5,6 @@ import org.junit.jupiter.api.*;
 import org.springframework.web.client.RestClient;
 
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
