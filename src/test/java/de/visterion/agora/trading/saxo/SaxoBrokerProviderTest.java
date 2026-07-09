@@ -1,6 +1,7 @@
 package de.visterion.agora.trading.saxo;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import de.visterion.agora.trading.BrokerException;
 import de.visterion.agora.trading.ConnectionConfig;
 import org.junit.jupiter.api.*;
@@ -37,6 +38,7 @@ class SaxoBrokerProviderTest {
         store.update("acc-token", 1200, "ref");
         provider = new SaxoBrokerProvider(cfg, store, RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 resolver());
+        provider.legLookupDelayMillis = 0;   // don't actually sleep in tests
         stubAccounts();
     }
 
@@ -308,6 +310,38 @@ class SaxoBrokerProviderTest {
         assertThat(r.brokerOrderId()).isEqualTo("9001");
         assertThat(r.takeProfitLegId()).isEqualTo("9002");
         assertThat(r.stopLegId()).isEqualTo("9003");
+        // success on first attempt -> no retry, no wasted GET
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/port/v1/orders/me")));
+    }
+
+    @Test
+    void submitBracketRetriesLegLookupUntilLegsAppear() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).inScenario("leg-lookup")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"Data\":[]}"))
+                .willSetStateTo("second"));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).inScenario("leg-lookup")
+                .whenScenarioStateIs("second")
+                .willReturn(okJson("""
+                    {"Data":[
+                      {"OrderId":"9001","OpenOrderType":"Limit","Status":"Working","Uic":211,"AssetType":"Stock",
+                       "BuySell":"Buy","Amount":1.0,"OrderRelation":"IfDoneMaster",
+                       "RelatedOpenOrders":[
+                         {"OrderId":"9002","OpenOrderType":"Limit","Status":"NotWorking"},
+                         {"OrderId":"9003","OpenOrderType":"StopIfTraded","Status":"NotWorking"}]}
+                    ]}
+                    """)));
+
+        var r = provider.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.stopLegId()).isEqualTo("9003");
+        assertThat(r.takeProfitLegId()).isEqualTo("9002");
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/port/v1/orders/me")));
     }
 
     @Test
@@ -323,6 +357,22 @@ class SaxoBrokerProviderTest {
         assertThat(r.brokerOrderId()).isEqualTo("9001");
         assertThat(r.stopLegId()).isNull();
         assertThat(r.takeProfitLegId()).isNull();
+    }
+
+    @Test
+    void submitBracketLegLookupRetryIsCappedWhenLegsNeverAppear() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("{\"Data\":[]}")));
+
+        var r = provider.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.stopLegId()).isNull();
+        assertThat(r.takeProfitLegId()).isNull();
+        wm.verify(3, getRequestedFor(urlPathEqualTo("/port/v1/orders/me")));
     }
 
     @Test

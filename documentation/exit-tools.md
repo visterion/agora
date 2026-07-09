@@ -156,10 +156,14 @@ though Saxo's own `modify_bracket` works off the parent id (they let Dracul corr
 - **Saxo**: the placement response never contains child leg ids (only the parent
   `OrderId`). This provider does a **best-effort follow-up** `GET /port/v1/orders/me`
   immediately after a successful placement and reads the new parent's
-  `RelatedOpenOrders[]`, mirroring the same lookup `modify_bracket` already does. If that
-  follow-up fails or the parent isn't visible yet (eventual consistency), the placement
-  is still reported `accepted` — the leg ids are simply left null. Callers should treat
-  null leg ids as "look them up later via `get_orders`", not as failure.
+  `RelatedOpenOrders[]`, mirroring the same lookup `modify_bracket` already does.
+  Immediately after placement the parent+legs may not be visible yet (Saxo eventual
+  consistency), so this follow-up is a **bounded retry** — up to 3 attempts, ~200ms
+  apart — that stops as soon as leg ids are found (the common case costs exactly one
+  `GET` and no delay). If leg ids are still null after the retry window (lookup keeps
+  failing, or the parent/legs never appear within the window), the placement is still
+  reported `accepted` — the leg ids are simply left null. Callers should treat null leg
+  ids as "look them up later via `get_orders`", not as failure.
 
 ## `get_orders` / `get_order_by_ref` — field list
 
