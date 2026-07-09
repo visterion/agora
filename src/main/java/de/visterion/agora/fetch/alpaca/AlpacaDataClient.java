@@ -6,8 +6,11 @@ import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
+import java.time.Duration;
+
 /** Shared Alpaca market-data REST access (data.alpaca.markets), header-authed.
- *  Reusable base for Alpaca-backed agora-data services (splits now; quotes/bars later). */
+ *  Reusable base for Alpaca-backed agora-data services (splits now; quotes/bars later).
+ *  Carries the configurable per-request read timeout so a slow Alpaca call fails fast. */
 @Component
 public class AlpacaDataClient {
 
@@ -18,14 +21,22 @@ public class AlpacaDataClient {
     public AlpacaDataClient(
             @Value("${agora.data.alpaca.base-url:https://data.alpaca.markets}") String baseUrl,
             @Value("${agora.data.alpaca.key-id:}") String keyId,
-            @Value("${agora.data.alpaca.secret:}") String secret) {
+            @Value("${agora.data.alpaca.secret:}") String secret,
+            @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
         this.configured = keyId != null && !keyId.isBlank() && secret != null && !secret.isBlank();
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
         this.http = RestClient.builder()
-                .requestFactory(new JdkClientHttpRequestFactory())
+                .requestFactory(rf)
                 .baseUrl(baseUrl)
                 .defaultHeader("APCA-API-KEY-ID", keyId)
                 .defaultHeader("APCA-API-SECRET-KEY", secret)
                 .build();
+    }
+
+    /** Convenience constructor (default per-request timeout); used by tests. */
+    public AlpacaDataClient(String baseUrl, String keyId, String secret) {
+        this(baseUrl, keyId, secret, 4000L);
     }
 
     // public: cross-package tests (fetch.split) construct this directly
