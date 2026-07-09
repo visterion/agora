@@ -308,11 +308,41 @@ class AlpacaBrokerProviderTest {
                 .willReturn(okJson("""
                     {"id":"oid-9","qty":"3","filled_avg_price":"101.50","status":"filled"}
                     """)));
+        wm.stubFor(get(urlPathEqualTo("/positions/AAPL")).willReturn(aResponse().withStatus(404)));
 
         var result = provider.flatten("AAPL", null, new BigDecimal("3"));
 
         assertThat(result.avgFillPrice()).isEqualByComparingTo("101.50");
-        assertThat(result.remainingQty()).isNull();
+        assertThat(result.remainingQty()).isEqualByComparingTo("0");
+    }
+
+    @Test
+    void flatten_backfillsRemainingQtyFromPositionsLookup() {
+        wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("""
+                    {"id":"cls-1","qty":"3","status":"accepted"}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("""
+                    {"symbol":"AAPL","qty":"7"}
+                    """)));
+
+        var r = provider.flatten("AAPL", null, new BigDecimal("3"));
+
+        assertThat(r.remainingQty()).isEqualByComparingTo("7");
+    }
+
+    @Test
+    void flatten_positionGone404_remainingQtyZero() {
+        wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("""
+                    {"id":"cls-2","qty":"10","status":"accepted"}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/positions/AAPL")).willReturn(aResponse().withStatus(404)));
+
+        var r = provider.flatten("AAPL", null, new BigDecimal("10"));
+
+        assertThat(r.remainingQty()).isEqualByComparingTo("0");
     }
 
     // ---- positions() ----
