@@ -31,6 +31,11 @@ called out explicitly rather than guessed.
 `closedQty`/`remainingQty`/`avgFillPrice` are omitted entirely when the broker didn't
 supply them (they are never fabricated) — treat their absence as "unknown", not "zero".
 
+**`remainingQty` semantics differ by broker**: Saxo's `remainingQty` is a **projected**
+value (`available - closeQty`, computed before the market order fills); Alpaca's
+`remainingQty` is the **actual** live position read after the close. Both mean "remaining
+after close", but Saxo's isn't a confirmed post-fill figure.
+
 ### Alpaca
 
 `DELETE /v2/positions/{symbol}` accepts either `qty` (share count) or `percentage`
@@ -73,14 +78,19 @@ for Saxo flatten — a Market order's placement response has no synchronous fill
 
 ## `modify_bracket` — orderId semantics (read this before calling it)
 
-`modify_bracket(connection, orderId, stop?, target?)` patches the stop-loss and/or
-take-profit level of an *existing* bracket. **The correct `orderId` to pass differs by
-broker and is not interchangeable:**
+`modify_bracket(connection, orderId, symbol, stop?, target?)` patches the stop-loss
+and/or take-profit level of an *existing* bracket. **The correct `orderId` to pass
+differs by broker and is not interchangeable:**
 
 Both brokers resolve legs the same two-step way: **parent lookup first, symbol fallback
 second.** The caller always passes the bracket parent's id (from `place_bracket`'s
 `orderId`) *and* the symbol — the symbol is what makes the fallback possible once the
-parent is gone.
+parent is gone (`symbol` is a required parameter on this tool, not optional).
+
+**Non-atomic per-leg modify**: modify is per-leg and NOT atomic — if the stop leg is
+moved and the take-profit PATCH is then rejected, the result is `accepted:false` but the
+stop may already have moved. Re-read via `get_orders` to reconcile. (True for both
+brokers.)
 
 ### Saxo — parent lookup, then post-fill symbol fallback
 
@@ -99,9 +109,12 @@ lookup**: it resolves the symbol to Saxo's `Uic` (via the same instrument resolv
 orders matching that `Uic`, classifies them by `OpenOrderType` (contains `"Stop"` → SL
 leg, `"Limit"` → TP leg), and PATCHes the requested one(s) directly — no parent needed.
 If the fallback can't find a leg satisfying the request either (symbol unresolvable, or
-no matching working order), the call still 404s with the same `NOT_FOUND` semantics as
-before. This makes the post-fill ratchet use-case (move the stop once the entry fills)
-work without any special-casing on the consumer side.
+no matching working order), the call is **rejected** with `rejectCode=LEG_NOT_FOUND`
+(`accepted:false`, not a thrown error) — the same uniform shape Alpaca uses for its
+equivalent "leg genuinely doesn't exist" case (see below). This makes the post-fill
+ratchet use-case (move the stop once the entry fills) work without any special-casing on
+the consumer side, and lets the consumer treat "leg not found" identically across
+brokers without branching on which one is active.
 
 **Assumption / self-id exclusion:** the fallback is designed for ONE bracket's detached
 protective legs per symbol (Dracul holds one position per symbol). It explicitly excludes
@@ -111,7 +124,7 @@ fallback (same as parent-not-found), and in that state the parent order itself s
 appears in `/port/v1/orders/me` sharing the resolved `Uic`. Without the exclusion, the
 scan could misclassify the entry order as a stop/take-profit leg (its `OpenOrderType` is
 typically `"Limit"`, matching the TP classification) and PATCH it — corrupting the entry
-price instead of correctly 404ing.
+price instead of correctly rejecting with `LEG_NOT_FOUND`.
 
 ### Alpaca — leg-aware, mirrors Saxo's parent-lookup + symbol-fallback pattern
 

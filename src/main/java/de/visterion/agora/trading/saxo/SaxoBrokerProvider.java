@@ -329,8 +329,9 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * RelatedOpenOrders — not separate top-level orders — so we fetch raw JsonNode (not
      * parseOrder) to reach that array. There is no MasterOrderId anywhere; post-fill the
      * parent id vanishes entirely and legs become sibling-referencing Oco orders, which is
-     * out of scope for v1 (NOT_FOUND, matching "filled orders' protection legs must be
-     * modified individually"). Each present leg is PATCHed individually with the SIM-minimal
+     * out of scope for v1 (rejected LEG_NOT_FOUND — uniform with Alpaca's post-fill-not-found
+     * shape — matching "filled orders' protection legs must be modified individually").
+     * Each present leg is PATCHed individually with the SIM-minimal
      * body (no Uic/Amount/BuySell/ManualOrder) using the child's own OpenOrderType/Duration.
      */
     @Override
@@ -350,8 +351,8 @@ public class SaxoBrokerProvider implements BrokerProvider {
         if (parent == null || !children.isArray() || children.isEmpty()) {
             OrderResult fb = modifyBySymbolFallback(ctx, symbol, stop, target, id);
             if (fb != null) return fb;
-            throw new BrokerException(BrokerException.Kind.NOT_FOUND,
-                    "no open bracket parent or working legs for " + id + " / " + symbol, null);
+            return OrderResult.rejected("no working stop/take-profit leg for bracket " + id + " / " + symbol,
+                    "LEG_NOT_FOUND");
         }
 
         JsonNode slLeg = null;
@@ -388,7 +389,8 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * one position per symbol). It excludes the caller's own parent id ({@code id}) from the Uic-matching
      * scan — otherwise a "parent found but its RelatedOpenOrders is empty" state (the parent still appears
      * in {@code /port/v1/orders/me} sharing the resolved Uic) could self-misclassify the entry order as a
-     * stop/take-profit leg and corrupt its price instead of correctly falling through to NOT_FOUND.
+     * stop/take-profit leg and corrupt its price instead of correctly falling through to a
+     * rejected LEG_NOT_FOUND.
      */
     private OrderResult modifyBySymbolFallback(AccountContext ctx, String symbol,
                                                BigDecimal stop, BigDecimal target, String id) {
@@ -404,7 +406,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
             if (type.contains("Stop")) slLeg = n;
             else if ("Limit".equals(type)) tpLeg = n;
         }
-        if (stop != null && slLeg == null) return null;   // let caller 404 uniformly
+        if (stop != null && slLeg == null) return null;   // let caller reject LEG_NOT_FOUND uniformly
         if (target != null && tpLeg == null) return null;
         if (stop != null) { OrderResult r = patchLeg(ctx, slLeg, stop); if (!r.accepted()) return r; }
         if (target != null) { OrderResult r = patchLeg(ctx, tpLeg, target); if (!r.accepted()) return r; }

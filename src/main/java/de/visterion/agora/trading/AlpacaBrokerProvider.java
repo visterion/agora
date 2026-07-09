@@ -110,6 +110,9 @@ public class AlpacaBrokerProvider implements BrokerProvider {
             if (e.getStatusCode().value() == 404) return null;
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "Alpaca modifyBracket lookup failed HTTP " + e.getStatusCode().value(), e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "Alpaca modifyBracket lookup failed: " + e.getMessage(), e);
         }
     }
 
@@ -130,6 +133,9 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         } catch (RestClientResponseException e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "Alpaca modifyBracket symbol fallback failed HTTP " + e.getStatusCode().value(), e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "Alpaca modifyBracket lookup failed: " + e.getMessage(), e);
         }
     }
 
