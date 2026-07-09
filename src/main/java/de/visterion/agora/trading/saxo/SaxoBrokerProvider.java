@@ -35,6 +35,13 @@ public class SaxoBrokerProvider implements BrokerProvider {
     private final SaxoInstrumentResolver resolver;
     private volatile AccountContext accountContext;
 
+    /**
+     * Bounded-retry knobs for {@link #withLegIds}. Package-private (not final) so
+     * {@code SaxoBrokerProviderTest} can zero out the delay — tests must not actually sleep.
+     */
+    int legLookupMaxAttempts = 3;
+    long legLookupDelayMillis = 200;
+
     record AccountContext(String clientKey, String accountKey) {}
 
     SaxoBrokerProvider(ConnectionConfig cfg, SaxoTokenStore store, RestClient client,
@@ -258,12 +265,29 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * Best-effort follow-up: Saxo's placement response carries only the parent OrderId
      * (never child leg ids — unlike Alpaca), so to hand the caller SL/TP leg ids for a
      * later per-leg modify_bracket, we re-fetch /port/v1/orders/me (same lookup
-     * modifyBracket already does) and read the parent's embedded RelatedOpenOrders. If
-     * this lookup fails or the parent isn't found yet (e.g. eventual consistency), the
-     * placement itself must still be reported accepted — leg ids simply stay null.
+     * modifyBracket already does) and read the parent's embedded RelatedOpenOrders.
+     * Immediately after placement the parent+legs may not be visible yet (Saxo eventual
+     * consistency), so this is a bounded retry (at most {@link #legLookupMaxAttempts}
+     * attempts, {@link #legLookupDelayMillis} apart) rather than a single shot — it stops
+     * as soon as leg ids are found, so the common case (legs visible immediately) costs
+     * exactly one GET and no delay. If legs never appear within the window, or any attempt
+     * throws, the placement itself must still be reported accepted — leg ids simply stay
+     * null; a caller can look them up later via get_orders.
      */
     private OrderResult withLegIds(String orderId, String clientRef) {
         if (orderId == null) return OrderResult.accepted(orderId, clientRef, "accepted");
+        for (int attempt = 1; attempt <= legLookupMaxAttempts; attempt++) {
+            OrderResult found = findLegIds(orderId, clientRef);
+            if (found != null) return found;
+            if (attempt < legLookupMaxAttempts) {
+                sleepBetweenLegLookups(attempt);
+            }
+        }
+        return OrderResult.accepted(orderId, clientRef, "accepted");
+    }
+
+    /** Single lookup attempt; returns null (not accepted-without-legs) when nothing was found yet, so the caller can retry. */
+    private OrderResult findLegIds(String orderId, String clientRef) {
         try {
             JsonNode resp = getJson("/port/v1/orders/me");
             for (JsonNode n : resp.path("Data")) {
@@ -281,13 +305,22 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     if (slLeg != null || tpLeg != null) {
                         return OrderResult.accepted(orderId, clientRef, "accepted", slLeg, tpLeg);
                     }
-                    break;
+                    return null;
                 }
             }
         } catch (Exception ignored) {
             // best-effort only — leg lookup failing must not fail the placement itself
         }
-        return OrderResult.accepted(orderId, clientRef, "accepted");
+        return null;
+    }
+
+    /** Injectable delay seam: SaxoBrokerProviderTest zeroes legLookupDelayMillis so tests never actually sleep. */
+    private void sleepBetweenLegLookups(int attempt) {
+        try {
+            Thread.sleep(legLookupDelayMillis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /**
