@@ -78,23 +78,69 @@ public class AlpacaBrokerProvider implements BrokerProvider {
 
     @Override
     public OrderResult modifyBracket(String brokerOrderId, String symbol, BigDecimal newStop, BigDecimal newTarget) {
-        ObjectNode body = MAPPER.createObjectNode();
-        if (newStop != null) body.put("stop_price", newStop.toPlainString());
-        if (newTarget != null) body.put("limit_price", newTarget.toPlainString());
+        LegIds legs = resolveLegsByParent(brokerOrderId);
+        if (legs == null) legs = resolveLegsBySymbol(symbol); // Task 3 provides this
+        if (newStop != null) {
+            if (legs == null || legs.slLegId() == null)
+                return OrderResult.rejected("no stop-loss leg on bracket " + brokerOrderId, "LEG_NOT_FOUND");
+            OrderResult r = patchLeg(legs.slLegId(), "stop_price", newStop);
+            if (!r.accepted()) return r;
+        }
+        if (newTarget != null) {
+            if (legs == null || legs.tpLegId() == null)
+                return OrderResult.rejected("no take-profit leg on bracket " + brokerOrderId, "LEG_NOT_FOUND");
+            OrderResult r = patchLeg(legs.tpLegId(), "limit_price", newTarget);
+            if (!r.accepted()) return r;
+        }
+        return OrderResult.accepted(brokerOrderId, null, "replaced");
+    }
 
+    private record LegIds(String slLegId, String tpLegId) {}
+
+    /** GET the bracket parent (nested) and classify its legs; null if the parent order isn't found (e.g. post-fill). */
+    private LegIds resolveLegsByParent(String parentId) {
+        try {
+            JsonNode n = client.get()
+                    .uri(uri -> uri.path("/orders/{id}").queryParam("nested", "true").build(parentId))
+                    .retrieve().body(JsonNode.class);
+            JsonNode legs = n == null ? null : n.path("legs");
+            if (legs == null || !legs.isArray() || legs.isEmpty()) return null;
+            return classifyLegs(legs);
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 404) return null;
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "Alpaca modifyBracket lookup failed HTTP " + e.getStatusCode().value(), e);
+        }
+    }
+
+    /** Temporary stub — Task 3 replaces this with an actual open-orders-by-symbol fallback lookup. */
+    private LegIds resolveLegsBySymbol(String symbol) {
+        return null;
+    }
+
+    private static LegIds classifyLegs(JsonNode legs) {
+        String sl = null, tp = null;
+        for (JsonNode leg : legs) {
+            String type = leg.path("type").asString("");
+            if (type.equals("stop") || type.equals("stop_limit")) sl = leg.path("id").asString(null);
+            else if (type.equals("limit")) tp = leg.path("id").asString(null);
+        }
+        return new LegIds(sl, tp);
+    }
+
+    private OrderResult patchLeg(String legId, String priceField, BigDecimal price) {
+        ObjectNode body = MAPPER.createObjectNode();
+        body.put(priceField, price.toPlainString());
         try {
             JsonNode resp = client.patch()
-                    .uri("/orders/{id}", brokerOrderId)
+                    .uri("/orders/{id}", legId)
                     .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                    .body(body)
-                    .retrieve()
-                    .body(JsonNode.class);
+                    .body(body).retrieve().body(JsonNode.class);
             return parseAccepted(resp);
         } catch (RestClientResponseException e) {
             return handleWriteError(e);
         } catch (Exception e) {
-            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
-                    "Alpaca modifyBracket failed: " + e.getMessage(), e);
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "Alpaca patchLeg failed: " + e.getMessage(), e);
         }
     }
 

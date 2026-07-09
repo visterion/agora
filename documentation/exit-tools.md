@@ -90,28 +90,22 @@ point `modify_bracket` 404s ("filled orders' protection legs must be modified
 individually"). This is a genuine, documented Saxo API characteristic, not a bug in this
 provider — there's no post-fill leg-modification path today.
 
-### Alpaca — **genuine gap, not fixed**: pass the individual leg's own order id, one field at a time
+### Alpaca — leg-aware, mirrors Saxo's parent-lookup pattern
 
 Alpaca's `PATCH /orders/{id}` only accepts fields that apply to *that specific order*: a
 stop order accepts `stop_price`, a limit order accepts `limit_price`. The bracket
 *parent* (the entry order) accepts neither meaningfully — its own price field is the
-entry limit price, not the stop/target. **The current implementation does not do any
-leg-aware lookup**: it PATCHes whatever id you give it with both `stop_price` and
-`limit_price` in a single call. This only produces the intended effect if you pass the
-**SL leg's own id** (to move the stop) or the **TP leg's own id** (to move the target) —
-**never the bracket parent's id**, and never both fields in one call against a single
-leg id (a stop order will likely ignore or reject an unrelated `limit_price` field, and
-vice versa).
-
-**Practical consequence for Dracul**: to adjust both stop and target on an Alpaca
-bracket, call `modify_bracket` **twice** — once with the SL leg id + `stop`, once with
-the TP leg id + `target`. Leg ids are available from `place_bracket`'s response
-(`stopLegId`/`takeProfitLegId`, see below) or from `get_orders`' `role`/`parentId`
-fields. This was **not fixed** in this change: a leg-aware rewrite analogous to Saxo's
-(fetch the order, read its `legs[]`, PATCH each leg with only its own field) is the
-obvious next step, but doing it now would require an extra `GET /orders/{id}` round trip
-before every `modifyBracket` call and risks behavior no live Alpaca account was available
-to verify in this sandbox — left as a documented gap rather than a speculative fix.
+entry limit price, not the stop/target. `modify_bracket` therefore takes the **bracket
+parent id + symbol** the same way Saxo's does: it fetches the parent via
+`GET /orders/{id}?nested=true`, classifies its embedded `legs[]` (`type: "stop"` /
+`"stop_limit"` → stop-loss leg, `type: "limit"` → take-profit leg), and PATCHes each
+leg with **only its own price field** — `stop_price` on the SL leg id, `limit_price` on
+the TP leg id. A single call can move both stop and target; each leg PATCH is issued
+separately. If the requested leg isn't found on the parent (e.g. only a TP leg exists and
+a stop change was requested), the call is rejected with `LEG_NOT_FOUND` rather than
+silently PATCHing the wrong order. If the parent lookup itself 404s (post-fill, id
+unknown), a symbol-based fallback lookup is used instead (see Task 3 for its
+implementation) before giving up.
 
 ## `place_bracket` — response shape
 
@@ -185,12 +179,10 @@ effect, or (once available) a Saxo activity/trades endpoint — not covered by t
 
 ## Summary of gaps left explicitly documented (not guessed, not fixed)
 
-1. **Alpaca `modify_bracket`** does not do leg-aware id resolution — caller must pass the
-   correct leg id and only the matching field, one call per leg. See the section above.
-2. **Alpaca flatten** never returns `remainingQty` (broker response doesn't carry it);
+1. **Alpaca flatten** never returns `remainingQty` (broker response doesn't carry it);
    Dracul must call `get_positions` separately if it needs that number.
-3. **Saxo flatten** partial-close truncates to whole units with no lot-size table —
+2. **Saxo flatten** partial-close truncates to whole units with no lot-size table —
    fine for ordinary equities, unverified/likely-wrong for fractional-unit asset classes.
-4. **Saxo orders** never expose `filledQty`/`avgFillPrice` — `/port/v1/orders/me` is an
+3. **Saxo orders** never expose `filledQty`/`avgFillPrice` — `/port/v1/orders/me` is an
    open-orders view and a verified fill-detail field could not be confirmed without live
    credentials.

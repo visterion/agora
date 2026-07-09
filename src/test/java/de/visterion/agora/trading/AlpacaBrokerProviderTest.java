@@ -172,17 +172,33 @@ class AlpacaBrokerProviderTest {
     // ---- modifyBracket ----
 
     @Test
-    void modifyBracket_200_returnsAccepted() {
-        wm.stubFor(patch(urlEqualTo("/orders/oid-1"))
+    void modifyBracket_parentLookup_patchesEachLegWithOwnField() {
+        wm.stubFor(get(urlPathEqualTo("/orders/par-1"))
                 .willReturn(okJson("""
-                    {"id":"oid-1","client_order_id":"ref-1","status":"replaced"}
-                    """)));
+                    {"id":"par-1","symbol":"AAPL","legs":[
+                      {"id":"sl-1","type":"stop"},
+                      {"id":"tp-1","type":"limit"}]}""")));
+        wm.stubFor(patch(urlEqualTo("/orders/sl-1")).willReturn(okJson("{\"id\":\"sl-1\",\"status\":\"replaced\"}")));
+        wm.stubFor(patch(urlEqualTo("/orders/tp-1")).willReturn(okJson("{\"id\":\"tp-1\",\"status\":\"replaced\"}")));
 
-        var result = provider.modifyBracket("oid-1", "AAPL", new BigDecimal("183"), new BigDecimal("202"));
+        var r = provider.modifyBracket("par-1", "AAPL", new BigDecimal("183"), new BigDecimal("202"));
 
-        assertThat(result.accepted()).isTrue();
-        assertThat(result.brokerOrderId()).isEqualTo("oid-1");
-        assertThat(result.status()).isEqualTo("replaced");
+        assertThat(r.accepted()).isTrue();
+        wm.verify(patchRequestedFor(urlEqualTo("/orders/sl-1"))
+                .withRequestBody(matchingJsonPath("$.stop_price", equalTo("183")))
+                .withRequestBody(notMatching(".*limit_price.*")));
+        wm.verify(patchRequestedFor(urlEqualTo("/orders/tp-1"))
+                .withRequestBody(matchingJsonPath("$.limit_price", equalTo("202")))
+                .withRequestBody(notMatching(".*stop_price.*")));
+    }
+
+    @Test
+    void modifyBracket_stopOnly_noStopLeg_rejectsLegNotFound() {
+        wm.stubFor(get(urlPathEqualTo("/orders/par-2"))
+                .willReturn(okJson("{\"id\":\"par-2\",\"symbol\":\"AAPL\",\"legs\":[{\"id\":\"tp-2\",\"type\":\"limit\"}]}")));
+        var r = provider.modifyBracket("par-2", "AAPL", new BigDecimal("183"), null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
     }
 
     // ---- flatten ----
