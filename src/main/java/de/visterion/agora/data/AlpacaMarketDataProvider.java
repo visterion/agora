@@ -128,6 +128,13 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
                         bd(b.path("l")), bd(b.path("c")), b.path("v").asLong(0)));
             }
         }
+        // Alpaca returns HTTP 200 with {"bars":null} for symbols it doesn't know (all non-US
+        // symbols on the free IEX feed). Treat that as "not served here" so MarketDataService
+        // falls through to the next provider, instead of caching an empty success.
+        if (out.isEmpty()) {
+            throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
+                    "Symbol " + symbol + " has no bars at Alpaca", null);
+        }
         // Keep only the most recent `days` bars (still oldest-first).
         if (out.size() > days) {
             out = new ArrayList<>(out.subList(out.size() - days, out.size()));

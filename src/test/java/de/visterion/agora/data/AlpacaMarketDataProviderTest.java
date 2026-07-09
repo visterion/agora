@@ -92,6 +92,14 @@ class AlpacaMarketDataProviderTest {
         assertThat(bars.get(1).volume()).isEqualTo(3000L);
     }
 
+    @Test void ohlcUnknownSymbolThrowsNotFound() {
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/SAP.DE/bars"))
+                .willReturn(okJson("{\"bars\":null,\"next_page_token\":null,\"symbol\":\"SAP.DE\"}")));
+        assertThatThrownBy(() -> provider(true).ohlc("SAP.DE", 5))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
+    }
+
     @Test void blankKeyQuoteThrowsUnavailable() {
         assertThatThrownBy(() -> provider(false).quote("AAPL"))
                 .isInstanceOfSatisfying(MarketDataException.class,
