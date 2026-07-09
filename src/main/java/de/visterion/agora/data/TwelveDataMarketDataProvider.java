@@ -10,6 +10,7 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -28,19 +29,27 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
     private final String key;
 
     /**
-     * Constructor bound by Spring via {@code @Value} and also invoked directly from WireMock tests
-     * with an explicit base-url + key (both parameters are plain strings, so no separate test ctor
-     * is needed).
+     * Constructor bound by Spring via {@code @Value}. Applies the configurable per-request read
+     * timeout ({@code agora.data.provider-timeout-ms}) so a slow TwelveData call fails fast into the
+     * next provider instead of stalling the chain.
      */
     @Autowired
     public TwelveDataMarketDataProvider(
             @Value("${agora.data.twelvedata.base-url}") String baseUrl,
-            @Value("${agora.data.twelvedata.key}") String key) {
+            @Value("${agora.data.twelvedata.key}") String key,
+            @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
         this.client = RestClient.builder()
                 .baseUrl(baseUrl)
-                .requestFactory(new JdkClientHttpRequestFactory())
+                .requestFactory(rf)
                 .build();
         this.key = key;
+    }
+
+    /** Test constructor: explicit base-url + key, default timeout. */
+    TwelveDataMarketDataProvider(String baseUrl, String key) {
+        this(baseUrl, key, 4000L);
     }
 
     @Override
