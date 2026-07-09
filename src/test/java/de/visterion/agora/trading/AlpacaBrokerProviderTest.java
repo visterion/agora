@@ -345,6 +345,22 @@ class AlpacaBrokerProviderTest {
         assertThat(r.remainingQty()).isEqualByComparingTo("0");
     }
 
+    @Test
+    void flatten_followUpReadConnectionFailure_doesNotFailClose() {
+        wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("""
+                    {"id":"cls-9","qty":"5","status":"accepted"}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(aResponse().withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
+
+        var r = provider.flatten("AAPL", null, new BigDecimal("5"));
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.closedQty()).isEqualByComparingTo("5");
+        assertThat(r.remainingQty()).isNull();
+    }
+
     // ---- positions() ----
 
     @Test
