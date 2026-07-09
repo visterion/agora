@@ -68,6 +68,9 @@ agora:
       base-url: ${AGORA_DATA_ALPACA_BASE_URL:https://data.alpaca.markets}
       key-id: ${AGORA_DATA_ALPACA_KEY_ID:}
       secret: ${AGORA_DATA_ALPACA_SECRET:}
+    saxo:
+      # trading-connection slot whose session feeds market data ("falls vorhanden")
+      connection: ${AGORA_DATA_SAXO_CONNECTION:saxo-live}
     edgar:
       user-agent: ${AGORA_DATA_EDGAR_USER_AGENT:agora agora@visterion.de}
       efts-base-url: ${AGORA_DATA_EDGAR_EFTS_BASE_URL:https://efts.sec.gov}
