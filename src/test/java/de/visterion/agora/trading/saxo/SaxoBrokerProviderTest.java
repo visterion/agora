@@ -569,6 +569,33 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void modifyBracket_postFill_childlessParentIsExcludedFromSelfMatch() {
+        // Parent present in Data[] (same Uic as the resolved symbol) but with an EMPTY
+        // RelatedOpenOrders — this triggers the symbol fallback. No other working orders
+        // share the Uic. The requested modification is a TARGET (not a stop) because the
+        // parent's own OpenOrderType is "Limit" — the same type the fallback uses to
+        // classify take-profit legs. Without excluding the caller's own parent id, the
+        // fallback would misclassify the parent itself as the take-profit leg and PATCH it,
+        // corrupting the entry price. It must instead find nothing and 404.
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"9001","OpenOrderType":"Limit","Status":"Working","Uic":211,"AssetType":"Stock",
+               "BuySell":"Buy","Amount":1.0,"OrderRelation":"IfDoneMaster","Price":100.0,
+               "DisplayAndFormat":{"Symbol":"AAPL:xnas"},
+               "RelatedOpenOrders":[]}
+            ]}
+            """)));
+
+        assertThatThrownBy(() -> provider.modifyBracket("9001", "AAPL",
+                null, new java.math.BigDecimal("115")))
+                .isInstanceOf(BrokerException.class)
+                .extracting(e -> ((BrokerException) e).kind())
+                .isEqualTo(BrokerException.Kind.NOT_FOUND);
+        wm.verify(0, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
     void modifyBracketPatch400IsRejected() {
         stubBracketChildren();
         wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)

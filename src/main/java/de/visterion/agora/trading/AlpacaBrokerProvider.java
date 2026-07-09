@@ -79,7 +79,7 @@ public class AlpacaBrokerProvider implements BrokerProvider {
     @Override
     public OrderResult modifyBracket(String brokerOrderId, String symbol, BigDecimal newStop, BigDecimal newTarget) {
         LegIds legs = resolveLegsByParent(brokerOrderId);
-        if (legs == null) legs = resolveLegsBySymbol(symbol); // Task 3 provides this
+        if (legs == null) legs = resolveLegsBySymbol(brokerOrderId, symbol); // Task 3 provides this
         if (newStop != null) {
             if (legs == null || legs.slLegId() == null)
                 return OrderResult.rejected("no stop-loss leg on bracket " + brokerOrderId, "LEG_NOT_FOUND");
@@ -113,15 +113,20 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         }
     }
 
-    /** Post-fill fallback: list working orders for the symbol and classify the protective legs. */
-    private LegIds resolveLegsBySymbol(String symbol) {
+    /**
+     * Post-fill fallback: list working orders for the symbol and classify the protective legs.
+     * <p>Defensive hardening (mirrors the Saxo fallback): excludes the bracket parent id from
+     * classification. The self-match window is narrower on Alpaca than on Saxo — a gone parent
+     * isn't normally still "open" here — but the exclusion is correct and cheap.
+     */
+    private LegIds resolveLegsBySymbol(String parentId, String symbol) {
         try {
             JsonNode arr = client.get()
                     .uri(uri -> uri.path("/orders").queryParam("status", "open")
                             .queryParam("symbols", symbol).queryParam("nested", "false").build())
                     .retrieve().body(JsonNode.class);
             if (arr == null || !arr.isArray() || arr.isEmpty()) return null;
-            return classifyLegs(arr);
+            return classifyLegs(parentId, arr);
         } catch (RestClientResponseException e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "Alpaca modifyBracket symbol fallback failed HTTP " + e.getStatusCode().value(), e);
@@ -129,8 +134,13 @@ public class AlpacaBrokerProvider implements BrokerProvider {
     }
 
     private static LegIds classifyLegs(JsonNode legs) {
+        return classifyLegs(null, legs);
+    }
+
+    private static LegIds classifyLegs(String excludeId, JsonNode legs) {
         String sl = null, tp = null;
         for (JsonNode leg : legs) {
+            if (excludeId != null && excludeId.equals(leg.path("id").asString(null))) continue;
             String type = leg.path("type").asString("");
             if (type.equals("stop") || type.equals("stop_limit")) sl = leg.path("id").asString(null);
             else if (type.equals("limit")) tp = leg.path("id").asString(null);

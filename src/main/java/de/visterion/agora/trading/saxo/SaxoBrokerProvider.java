@@ -349,7 +349,14 @@ public class SaxoBrokerProvider implements BrokerProvider {
         return OrderResult.accepted(id, null, "replaced");
     }
 
-    /** Post-fill: the parent is gone; find the detached protective orders by resolved Uic and patch them. */
+    /**
+     * Post-fill: the parent is gone; find the detached protective orders by resolved Uic and patch them.
+     * <p>Assumption: this fallback targets ONE bracket's detached protective legs per symbol (Dracul holds
+     * one position per symbol). It excludes the caller's own parent id ({@code id}) from the Uic-matching
+     * scan — otherwise a "parent found but its RelatedOpenOrders is empty" state (the parent still appears
+     * in {@code /port/v1/orders/me} sharing the resolved Uic) could self-misclassify the entry order as a
+     * stop/take-profit leg and corrupt its price instead of correctly falling through to NOT_FOUND.
+     */
     private OrderResult modifyBySymbolFallback(AccountContext ctx, String symbol,
                                                BigDecimal stop, BigDecimal target, String id) {
         long uic;
@@ -358,6 +365,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
         JsonNode resp = getJson("/port/v1/orders/me");
         JsonNode slLeg = null, tpLeg = null;
         for (JsonNode n : resp.path("Data")) {
+            if (id.equals(n.path("OrderId").asString(null))) continue;
             if (n.path("Uic").asLong(-1) != uic) continue;
             String type = n.path("OpenOrderType").asString("");
             if (type.contains("Stop")) slLeg = n;
