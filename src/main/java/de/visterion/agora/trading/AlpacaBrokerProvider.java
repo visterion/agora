@@ -113,9 +113,19 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         }
     }
 
-    /** Temporary stub — Task 3 replaces this with an actual open-orders-by-symbol fallback lookup. */
+    /** Post-fill fallback: list working orders for the symbol and classify the protective legs. */
     private LegIds resolveLegsBySymbol(String symbol) {
-        return null;
+        try {
+            JsonNode arr = client.get()
+                    .uri(uri -> uri.path("/orders").queryParam("status", "open")
+                            .queryParam("symbols", symbol).queryParam("nested", "false").build())
+                    .retrieve().body(JsonNode.class);
+            if (arr == null || !arr.isArray() || arr.isEmpty()) return null;
+            return classifyLegs(arr);
+        } catch (RestClientResponseException e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "Alpaca modifyBracket symbol fallback failed HTTP " + e.getStatusCode().value(), e);
+        }
     }
 
     private static LegIds classifyLegs(JsonNode legs) {

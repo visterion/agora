@@ -201,6 +201,22 @@ class AlpacaBrokerProviderTest {
         assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
     }
 
+    @Test
+    void modifyBracket_parentGone_fallsBackToSymbol() {
+        wm.stubFor(get(urlPathEqualTo("/orders/par-x")).willReturn(aResponse().withStatus(404)));
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .withQueryParam("symbols", equalTo("AAPL"))
+                .willReturn(okJson("""
+                    [{"id":"sl-9","type":"stop","symbol":"AAPL","status":"held"},
+                     {"id":"tp-9","type":"limit","symbol":"AAPL","status":"held"}]""")));
+        wm.stubFor(patch(urlEqualTo("/orders/sl-9")).willReturn(okJson("{\"id\":\"sl-9\",\"status\":\"replaced\"}")));
+
+        var r = provider.modifyBracket("par-x", "AAPL", new BigDecimal("180"), null);
+        assertThat(r.accepted()).isTrue();
+        wm.verify(patchRequestedFor(urlEqualTo("/orders/sl-9"))
+                .withRequestBody(matchingJsonPath("$.stop_price", equalTo("180"))));
+    }
+
     // ---- flatten ----
 
     @Test

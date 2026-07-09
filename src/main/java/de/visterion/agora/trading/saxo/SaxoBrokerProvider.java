@@ -315,9 +315,10 @@ public class SaxoBrokerProvider implements BrokerProvider {
         }
         JsonNode children = parent == null ? null : parent.path("RelatedOpenOrders");
         if (parent == null || !children.isArray() || children.isEmpty()) {
+            OrderResult fb = modifyBySymbolFallback(ctx, symbol, stop, target, id);
+            if (fb != null) return fb;
             throw new BrokerException(BrokerException.Kind.NOT_FOUND,
-                    "no open bracket parent: " + id
-                            + " (filled orders' protection legs must be modified individually)", null);
+                    "no open bracket parent or working legs for " + id + " / " + symbol, null);
         }
 
         JsonNode slLeg = null;
@@ -345,6 +346,27 @@ public class SaxoBrokerProvider implements BrokerProvider {
             OrderResult r = patchLeg(ctx, tpLeg, target);
             if (!r.accepted()) return r;
         }
+        return OrderResult.accepted(id, null, "replaced");
+    }
+
+    /** Post-fill: the parent is gone; find the detached protective orders by resolved Uic and patch them. */
+    private OrderResult modifyBySymbolFallback(AccountContext ctx, String symbol,
+                                               BigDecimal stop, BigDecimal target, String id) {
+        long uic;
+        try { uic = resolver.resolve(symbol).uic(); }
+        catch (SaxoInstrumentResolver.SymbolResolutionException e) { return OrderResult.rejected(e.getMessage(), "SYMBOL"); }
+        JsonNode resp = getJson("/port/v1/orders/me");
+        JsonNode slLeg = null, tpLeg = null;
+        for (JsonNode n : resp.path("Data")) {
+            if (n.path("Uic").asLong(-1) != uic) continue;
+            String type = n.path("OpenOrderType").asString("");
+            if (type.contains("Stop")) slLeg = n;
+            else if ("Limit".equals(type)) tpLeg = n;
+        }
+        if (stop != null && slLeg == null) return null;   // let caller 404 uniformly
+        if (target != null && tpLeg == null) return null;
+        if (stop != null) { OrderResult r = patchLeg(ctx, slLeg, stop); if (!r.accepted()) return r; }
+        if (target != null) { OrderResult r = patchLeg(ctx, tpLeg, target); if (!r.accepted()) return r; }
         return OrderResult.accepted(id, null, "replaced");
     }
 
