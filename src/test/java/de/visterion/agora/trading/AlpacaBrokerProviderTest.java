@@ -217,6 +217,16 @@ class AlpacaBrokerProviderTest {
                 .withRequestBody(matchingJsonPath("$.stop_price", equalTo("180"))));
     }
 
+    @Test
+    void modifyBracket_parentLookupConnectionFault_throwsUnavailable() {
+        wm.stubFor(get(urlPathEqualTo("/orders/par-1"))
+                .willReturn(aResponse().withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
+
+        assertThatThrownBy(() -> provider.modifyBracket("par-1", "AAPL", new BigDecimal("180"), null))
+                .isInstanceOfSatisfying(BrokerException.class, ex ->
+                        assertThat(ex.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE));
+    }
+
     // ---- flatten ----
 
     @Test

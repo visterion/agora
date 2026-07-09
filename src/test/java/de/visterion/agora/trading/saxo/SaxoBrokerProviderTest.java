@@ -591,15 +591,14 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
-    void modifyBracketWithoutChildrenIsNotFound() {
+    void modifyBracketWithoutChildrenIsRejectedLegNotFound() {
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me"))
                 .willReturn(okJson("{\"Data\":[]}")));
-        assertThatThrownBy(() -> provider.modifyBracket("9001", "AAPL",
-                new java.math.BigDecimal("85"), null))
-                .isInstanceOf(BrokerException.class)
-                .extracting(e -> ((BrokerException) e).kind())
-                .isEqualTo(BrokerException.Kind.NOT_FOUND);
+        var r = provider.modifyBracket("9001", "AAPL", new java.math.BigDecimal("85"), null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
+        wm.verify(0, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
     }
 
     @Test
@@ -626,7 +625,8 @@ class SaxoBrokerProviderTest {
         // parent's own OpenOrderType is "Limit" — the same type the fallback uses to
         // classify take-profit legs. Without excluding the caller's own parent id, the
         // fallback would misclassify the parent itself as the take-profit leg and PATCH it,
-        // corrupting the entry price. It must instead find nothing and 404.
+        // corrupting the entry price. It must instead find nothing and return a typed
+        // LEG_NOT_FOUND rejection (uniform with Alpaca — not a thrown exception).
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
             {"Data":[
@@ -637,11 +637,9 @@ class SaxoBrokerProviderTest {
             ]}
             """)));
 
-        assertThatThrownBy(() -> provider.modifyBracket("9001", "AAPL",
-                null, new java.math.BigDecimal("115")))
-                .isInstanceOf(BrokerException.class)
-                .extracting(e -> ((BrokerException) e).kind())
-                .isEqualTo(BrokerException.Kind.NOT_FOUND);
+        var r = provider.modifyBracket("9001", "AAPL", null, new java.math.BigDecimal("115"));
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
         wm.verify(0, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
     }
 
