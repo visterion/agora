@@ -251,7 +251,7 @@ provider.
 
 | Domain | Plugins |
 |---|---|
-| Quotes / OHLC / intraday | TwelveData, Finnhub, then keyless Yahoo Finance as last-resort fallback |
+| Quotes / OHLC / intraday | Alpaca (broker feed, IEX) first, then TwelveData, Finnhub, then keyless Yahoo Finance as last-resort fallback |
 | Company profile / news / fundamentals / estimates | Finnhub |
 | Filings / XBRL concepts / EPS / Form-4 | SEC EDGAR |
 | Earnings calendar | Finnhub, Yahoo |
@@ -306,8 +306,10 @@ for the full list and defaults). Key ones:
 | `AGORA_TRADING_SAXO_LIVE_APP_KEY` / `_APP_SECRET` / `_BASE_URL` / `_REDIRECT_URI` | Saxo LIVE developer-app credentials + OAuth redirect (`saxo-live`) |
 | `AGORA_TRADING_SAXO_TOKEN_DIR` | Directory for persisted Saxo OAuth tokens (default `/data/saxo`) |
 | `AGORA_TRADING_SAXO_REFRESH_CHECK_MS` | Saxo token auto-refresh check interval in ms (default `30000`) |
+| `AGORA_DATA_ALPACA_KEY_ID` / `_SECRET` / `_BASE_URL` | Alpaca Market Data credentials (broker-first quote/OHLC + splits; IEX feed). Blank = provider self-skips |
 | `AGORA_DATA_FINNHUB_KEY` | Finnhub API key |
 | `AGORA_DATA_TWELVEDATA_KEY` | TwelveData API key |
+| `AGORA_DATA_PROVIDER_TIMEOUT_MS` | Per-request read timeout for market-data providers, so a slow upstream fails fast into the next (default `4000`) |
 | `AGORA_DATA_EDGAR_USER_AGENT` | SEC-required User-Agent for EDGAR |
 | `AGORA_DATA_CACHE_TTL_*` | Per-family cache TTLs |
 | `AGORA_RESEARCH_*` | Default indicator periods (ATR 22, MA 50/200, RSI 14, and so on) |

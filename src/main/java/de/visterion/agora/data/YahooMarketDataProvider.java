@@ -12,6 +12,7 @@ import org.springframework.web.client.RestClientResponseException;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -32,18 +33,26 @@ public class YahooMarketDataProvider implements MarketDataProvider {
     private final RestClient client;
     private final long retryBaseMs;
 
-    /** Spring-wired constructor; delegates to the package-private test constructor with default retry delay. */
+    /** Package-private constructor for tests: base-url + UA + explicit retry delay (pass 0 for no sleep), default timeout. */
+    YahooMarketDataProvider(String baseUrl, String userAgent, long retryBaseMs) {
+        this(baseUrl, userAgent, retryBaseMs, 4000L);
+    }
+
+    /**
+     * Full / Spring-wired constructor: base-url + UA + retry delay + per-request read timeout (millis).
+     * Applies the configurable read timeout ({@code agora.data.provider-timeout-ms}) so a slow Yahoo
+     * call fails fast into the next provider; retry base delay defaults to 500ms.
+     */
     @Autowired
     public YahooMarketDataProvider(
             @Value("${agora.data.yahoo.base-url}") String baseUrl,
-            @Value("${agora.data.yahoo.user-agent}") String userAgent) {
-        this(baseUrl, userAgent, 500L);
-    }
-
-    /** Package-private constructor for tests: takes base-url + UA + explicit retry delay (pass 0 for no sleep). */
-    YahooMarketDataProvider(String baseUrl, String userAgent, long retryBaseMs) {
+            @Value("${agora.data.yahoo.user-agent}") String userAgent,
+            @Value("${agora.data.yahoo.retry-base-ms:500}") long retryBaseMs,
+            @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
         this.client = RestClient.builder()
-                .requestFactory(new JdkClientHttpRequestFactory())
+                .requestFactory(rf)
                 .baseUrl(baseUrl)
                 .defaultHeader("User-Agent", userAgent)
                 .build();
