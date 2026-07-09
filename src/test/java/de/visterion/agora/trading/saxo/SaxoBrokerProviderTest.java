@@ -154,6 +154,37 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void ordersFlattensBracketLegsWithRoleAndParentId() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"9001","OpenOrderType":"Limit","Status":"Working","Uic":211,"AssetType":"Stock",
+               "BuySell":"Buy","Amount":1.0,"OrderRelation":"IfDoneMaster",
+               "DisplayAndFormat":{"Symbol":"AAPL:xnas"},
+               "RelatedOpenOrders":[
+                 {"OrderId":"9002","OpenOrderType":"Limit","Status":"NotWorking","Amount":1.0},
+                 {"OrderId":"9003","OpenOrderType":"StopIfTraded","Status":"NotWorking","Amount":1.0}]}
+            ]}
+            """)));
+
+        var all = provider.orders(null);
+
+        assertThat(all).hasSize(3);
+        assertThat(all.get(0).brokerOrderId()).isEqualTo("9001");
+        assertThat(all.get(0).role()).isEqualTo("entry");
+        assertThat(all.get(0).parentId()).isNull();
+
+        var tpLeg = all.get(1);
+        assertThat(tpLeg.brokerOrderId()).isEqualTo("9002");
+        assertThat(tpLeg.role()).isEqualTo("take_profit");
+        assertThat(tpLeg.parentId()).isEqualTo("9001");
+
+        var slLeg = all.get(2);
+        assertThat(slLeg.brokerOrderId()).isEqualTo("9003");
+        assertThat(slLeg.role()).isEqualTo("stop_loss");
+        assertThat(slLeg.parentId()).isEqualTo("9001");
+    }
+
+    @Test
     void orderByClientRefFindsMatchOr404() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
             {"Data":[{"OrderId":"5001","BuySell":"Buy","Amount":1.0,"OpenOrderType":"Limit",
@@ -256,6 +287,45 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void submitBracketFetchesLegIdsFromRelatedOpenOrders() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"9001","OpenOrderType":"Limit","Status":"Working","Uic":211,"AssetType":"Stock",
+               "BuySell":"Buy","Amount":1.0,"OrderRelation":"IfDoneMaster",
+               "RelatedOpenOrders":[
+                 {"OrderId":"9002","OpenOrderType":"Limit","Status":"NotWorking"},
+                 {"OrderId":"9003","OpenOrderType":"StopIfTraded","Status":"NotWorking"}]}
+            ]}
+            """)));
+
+        var r = provider.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.brokerOrderId()).isEqualTo("9001");
+        assertThat(r.takeProfitLegId()).isEqualTo("9002");
+        assertThat(r.stopLegId()).isEqualTo("9003");
+    }
+
+    @Test
+    void submitBracketLegLookupFailureStillReportsAccepted() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
+            """)));
+        // /port/v1/orders/me not stubbed -> WireMock 404s; leg lookup must be best-effort
+        var r = provider.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.brokerOrderId()).isEqualTo("9001");
+        assertThat(r.stopLegId()).isNull();
+        assertThat(r.takeProfitLegId()).isNull();
+    }
+
+    @Test
     void submitBracketUnknownSymbolIsRejectedNotUnavailable() {
         wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("{\"Data\":[]}")));
         var r = provider.submitBracket(bracketReq());
@@ -323,9 +393,11 @@ class SaxoBrokerProviderTest {
         wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
                 .willReturn(okJson("{\"OrderId\":\"9100\"}")));
 
-        var r = provider.flatten("AAPL");
+        var r = provider.flatten("AAPL", null, null);
 
         assertThat(r.accepted()).isTrue();
+        assertThat(r.closedQty()).isEqualByComparingTo("10.0");
+        assertThat(r.remainingQty()).isEqualByComparingTo("0");
         wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
                 .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell")))
                 .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
@@ -333,11 +405,83 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void flattenWithFraction_sendsPartialAmount() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.3"), null);
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.closedQty()).isEqualByComparingTo("3");
+        assertThat(r.remainingQty()).isEqualByComparingTo("7");
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("3"))));
+    }
+
+    @Test
+    void flattenWithQty_sendsExactAmount() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        var r = provider.flatten("AAPL", null, new java.math.BigDecimal("4"));
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.closedQty()).isEqualByComparingTo("4");
+        assertThat(r.remainingQty()).isEqualByComparingTo("6");
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("4"))));
+    }
+
+    @Test
+    void flattenWithQtyExceedingPosition_isRejectedWithoutBrokerCall() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+
+        var r = provider.flatten("AAPL", null, new java.math.BigDecimal("20"));
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("QTY_EXCEEDS_POSITION");
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void flattenWithFractionTruncatingToZero_isRejected() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":1.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.1"), null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("QTY_ROUNDED_TO_ZERO");
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
     void flattenWithoutPositionIsNotFound() {
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions"))
                 .willReturn(okJson("{\"Data\":[]}")));
-        assertThatThrownBy(() -> provider.flatten("AAPL"))
+        assertThatThrownBy(() -> provider.flatten("AAPL", null, null))
                 .isInstanceOf(BrokerException.class)
                 .extracting(e -> ((BrokerException) e).kind())
                 .isEqualTo(BrokerException.Kind.NOT_FOUND);

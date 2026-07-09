@@ -67,7 +67,7 @@ public class AlpacaBrokerProvider implements BrokerProvider {
                     .body(body)
                     .retrieve()
                     .body(JsonNode.class);
-            return parseAccepted(resp);
+            return parseAcceptedBracket(resp);
         } catch (RestClientResponseException e) {
             return handleWriteError(e);
         } catch (Exception e) {
@@ -98,18 +98,36 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         }
     }
 
+    /**
+     * Full or partial close. Alpaca's {@code DELETE /positions/{symbol}} accepts either a
+     * {@code qty} query param (share count) or a {@code percentage} param (0-100, exclusive
+     * of the boundary conventions Alpaca documents) — never both. {@code fraction} is
+     * converted to a percentage (fraction*100); {@code qty} is passed through verbatim.
+     * Alpaca validates qty/percentage against the live position itself (a qty that exceeds
+     * the position comes back as a 422/403, mapped below to {@code OrderResult.rejected} —
+     * this provider does not pre-fetch the position to duplicate that check).
+     */
     @Override
-    public OrderResult flatten(String symbol) {
+    public OrderResult flatten(String symbol, BigDecimal fraction, BigDecimal qty) {
         try {
             JsonNode resp = client.delete()
-                    .uri("/positions/{symbol}", symbol)
+                    .uri(uri -> {
+                        var b = uri.path("/positions/{symbol}");
+                        if (qty != null) {
+                            b = b.queryParam("qty", qty.toPlainString());
+                        } else if (fraction != null) {
+                            b = b.queryParam("percentage",
+                                    fraction.multiply(new BigDecimal(100)).stripTrailingZeros().toPlainString());
+                        }
+                        return b.build(symbol);
+                    })
                     .retrieve()
                     .body(JsonNode.class);
             // Alpaca returns the closing order; parse it if present, else accepted
             if (resp != null && resp.hasNonNull("id")) {
-                return parseAccepted(resp);
+                return parseAcceptedFlatten(resp);
             }
-            return OrderResult.accepted(null, null, "accepted");
+            return OrderResult.accepted(null, null, "accepted", null, null, null);
         } catch (RestClientResponseException e) {
             return handleWriteError(e);
         } catch (Exception e) {
@@ -176,12 +194,19 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         }
     }
 
+    /**
+     * Requests {@code nested=true} so a bracket parent's response carries its stop-loss/
+     * take-profit legs in a {@code legs[]} array; those legs are flattened into the
+     * returned list as their own {@link Order} entries with {@code parentId} set to the
+     * parent's brokerOrderId, so {@code get_orders} exposes legs individually (not just
+     * bracket parents) — see documentation/exit-tools.md.
+     */
     @Override
     public List<Order> orders(String status) {
         try {
             JsonNode resp = client.get()
                     .uri(uri -> {
-                        var b = uri.path("/orders");
+                        var b = uri.path("/orders").queryParam("nested", "true");
                         if (status != null && !status.isBlank()) b = b.queryParam("status", status);
                         return b.build();
                     })
@@ -190,7 +215,12 @@ public class AlpacaBrokerProvider implements BrokerProvider {
             List<Order> out = new ArrayList<>();
             if (resp != null && resp.isArray()) {
                 for (JsonNode n : resp) {
-                    out.add(parseOrder(n));
+                    out.add(parseOrder(n, null));
+                    JsonNode legs = n.path("legs");
+                    if (legs.isArray()) {
+                        String parentId = n.path("id").asString(null);
+                        for (JsonNode leg : legs) out.add(parseOrder(leg, parentId));
+                    }
                 }
             }
             return out;
@@ -242,7 +272,7 @@ public class AlpacaBrokerProvider implements BrokerProvider {
                     .body(JsonNode.class);
             if (n == null) throw new BrokerException(BrokerException.Kind.NOT_FOUND,
                     "Order not found: " + clientRef, null);
-            return parseOrder(n);
+            return parseOrder(n, null);
         } catch (BrokerException e) {
             throw e;
         } catch (RestClientResponseException e) {
@@ -261,13 +291,58 @@ public class AlpacaBrokerProvider implements BrokerProvider {
 
     // ---- Helpers ----
 
-    /** Parse a 2xx order response into an accepted OrderResult. */
+    /** Parse a 2xx order response into an accepted OrderResult (modifyBracket path — no legs). */
     private static OrderResult parseAccepted(JsonNode n) {
         if (n == null) return OrderResult.accepted(null, null, "accepted");
         String id = n.path("id").asString(null);
         String clientOrderId = n.path("client_order_id").asString(null);
         String status = n.path("status").asString("accepted");
         return OrderResult.accepted(id, clientOrderId, status);
+    }
+
+    /**
+     * Parse a submitBracket 2xx response, extracting the SL/TP leg ids from Alpaca's
+     * {@code legs[]} array (present on a bracket order's create response): a leg with
+     * {@code type} "stop"/"stop_limit" is the stop-loss, "limit" is the take-profit.
+     */
+    private static OrderResult parseAcceptedBracket(JsonNode n) {
+        if (n == null) return OrderResult.accepted(null, null, "accepted");
+        String id = n.path("id").asString(null);
+        String clientOrderId = n.path("client_order_id").asString(null);
+        String status = n.path("status").asString("accepted");
+        String stopLegId = null;
+        String takeProfitLegId = null;
+        JsonNode legs = n.path("legs");
+        if (legs.isArray()) {
+            for (JsonNode leg : legs) {
+                String type = leg.path("type").asString("");
+                if (type.equals("stop") || type.equals("stop_limit")) {
+                    stopLegId = leg.path("id").asString(null);
+                } else if (type.equals("limit")) {
+                    takeProfitLegId = leg.path("id").asString(null);
+                }
+            }
+        }
+        if (stopLegId != null || takeProfitLegId != null) {
+            return OrderResult.accepted(id, clientOrderId, status, stopLegId, takeProfitLegId);
+        }
+        return OrderResult.accepted(id, clientOrderId, status);
+    }
+
+    /**
+     * Parse a flatten (DELETE /positions/{symbol}) response: the closing order object.
+     * {@code qty} is the requested close size; {@code filled_avg_price} is present only
+     * once the closing order actually fills (often not synchronous with the DELETE call),
+     * hence nullable. Alpaca's response carries no "remaining position size" field, so
+     * remainingQty is always null here — a genuine gap, documented in exit-tools.md.
+     */
+    private static OrderResult parseAcceptedFlatten(JsonNode n) {
+        String id = n.path("id").asString(null);
+        String clientOrderId = n.path("client_order_id").asString(null);
+        String status = n.path("status").asString("accepted");
+        BigDecimal closedQty = n.hasNonNull("qty") ? bd(n.path("qty")) : null;
+        BigDecimal avgFillPrice = n.hasNonNull("filled_avg_price") ? bd(n.path("filled_avg_price")) : null;
+        return OrderResult.accepted(id, clientOrderId, status, closedQty, null, avgFillPrice);
     }
 
     /**
@@ -301,20 +376,42 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         return e.getMessage();
     }
 
-    /** Parse a JSON node into a neutral Order DTO. Alpaca uses "order_type" for the type field. */
-    private static Order parseOrder(JsonNode n) {
+    /**
+     * Parse a JSON node into a neutral Order DTO. Alpaca uses "order_type" for the type
+     * field in list responses, "type" in create responses. {@code parentId} is non-null
+     * when this node is a bracket leg flattened out of a parent's {@code legs[]} (see
+     * {@link #orders}); role is then derived from the leg's own type (stop/stop_limit →
+     * stop_loss, limit → take_profit). For a top-level node, role is "entry" when Alpaca's
+     * {@code order_class} marks it as a bracket/oco/oto parent, else "other".
+     */
+    private static Order parseOrder(JsonNode n, String parentId) {
+        String type = n.path("order_type").isMissingNode()
+                ? n.path("type").asString("")
+                : n.path("order_type").asString("");
+        String role = deriveRole(n, type, parentId);
+        BigDecimal filledQty = n.hasNonNull("filled_qty") ? bd(n.path("filled_qty")) : null;
+        BigDecimal avgFillPrice = n.hasNonNull("filled_avg_price") ? bd(n.path("filled_avg_price")) : null;
         return new Order(
                 n.path("id").asString(""),
                 n.path("client_order_id").asString(null),
                 n.path("symbol").asString(""),
                 n.path("side").asString(""),
                 bd(n.path("qty")),
-                // Alpaca uses "order_type" in list responses, "type" in create responses
-                n.path("order_type").isMissingNode()
-                        ? n.path("type").asString("")
-                        : n.path("order_type").asString(""),
-                n.path("status").asString("")
+                type,
+                n.path("status").asString(""),
+                role, filledQty, avgFillPrice, parentId
         );
+    }
+
+    private static String deriveRole(JsonNode n, String type, String parentId) {
+        if (parentId != null) {
+            if (type.equals("stop") || type.equals("stop_limit")) return "stop_loss";
+            if (type.equals("limit")) return "take_profit";
+            return "other";
+        }
+        String orderClass = n.path("order_class").asString("");
+        if (orderClass.equals("bracket") || orderClass.equals("oco") || orderClass.equals("oto")) return "entry";
+        return "other";
     }
 
     private static BigDecimal bd(JsonNode node) {
