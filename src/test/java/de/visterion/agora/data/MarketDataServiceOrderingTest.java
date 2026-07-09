@@ -35,15 +35,17 @@ class MarketDataServiceOrderingTest {
 
     @Test void primarySuccessMeansLaterProvidersNotCalled() {
         var alpaca = new TrackingProvider("alpaca", true);
+        var saxo = new TrackingProvider("saxo", true);
         var twelve = new TrackingProvider("twelvedata", true);
         var finnhub = new TrackingProvider("finnhub", true);
         var yahoo = new TrackingProvider("yahoo", true);
-        var svc = new MarketDataService(List.of(alpaca, twelve, finnhub, yahoo), 1000, () -> 0L);
+        var svc = new MarketDataService(List.of(alpaca, saxo, twelve, finnhub, yahoo), 1000, () -> 0L);
 
         Quote q = svc.quote("AAPL");
 
         assertThat(q.price()).isEqualByComparingTo("1.23");
         assertThat(alpaca.called).isTrue();
+        assertThat(saxo.called).isFalse();
         assertThat(twelve.called).isFalse();
         assertThat(finnhub.called).isFalse();
         assertThat(yahoo.called).isFalse();
@@ -51,17 +53,33 @@ class MarketDataServiceOrderingTest {
 
     @Test void primaryUnavailableFallsThroughInOrder() {
         var alpaca = new TrackingProvider("alpaca", false);
+        var saxo = new TrackingProvider("saxo", false);
         var twelve = new TrackingProvider("twelvedata", false);
         var finnhub = new TrackingProvider("finnhub", false);
         var yahoo = new TrackingProvider("yahoo", true);
-        var svc = new MarketDataService(List.of(alpaca, twelve, finnhub, yahoo), 1000, () -> 0L);
+        var svc = new MarketDataService(List.of(alpaca, saxo, twelve, finnhub, yahoo), 1000, () -> 0L);
 
         Quote q = svc.quote("AAPL");
 
         assertThat(q.price()).isEqualByComparingTo("1.23");
         assertThat(alpaca.called).isTrue();
+        assertThat(saxo.called).isTrue();
         assertThat(twelve.called).isTrue();
         assertThat(finnhub.called).isTrue();
         assertThat(yahoo.called).isTrue();
+    }
+
+    @Test void alpacaDownSaxoServesAndLaterProvidersNotCalled() {
+        var alpaca = new TrackingProvider("alpaca", false);
+        var saxo = new TrackingProvider("saxo", true);
+        var twelve = new TrackingProvider("twelvedata", true);
+        var svc = new MarketDataService(List.of(alpaca, saxo, twelve), 1000, () -> 0L);
+
+        Quote q = svc.quote("SAP.DE");
+
+        assertThat(q.price()).isEqualByComparingTo("1.23");
+        assertThat(alpaca.called).isTrue();
+        assertThat(saxo.called).isTrue();
+        assertThat(twelve.called).isFalse();
     }
 }

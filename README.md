@@ -251,7 +251,7 @@ provider.
 
 | Domain | Plugins |
 |---|---|
-| Quotes / OHLC / intraday | Alpaca (broker feed, IEX) first, then TwelveData, Finnhub, then keyless Yahoo Finance as last-resort fallback |
+| Quotes / OHLC / intraday | Alpaca (broker feed, IEX) first, then Saxo (non-US exchanges via the `saxo-live` session, Yahoo-suffix symbols like `SAP.DE`, 15-min delayed), then TwelveData, Finnhub, then keyless Yahoo Finance as last-resort fallback |
 | Company profile / news / fundamentals / estimates | Finnhub |
 | Filings / XBRL concepts / EPS / Form-4 | SEC EDGAR |
 | Earnings calendar | Finnhub, Yahoo |
