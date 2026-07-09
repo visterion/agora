@@ -113,6 +113,8 @@ public class PlaceBracketTool implements AgoraTool {
             out.put("orderId", r.brokerOrderId());
             if (r.clientRef() != null) out.put("clientRef", r.clientRef());
             out.put("status", r.status());
+            if (r.stopLegId() != null) out.put("stopLegId", r.stopLegId());
+            if (r.takeProfitLegId() != null) out.put("takeProfitLegId", r.takeProfitLegId());
         } else {
             out.put("rejectReason", r.rejectReason());
             out.put("rejectCode", r.rejectCode());

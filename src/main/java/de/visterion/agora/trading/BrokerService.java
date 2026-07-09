@@ -24,7 +24,9 @@ public class BrokerService {
 
     public OrderResult submitBracket(String connection, BracketOrderRequest r) { return resolve(connection).submitBracket(r); }
     public OrderResult modifyBracket(String connection, String id, BigDecimal stop, BigDecimal target) { return resolve(connection).modifyBracket(id, stop, target); }
-    public OrderResult flatten(String connection, String symbol) { return resolve(connection).flatten(symbol); }
+    public OrderResult flatten(String connection, String symbol, BigDecimal fraction, BigDecimal qty) {
+        return resolve(connection).flatten(symbol, fraction, qty);
+    }
     public List<Position> positions(String connection) { return resolve(connection).positions(); }
     public List<Order> orders(String connection, String status) { return resolve(connection).orders(status); }
     public Account account(String connection) { return resolve(connection).account(); }

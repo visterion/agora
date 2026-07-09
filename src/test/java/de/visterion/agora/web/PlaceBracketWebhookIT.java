@@ -73,7 +73,7 @@ class PlaceBracketWebhookIT {
                         }
 
                         @Override
-                        public OrderResult flatten(String symbol) {
+                        public OrderResult flatten(String symbol, BigDecimal fraction, BigDecimal qty) {
                             return OrderResult.accepted("oid-2", null, "accepted");
                         }
 

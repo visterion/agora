@@ -17,7 +17,7 @@ class ConnectionRegistryTest {
             public String name() { return "stub"; }
             public OrderResult submitBracket(BracketOrderRequest r) { return OrderResult.accepted("o", null, "accepted"); }
             public OrderResult modifyBracket(String id, BigDecimal s, BigDecimal t) { return OrderResult.accepted(id, null, "replaced"); }
-            public OrderResult flatten(String sym) { return OrderResult.accepted("o", null, "accepted"); }
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) { return OrderResult.accepted("o", null, "accepted"); }
             public List<Position> positions() { return List.of(); }
             public List<Order> orders(String status) { return List.of(); }
             public Account account() { return new Account("a", BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, "USD", "ACTIVE"); }

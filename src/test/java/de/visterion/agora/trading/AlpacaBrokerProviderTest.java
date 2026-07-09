@@ -130,6 +130,45 @@ class AlpacaBrokerProviderTest {
                         assertThat(ex.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE));
     }
 
+    @Test
+    void submitBracket_200_parsesLegIdsFromLegsArray() {
+        wm.stubFor(post(urlEqualTo("/orders"))
+                .willReturn(okJson("""
+                    {"id":"oid-1","client_order_id":"ref-1","status":"accepted",
+                     "legs":[{"id":"leg-stop","type":"stop"},{"id":"leg-limit","type":"limit"}]}
+                    """)));
+
+        var req = new BracketOrderRequest(
+                "AAPL", "buy", new BigDecimal("10"), "limit", "gtc",
+                new BigDecimal("190"), new BigDecimal("185"), null,
+                new BigDecimal("200"), "ref-1");
+
+        var result = provider.submitBracket(req);
+
+        assertThat(result.accepted()).isTrue();
+        assertThat(result.stopLegId()).isEqualTo("leg-stop");
+        assertThat(result.takeProfitLegId()).isEqualTo("leg-limit");
+    }
+
+    @Test
+    void submitBracket_200_noLegsArray_legIdsNull() {
+        wm.stubFor(post(urlEqualTo("/orders"))
+                .willReturn(okJson("""
+                    {"id":"oid-1","client_order_id":"ref-1","status":"accepted"}
+                    """)));
+
+        var req = new BracketOrderRequest(
+                "AAPL", "buy", new BigDecimal("10"), "limit", "gtc",
+                new BigDecimal("190"), new BigDecimal("185"), null,
+                new BigDecimal("200"), "ref-1");
+
+        var result = provider.submitBracket(req);
+
+        assertThat(result.accepted()).isTrue();
+        assertThat(result.stopLegId()).isNull();
+        assertThat(result.takeProfitLegId()).isNull();
+    }
+
     // ---- modifyBracket ----
 
     @Test
@@ -155,7 +194,7 @@ class AlpacaBrokerProviderTest {
                     {"id":"oid-9","client_order_id":null,"status":"accepted"}
                     """)));
 
-        var result = provider.flatten("AAPL");
+        var result = provider.flatten("AAPL", null, null);
 
         assertThat(result.accepted()).isTrue();
     }
@@ -169,7 +208,7 @@ class AlpacaBrokerProviderTest {
                             {"message":"position has pending orders"}
                             """)));
 
-        var result = provider.flatten("AAPL");
+        var result = provider.flatten("AAPL", null, null);
 
         assertThat(result.accepted()).isFalse();
         assertThat(result.rejectCode()).isEqualTo("422");
@@ -185,7 +224,7 @@ class AlpacaBrokerProviderTest {
                             {"message":"not permitted"}
                             """)));
 
-        var result = provider.flatten("GOOG");
+        var result = provider.flatten("GOOG", null, null);
 
         assertThat(result.accepted()).isFalse();
         assertThat(result.rejectCode()).isEqualTo("403");
@@ -196,9 +235,52 @@ class AlpacaBrokerProviderTest {
         wm.stubFor(delete(urlEqualTo("/positions/ZZZZ"))
                 .willReturn(aResponse().withStatus(404)));
 
-        assertThatThrownBy(() -> provider.flatten("ZZZZ"))
+        assertThatThrownBy(() -> provider.flatten("ZZZZ", null, null))
                 .isInstanceOfSatisfying(BrokerException.class, ex ->
                         assertThat(ex.kind()).isEqualTo(BrokerException.Kind.NOT_FOUND));
+    }
+
+    @Test
+    void flatten_withQty_sendsQtyQueryParam() {
+        wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
+                .withQueryParam("qty", equalTo("3"))
+                .willReturn(okJson("""
+                    {"id":"oid-9","qty":"3","status":"accepted"}
+                    """)));
+
+        var result = provider.flatten("AAPL", null, new BigDecimal("3"));
+
+        assertThat(result.accepted()).isTrue();
+        assertThat(result.closedQty()).isEqualByComparingTo("3");
+        wm.verify(deleteRequestedFor(urlPathEqualTo("/positions/AAPL")).withQueryParam("qty", equalTo("3")));
+    }
+
+    @Test
+    void flatten_withFraction_sendsPercentageQueryParam() {
+        wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
+                .withQueryParam("percentage", equalTo("50"))
+                .willReturn(okJson("""
+                    {"id":"oid-9","qty":"5","status":"accepted"}
+                    """)));
+
+        var result = provider.flatten("AAPL", new BigDecimal("0.5"), null);
+
+        assertThat(result.accepted()).isTrue();
+        assertThat(result.closedQty()).isEqualByComparingTo("5");
+        wm.verify(deleteRequestedFor(urlPathEqualTo("/positions/AAPL")).withQueryParam("percentage", equalTo("50")));
+    }
+
+    @Test
+    void flatten_parsesFilledAvgPriceWhenPresent() {
+        wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("""
+                    {"id":"oid-9","qty":"3","filled_avg_price":"101.50","status":"filled"}
+                    """)));
+
+        var result = provider.flatten("AAPL", null, new BigDecimal("3"));
+
+        assertThat(result.avgFillPrice()).isEqualByComparingTo("101.50");
+        assertThat(result.remainingQty()).isNull();
     }
 
     // ---- positions() ----
@@ -247,6 +329,62 @@ class AlpacaBrokerProviderTest {
         assertThat(o.side()).isEqualTo("buy");
         assertThat(o.qty()).isEqualByComparingTo("3");
         assertThat(o.status()).isEqualTo("new");
+        assertThat(o.role()).isEqualTo("other");
+        assertThat(o.parentId()).isNull();
+    }
+
+    @Test
+    void orders_bracketParentRoleIsEntry() {
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .willReturn(okJson("""
+                    [
+                      {"id":"oid-10","client_order_id":"ref-10","symbol":"MSFT",
+                       "side":"buy","qty":"3","order_type":"limit","status":"new",
+                       "order_class":"bracket"}
+                    ]
+                    """)));
+
+        var orders = provider.orders(null);
+
+        assertThat(orders).hasSize(1);
+        assertThat(orders.get(0).role()).isEqualTo("entry");
+    }
+
+    @Test
+    void orders_flattensLegsWithParentIdAndRole() {
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .willReturn(okJson("""
+                    [
+                      {"id":"oid-parent","client_order_id":"ref-p","symbol":"MSFT",
+                       "side":"buy","qty":"3","order_type":"limit","status":"filled",
+                       "order_class":"bracket",
+                       "legs":[
+                         {"id":"leg-stop","type":"stop","symbol":"MSFT","side":"sell",
+                          "qty":"3","status":"new","filled_qty":"0"},
+                         {"id":"leg-limit","type":"limit","symbol":"MSFT","side":"sell",
+                          "qty":"3","status":"filled","filled_qty":"3","filled_avg_price":"210.00"}
+                       ]}
+                    ]
+                    """)));
+
+        var orders = provider.orders(null);
+
+        assertThat(orders).hasSize(3);
+        assertThat(orders.get(0).role()).isEqualTo("entry");
+        assertThat(orders.get(0).parentId()).isNull();
+
+        var stopLeg = orders.get(1);
+        assertThat(stopLeg.brokerOrderId()).isEqualTo("leg-stop");
+        assertThat(stopLeg.role()).isEqualTo("stop_loss");
+        assertThat(stopLeg.parentId()).isEqualTo("oid-parent");
+        assertThat(stopLeg.filledQty()).isEqualByComparingTo("0");
+
+        var tpLeg = orders.get(2);
+        assertThat(tpLeg.brokerOrderId()).isEqualTo("leg-limit");
+        assertThat(tpLeg.role()).isEqualTo("take_profit");
+        assertThat(tpLeg.parentId()).isEqualTo("oid-parent");
+        assertThat(tpLeg.filledQty()).isEqualByComparingTo("3");
+        assertThat(tpLeg.avgFillPrice()).isEqualByComparingTo("210.00");
     }
 
     @Test
@@ -262,13 +400,14 @@ class AlpacaBrokerProviderTest {
     }
 
     @Test
-    void orders_withoutStatus_noQueryParam() {
-        wm.stubFor(get(urlEqualTo("/orders"))
+    void orders_alwaysRequestsNestedLegs() {
+        wm.stubFor(get(urlPathEqualTo("/orders"))
                 .willReturn(okJson("[]")));
 
         provider.orders(null);
 
-        wm.verify(getRequestedFor(urlEqualTo("/orders")));
+        wm.verify(getRequestedFor(urlPathEqualTo("/orders"))
+                .withQueryParam("nested", equalTo("true")));
     }
 
     // ---- account() ----

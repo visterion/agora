@@ -17,7 +17,7 @@ class BrokerServiceTest {
             public String name() { return "stub"; }
             public OrderResult submitBracket(BracketOrderRequest r) { return OrderResult.accepted("oid-1", r.clientRef(), "accepted"); }
             public OrderResult modifyBracket(String id, BigDecimal s, BigDecimal t) { return OrderResult.accepted(id, null, "replaced"); }
-            public OrderResult flatten(String sym) { return OrderResult.accepted("oid-2", null, "accepted"); }
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) { return OrderResult.accepted("oid-2", null, "accepted"); }
             public List<Position> positions() { return List.of(); }
             public List<Order> orders(String status) { return List.of(); }
             public Account account() { return new Account(accountId, BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, "USD", "ACTIVE"); }

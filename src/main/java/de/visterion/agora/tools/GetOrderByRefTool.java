@@ -59,6 +59,10 @@ public class GetOrderByRefTool implements AgoraTool {
             order.put("qty", o.qty());
             order.put("type", o.type());
             order.put("status", o.status());
+            order.put("role", o.role());
+            if (o.filledQty() != null) order.put("filledQty", o.filledQty());
+            if (o.avgFillPrice() != null) order.put("avgFillPrice", o.avgFillPrice());
+            if (o.parentId() != null) order.put("parentId", o.parentId());
             return ToolResult.ok(out);
         } catch (BrokerException e) {
             return ToolResult.unavailable(e.getMessage());

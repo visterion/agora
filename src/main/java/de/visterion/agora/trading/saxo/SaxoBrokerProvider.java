@@ -144,15 +144,32 @@ public class SaxoBrokerProvider implements BrokerProvider {
         return out;
     }
 
+    /**
+     * Flattens each bracket parent's embedded {@code RelatedOpenOrders} legs into the
+     * returned list as their own {@link Order} entries with {@code parentId} set to the
+     * parent's OrderId, so {@code get_orders} exposes legs individually — mirrors the leg
+     * detection already used by {@link #modifyBracket}. filledQty/avgFillPrice are left
+     * null for every Saxo order: {@code /port/v1/orders/me} is an *open*-orders endpoint and
+     * we could not verify, without live credentials, a reliable fill-qty/fill-price field
+     * on it — documented as a gap in exit-tools.md rather than guessed.
+     */
     @Override
     public List<Order> orders(String status) {
         JsonNode resp = getJson("/port/v1/orders/me?fieldGroups=DisplayAndFormat");
         List<Order> out = new ArrayList<>();
         for (JsonNode n : resp.path("Data")) {
-            Order o = parseOrder(n);
-            if (status == null || status.isBlank()
-                    || o.status().equalsIgnoreCase(status)) {
-                out.add(o);
+            Order parent = parseOrder(n, null);
+            if (status == null || status.isBlank() || parent.status().equalsIgnoreCase(status)) {
+                out.add(parent);
+            }
+            JsonNode children = n.path("RelatedOpenOrders");
+            if (children.isArray()) {
+                for (JsonNode c : children) {
+                    Order leg = parseOrder(c, parent.brokerOrderId());
+                    if (status == null || status.isBlank() || leg.status().equalsIgnoreCase(status)) {
+                        out.add(leg);
+                    }
+                }
             }
         }
         return out;
@@ -228,13 +245,49 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .body(body)
                     .retrieve().body(JsonNode.class);
             String orderId = resp == null ? null : resp.path("OrderId").asString(null);
-            return OrderResult.accepted(orderId, req.clientRef(), "accepted");
+            return withLegIds(orderId, req.clientRef());
         } catch (RestClientResponseException e) {
             return writeError(e);
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "saxo submitBracket failed: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Best-effort follow-up: Saxo's placement response carries only the parent OrderId
+     * (never child leg ids — unlike Alpaca), so to hand the caller SL/TP leg ids for a
+     * later per-leg modify_bracket, we re-fetch /port/v1/orders/me (same lookup
+     * modifyBracket already does) and read the parent's embedded RelatedOpenOrders. If
+     * this lookup fails or the parent isn't found yet (e.g. eventual consistency), the
+     * placement itself must still be reported accepted — leg ids simply stay null.
+     */
+    private OrderResult withLegIds(String orderId, String clientRef) {
+        if (orderId == null) return OrderResult.accepted(orderId, clientRef, "accepted");
+        try {
+            JsonNode resp = getJson("/port/v1/orders/me");
+            for (JsonNode n : resp.path("Data")) {
+                if (orderId.equals(n.path("OrderId").asString(null))) {
+                    JsonNode children = n.path("RelatedOpenOrders");
+                    String slLeg = null;
+                    String tpLeg = null;
+                    if (children.isArray()) {
+                        for (JsonNode c : children) {
+                            String type = c.path("OpenOrderType").asString("");
+                            if (type.contains("Stop")) slLeg = c.path("OrderId").asString(null);
+                            else if ("Limit".equals(type)) tpLeg = c.path("OrderId").asString(null);
+                        }
+                    }
+                    if (slLeg != null || tpLeg != null) {
+                        return OrderResult.accepted(orderId, clientRef, "accepted", slLeg, tpLeg);
+                    }
+                    break;
+                }
+            }
+        } catch (Exception ignored) {
+            // best-effort only — leg lookup failing must not fail the placement itself
+        }
+        return OrderResult.accepted(orderId, clientRef, "accepted");
     }
 
     /**
@@ -319,8 +372,19 @@ public class SaxoBrokerProvider implements BrokerProvider {
         }
     }
 
+    /**
+     * Saxo has no true partial-close endpoint: this places a single opposite-side Market
+     * order for the requested close quantity, exactly as a full flatten does but for
+     * {@code amount.abs() * fraction} (or {@code qty} directly). Requested qty > available
+     * position is rejected (without ever calling the broker) rather than silently clamped.
+     * A fraction that truncates to zero shares (e.g. a small fraction on a 1-share position)
+     * is likewise rejected — Saxo requires whole-share amounts for stocks and this provider
+     * does simple truncation (no lot-size table), documented as a limitation in
+     * exit-tools.md. avgFillPrice is always null: a Market order's placement response
+     * carries no synchronous fill price.
+     */
     @Override
-    public OrderResult flatten(String symbol) {
+    public OrderResult flatten(String symbol, BigDecimal fraction, BigDecimal qty) {
         SaxoInstrumentResolver.ResolvedInstrument ri;
         try {
             ri = resolver.resolve(symbol);
@@ -346,13 +410,33 @@ public class SaxoBrokerProvider implements BrokerProvider {
             throw new BrokerException(BrokerException.Kind.NOT_FOUND, "no open position: " + symbol, null);
         }
         BigDecimal amount = bd(match.path("NetPositionBase").path("Amount"));
+        BigDecimal available = amount.abs();
         String opposite = amount.signum() > 0 ? "Sell" : "Buy";
+
+        BigDecimal closeQty;
+        if (qty != null) {
+            closeQty = qty;
+            if (closeQty.compareTo(available) > 0) {
+                return OrderResult.rejected(
+                        "requested qty " + closeQty.toPlainString() + " exceeds position " + available.toPlainString(),
+                        "QTY_EXCEEDS_POSITION");
+            }
+        } else if (fraction != null) {
+            closeQty = available.multiply(fraction).setScale(0, java.math.RoundingMode.DOWN);
+            if (closeQty.signum() == 0) {
+                return OrderResult.rejected(
+                        "fraction " + fraction.toPlainString() + " of position " + available.toPlainString()
+                                + " truncates to 0 shares", "QTY_ROUNDED_TO_ZERO");
+            }
+        } else {
+            closeQty = available;
+        }
 
         ObjectNode body = MAPPER.createObjectNode();
         body.put("Uic", ri.uic());
         body.put("AssetType", ri.assetType());
         body.put("BuySell", opposite);
-        body.put("Amount", amount.abs());
+        body.put("Amount", closeQty);
         body.put("OrderType", "Market");
         body.put("ManualOrder", false);
         body.put("AccountKey", ctx.accountKey());
@@ -365,7 +449,8 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .body(body)
                     .retrieve().body(JsonNode.class);
             String orderId = resp2 == null ? null : resp2.path("OrderId").asString(null);
-            return OrderResult.accepted(orderId, null, "accepted");
+            BigDecimal remainingQty = available.subtract(closeQty);
+            return OrderResult.accepted(orderId, null, "accepted", closeQty, remainingQty, null);
         } catch (RestClientResponseException e) {
             return writeError(e);
         } catch (Exception e) {
@@ -499,15 +584,35 @@ public class SaxoBrokerProvider implements BrokerProvider {
         return new BrokerException(BrokerException.Kind.UNAVAILABLE, "saxo HTTP " + status, e);
     }
 
-    static Order parseOrder(JsonNode n) {
+    /**
+     * {@code parentId} is non-null when {@code n} is a leg embedded in a parent's
+     * {@code RelatedOpenOrders} (see {@link #orders}); role is then derived from the leg's
+     * own {@code OpenOrderType} (contains "Stop" → stop_loss, "Limit" → take_profit) —
+     * the same pattern {@link #modifyBracket} already uses to find SL/TP legs. A top-level
+     * node's role is "entry" when its {@code OrderRelation} is "IfDoneMaster" (a bracket
+     * parent), else "other". filledQty/avgFillPrice are always null here — see the gap note
+     * on {@link #orders}.
+     */
+    static Order parseOrder(JsonNode n, String parentId) {
+        String type = n.path("OpenOrderType").asString("").toLowerCase(Locale.ROOT);
         return new Order(
                 n.path("OrderId").asString(""),
                 n.path("ExternalReference").asString(null),
                 baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString("")),
                 n.path("BuySell").asString("").toLowerCase(Locale.ROOT),
                 bd(n.path("Amount")),
-                n.path("OpenOrderType").asString("").toLowerCase(Locale.ROOT),
-                n.path("Status").asString("").toLowerCase(Locale.ROOT));
+                type,
+                n.path("Status").asString("").toLowerCase(Locale.ROOT),
+                deriveRole(n, type, parentId), null, null, parentId);
+    }
+
+    private static String deriveRole(JsonNode n, String type, String parentId) {
+        if (parentId != null) {
+            if (type.contains("stop")) return "stop_loss";
+            if (type.equals("limit")) return "take_profit";
+            return "other";
+        }
+        return "IfDoneMaster".equals(n.path("OrderRelation").asString("")) ? "entry" : "other";
     }
 
     /** "AAPL:xnas" → "AAPL" (Saxo symbols carry the exchange suffix). */

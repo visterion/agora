@@ -62,6 +62,10 @@ public class GetOrdersTool implements AgoraTool {
                 node.put("qty", o.qty());
                 node.put("type", o.type());
                 node.put("status", o.status());
+                node.put("role", o.role());
+                if (o.filledQty() != null) node.put("filledQty", o.filledQty());
+                if (o.avgFillPrice() != null) node.put("avgFillPrice", o.avgFillPrice());
+                if (o.parentId() != null) node.put("parentId", o.parentId());
             }
             return ToolResult.ok(out);
         } catch (BrokerException e) {

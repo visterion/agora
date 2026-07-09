@@ -14,7 +14,7 @@ class FlattenToolTest {
 
     private StubBroker accepting() {
         return new StubBroker() {
-            public OrderResult flatten(String sym) {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
                 return OrderResult.accepted("oid-flat", null, "accepted");
             }
         };
@@ -29,9 +29,104 @@ class FlattenToolTest {
         assertThat(r.output().get("orderId").asString()).isEqualTo("oid-flat");
     }
 
+    @Test void defaultCallPassesNullFractionAndQty() {
+        var captured = new BigDecimal[2];
+        var stub = new StubBroker() {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
+                captured[0] = fraction;
+                captured[1] = qty;
+                return OrderResult.accepted("oid", null, "accepted");
+            }
+        };
+        tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL"));
+        assertThat(captured[0]).isNull();
+        assertThat(captured[1]).isNull();
+    }
+
+    @Test void fractionPassedThrough() {
+        var captured = new BigDecimal[1];
+        var stub = new StubBroker() {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
+                captured[0] = fraction;
+                return OrderResult.accepted("oid", null, "accepted");
+            }
+        };
+        tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("fraction", 0.5));
+        assertThat(captured[0]).isEqualByComparingTo("0.5");
+    }
+
+    @Test void qtyPassedThrough() {
+        var captured = new BigDecimal[1];
+        var stub = new StubBroker() {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
+                captured[0] = qty;
+                return OrderResult.accepted("oid", null, "accepted");
+            }
+        };
+        tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("qty", 3));
+        assertThat(captured[0]).isEqualByComparingTo("3");
+    }
+
+    @Test void fractionAndQtyTogetherIsUnavailable() {
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN)
+                .put("symbol","AAPL").put("fraction", 0.5).put("qty", 3));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("mutually exclusive");
+    }
+
+    @Test void fractionZeroIsUnavailable() {
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN)
+                .put("symbol","AAPL").put("fraction", 0));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("fraction");
+    }
+
+    @Test void fractionAboveOneIsUnavailable() {
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN)
+                .put("symbol","AAPL").put("fraction", 1.5));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("fraction");
+    }
+
+    @Test void fractionExactlyOneIsAllowed() {
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN)
+                .put("symbol","AAPL").put("fraction", 1.0));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("accepted").asBoolean()).isTrue();
+    }
+
+    @Test void qtyZeroOrNegativeIsUnavailable() {
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN)
+                .put("symbol","AAPL").put("qty", 0));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("qty");
+    }
+
+    @Test void acceptedShapeIncludesFillDetailWhenPresent() {
+        var stub = new StubBroker() {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
+                return OrderResult.accepted("oid-flat", null, "accepted",
+                        new BigDecimal("3"), new BigDecimal("7"), new BigDecimal("101.50"));
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("qty", 3));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("closedQty").decimalValue()).isEqualByComparingTo("3");
+        assertThat(r.output().get("remainingQty").decimalValue()).isEqualByComparingTo("7");
+        assertThat(r.output().get("avgFillPrice").decimalValue()).isEqualByComparingTo("101.50");
+    }
+
+    @Test void acceptedShapeOmitsFillDetailWhenAbsent() {
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().has("closedQty")).isFalse();
+        assertThat(r.output().has("remainingQty")).isFalse();
+        assertThat(r.output().has("avgFillPrice")).isFalse();
+    }
+
     @Test void rejectedShape() {
         var stub = new StubBroker() {
-            public OrderResult flatten(String sym) {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
                 return OrderResult.rejected("no position found", "422");
             }
         };
@@ -43,7 +138,7 @@ class FlattenToolTest {
 
     @Test void unavailableOnBrokerException() {
         var stub = new StubBroker() {
-            public OrderResult flatten(String sym) {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
                 throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "down", null);
             }
         };
@@ -66,7 +161,7 @@ class FlattenToolTest {
         public String name(){return "stub";}
         public OrderResult submitBracket(BracketOrderRequest r){return OrderResult.accepted("oid",r.clientRef(),"accepted");}
         public OrderResult modifyBracket(String id,BigDecimal s,BigDecimal t){return OrderResult.accepted(id,null,"replaced");}
-        public OrderResult flatten(String sym){return OrderResult.accepted("oid",null,"accepted");}
+        public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty){return OrderResult.accepted("oid",null,"accepted");}
         public List<Position> positions(){return List.of();}
         public List<Order> orders(String status){return List.of();}
         public Account account(){return new Account("acc",BigDecimal.TEN,BigDecimal.TEN,BigDecimal.TEN,"USD","ACTIVE");}
