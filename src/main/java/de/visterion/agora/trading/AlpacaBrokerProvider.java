@@ -415,7 +415,14 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         return OrderResult.accepted(id, clientOrderId, status, closedQty, null, avgFillPrice);
     }
 
-    /** After a close, the live remaining position size (0 when the position is fully gone). */
+    /**
+     * After a close, the live remaining position size (0 when the position is fully gone).
+     * This is an OPTIONAL follow-up read that runs after the close already succeeded, so it
+     * must never fail the close: a 404 (position gone) maps to {@code ZERO}; any other
+     * failure — non-404 HTTP status, or a connection/IO error such as
+     * {@link org.springframework.web.client.ResourceAccessException} — maps to {@code null}
+     * (remaining size unknown, not fabricated).
+     */
     private BigDecimal remainingAfterClose(String symbol) {
         try {
             JsonNode n = client.get().uri("/positions/{s}", symbol).retrieve().body(JsonNode.class);
@@ -423,6 +430,8 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         } catch (RestClientResponseException e) {
             if (e.getStatusCode().value() == 404) return BigDecimal.ZERO;
             return null; // don't fail the close over a follow-up read
+        } catch (Exception e) {
+            return null; // don't fail the close over a follow-up read (e.g. connection/IO error)
         }
     }
 
