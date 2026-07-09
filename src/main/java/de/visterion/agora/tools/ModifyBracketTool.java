@@ -35,10 +35,11 @@ public class ModifyBracketTool implements AgoraTool {
         ObjectNode props = schema.putObject("properties");
         props.putObject("connection").put("type", "string")
                 .put("description", "Target connection id (see list_connections)");
-        props.putObject("orderId").put("type", "string").put("description", "Broker order ID");
+        props.putObject("orderId").put("type", "string").put("description", "Bracket parent order ID (from place_bracket's orderId)");
+        props.putObject("symbol").put("type", "string").put("description", "Instrument symbol of the bracket's position");
         props.putObject("stop").put("type", "number").put("description", "New stop-loss stop price");
         props.putObject("target").put("type", "number").put("description", "New take-profit limit price");
-        schema.putArray("required").add("connection").add("orderId");
+        schema.putArray("required").add("connection").add("orderId").add("symbol");
         return schema;
     }
 
@@ -57,8 +58,12 @@ public class ModifyBracketTool implements AgoraTool {
         if (stop == null && target == null)
             return ToolResult.unavailable("must provide at least one of: stop, target");
 
+        if (!args.hasNonNull("symbol"))
+            return ToolResult.unavailable("missing required argument: symbol");
+        String symbol = args.get("symbol").asString();
+
         try {
-            OrderResult r = broker.modifyBracket(connection, orderId, stop, target);
+            OrderResult r = broker.modifyBracket(connection, orderId, symbol, stop, target);
             return mapResult(r);
         } catch (BrokerException e) {
             return ToolResult.unavailable(e.getMessage());

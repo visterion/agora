@@ -14,7 +14,7 @@ class ModifyBracketToolTest {
 
     private StubBroker accepting() {
         return new StubBroker() {
-            public OrderResult modifyBracket(String id, BigDecimal s, BigDecimal t) {
+            public OrderResult modifyBracket(String id, String symbol, BigDecimal s, BigDecimal t) {
                 return OrderResult.accepted(id, null, "replaced");
             }
         };
@@ -23,7 +23,7 @@ class ModifyBracketToolTest {
     @Test void namespaceIsTrading() { assertThat(tool(accepting()).namespace()).isEqualTo("trading"); }
 
     @Test void acceptedShape() {
-        var args = mapper.createObjectNode().put("connection", TestConnections.CONN).put("orderId","oid-1").put("stop",95).put("target",110);
+        var args = mapper.createObjectNode().put("connection", TestConnections.CONN).put("orderId","oid-1").put("symbol","AAPL").put("stop",95).put("target",110);
         var r = tool(accepting()).call(args);
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("accepted").asBoolean()).isTrue();
@@ -32,12 +32,12 @@ class ModifyBracketToolTest {
 
     @Test void rejectedShape() {
         var stub = new StubBroker() {
-            public OrderResult modifyBracket(String id, BigDecimal s, BigDecimal t) {
+            public OrderResult modifyBracket(String id, String symbol, BigDecimal s, BigDecimal t) {
                 return OrderResult.rejected("order not modifiable", "422");
             }
         };
         // Must provide at least one of stop/target so the empty-adjustment guard does not fire
-        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("orderId","oid-1").put("stop", 95));
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("orderId","oid-1").put("symbol","AAPL").put("stop", 95));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("accepted").asBoolean()).isFalse();
         assertThat(r.output().get("rejectReason").asString()).contains("not modifiable");
@@ -45,13 +45,33 @@ class ModifyBracketToolTest {
 
     @Test void unavailableOnBrokerException() {
         var stub = new StubBroker() {
-            public OrderResult modifyBracket(String id, BigDecimal s, BigDecimal t) {
+            public OrderResult modifyBracket(String id, String symbol, BigDecimal s, BigDecimal t) {
                 throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "down", null);
             }
         };
         // Provide stop so the guard passes and we reach the broker
-        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("orderId","oid-1").put("stop", 95));
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("orderId","oid-1").put("symbol","AAPL").put("stop", 95));
         assertThat(r.available()).isFalse();
+    }
+
+    @Test void symbolRequired() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("orderId", "oid-1").put("stop", 95));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("symbol");
+    }
+
+    @Test void symbolPassedThrough() {
+        var seen = new String[1];
+        var stub = new StubBroker() {
+            public OrderResult modifyBracket(String id, String symbol, BigDecimal s, BigDecimal t) {
+                seen[0] = symbol; return OrderResult.accepted(id, null, "replaced");
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("orderId", "oid-1").put("symbol", "AAPL").put("stop", 95));
+        assertThat(r.available()).isTrue();
+        assertThat(seen[0]).isEqualTo("AAPL");
     }
 
     @Test void unavailableOnMissingOrderId() {
@@ -76,7 +96,7 @@ class ModifyBracketToolTest {
     static class StubBroker implements BrokerProvider {
         public String name(){return "stub";}
         public OrderResult submitBracket(BracketOrderRequest r){return OrderResult.accepted("oid",r.clientRef(),"accepted");}
-        public OrderResult modifyBracket(String id,BigDecimal s,BigDecimal t){return OrderResult.accepted(id,null,"replaced");}
+        public OrderResult modifyBracket(String id,String symbol,BigDecimal s,BigDecimal t){return OrderResult.accepted(id,null,"replaced");}
         public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty){return OrderResult.accepted("oid",null,"accepted");}
         public List<Position> positions(){return List.of();}
         public List<Order> orders(String status){return List.of();}

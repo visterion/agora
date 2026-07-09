@@ -301,7 +301,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * body (no Uic/Amount/BuySell/ManualOrder) using the child's own OpenOrderType/Duration.
      */
     @Override
-    public OrderResult modifyBracket(String id, BigDecimal stop, BigDecimal target) {
+    public OrderResult modifyBracket(String id, String symbol, BigDecimal stop, BigDecimal target) {
         // Guard: both params null → nothing to modify
         if (stop == null && target == null) {
             return OrderResult.rejected("nothing to modify — provide stop and/or target", "NO_CHANGES");

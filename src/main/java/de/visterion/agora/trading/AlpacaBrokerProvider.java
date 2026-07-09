@@ -77,7 +77,7 @@ public class AlpacaBrokerProvider implements BrokerProvider {
     }
 
     @Override
-    public OrderResult modifyBracket(String brokerOrderId, BigDecimal newStop, BigDecimal newTarget) {
+    public OrderResult modifyBracket(String brokerOrderId, String symbol, BigDecimal newStop, BigDecimal newTarget) {
         ObjectNode body = MAPPER.createObjectNode();
         if (newStop != null) body.put("stop_price", newStop.toPlainString());
         if (newTarget != null) body.put("limit_price", newTarget.toPlainString());

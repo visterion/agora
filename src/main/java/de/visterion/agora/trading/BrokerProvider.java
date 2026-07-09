@@ -7,7 +7,7 @@ import java.util.List;
 public interface BrokerProvider {
     String name();
     OrderResult submitBracket(BracketOrderRequest req);
-    OrderResult modifyBracket(String brokerOrderId, BigDecimal newStop, BigDecimal newTarget);
+    OrderResult modifyBracket(String brokerOrderId, String symbol, BigDecimal newStop, BigDecimal newTarget);
     /**
      * Close (flatten) a position, in whole or in part. Exactly one of {@code fraction}
      * (0 &lt; f &le; 1) / {@code qty} may be non-null for a partial close; both null means

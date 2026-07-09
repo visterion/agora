@@ -23,7 +23,7 @@ public class BrokerService {
     }
 
     public OrderResult submitBracket(String connection, BracketOrderRequest r) { return resolve(connection).submitBracket(r); }
-    public OrderResult modifyBracket(String connection, String id, BigDecimal stop, BigDecimal target) { return resolve(connection).modifyBracket(id, stop, target); }
+    public OrderResult modifyBracket(String connection, String id, String symbol, BigDecimal stop, BigDecimal target) { return resolve(connection).modifyBracket(id, symbol, stop, target); }
     public OrderResult flatten(String connection, String symbol, BigDecimal fraction, BigDecimal qty) {
         return resolve(connection).flatten(symbol, fraction, qty);
     }
