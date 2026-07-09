@@ -178,7 +178,7 @@ class AlpacaBrokerProviderTest {
                     {"id":"oid-1","client_order_id":"ref-1","status":"replaced"}
                     """)));
 
-        var result = provider.modifyBracket("oid-1", new BigDecimal("183"), new BigDecimal("202"));
+        var result = provider.modifyBracket("oid-1", "AAPL", new BigDecimal("183"), new BigDecimal("202"));
 
         assertThat(result.accepted()).isTrue();
         assertThat(result.brokerOrderId()).isEqualTo("oid-1");

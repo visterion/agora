@@ -68,7 +68,7 @@ class PlaceBracketWebhookIT {
                         }
 
                         @Override
-                        public OrderResult modifyBracket(String brokerOrderId, BigDecimal newStop, BigDecimal newTarget) {
+                        public OrderResult modifyBracket(String brokerOrderId, String symbol, BigDecimal newStop, BigDecimal newTarget) {
                             return OrderResult.accepted(brokerOrderId, null, "replaced");
                         }
 

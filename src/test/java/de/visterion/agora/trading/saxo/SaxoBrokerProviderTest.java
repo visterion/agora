@@ -511,7 +511,7 @@ class SaxoBrokerProviderTest {
         stubBracketChildren();
         wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9002\"}")));
 
-        var r = provider.modifyBracket("9001",
+        var r = provider.modifyBracket("9001", "AAPL",
                 new java.math.BigDecimal("85"), new java.math.BigDecimal("115"));
 
         assertThat(r.accepted()).isTrue();
@@ -535,7 +535,7 @@ class SaxoBrokerProviderTest {
     void modifyBracketOnlyStopPatchesOneLeg() {
         stubBracketChildren();
         wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9003\"}")));
-        var r = provider.modifyBracket("9001", new java.math.BigDecimal("85"), null);
+        var r = provider.modifyBracket("9001", "AAPL", new java.math.BigDecimal("85"), null);
         assertThat(r.accepted()).isTrue();
         wm.verify(1, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
     }
@@ -544,7 +544,7 @@ class SaxoBrokerProviderTest {
     void modifyBracketWithoutChildrenIsNotFound() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me"))
                 .willReturn(okJson("{\"Data\":[]}")));
-        assertThatThrownBy(() -> provider.modifyBracket("9001",
+        assertThatThrownBy(() -> provider.modifyBracket("9001", "AAPL",
                 new java.math.BigDecimal("85"), null))
                 .isInstanceOf(BrokerException.class)
                 .extracting(e -> ((BrokerException) e).kind())
@@ -557,7 +557,7 @@ class SaxoBrokerProviderTest {
         wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)
                 .withHeader("Content-Type", "application/json")
                 .withBody("{\"ErrorInfo\":{\"ErrorCode\":\"TooLateToChange\",\"Message\":\"too late\"}}")));
-        var r = provider.modifyBracket("9001", new java.math.BigDecimal("85"), null);
+        var r = provider.modifyBracket("9001", "AAPL", new java.math.BigDecimal("85"), null);
         assertThat(r.accepted()).isFalse();
         assertThat(r.rejectCode()).isEqualTo("TooLateToChange");
     }
@@ -565,7 +565,7 @@ class SaxoBrokerProviderTest {
     @Test
     void modifyBracketBothNullIsRejectedWithoutAnyCall() {
         // Guard: both stop and target null → rejected without hitting /port/v1/orders/me
-        var r = provider.modifyBracket("9001", null, null);
+        var r = provider.modifyBracket("9001", "AAPL", null, null);
         assertThat(r.accepted()).isFalse();
         assertThat(r.rejectCode()).isEqualTo("NO_CHANGES");
         assertThat(r.rejectReason()).containsIgnoringCase("nothing to modify");
@@ -587,7 +587,7 @@ class SaxoBrokerProviderTest {
             ]}
             """)));
         // Request stop modification when no SL leg exists
-        var r = provider.modifyBracket("9001", new java.math.BigDecimal("85"), null);
+        var r = provider.modifyBracket("9001", "AAPL", new java.math.BigDecimal("85"), null);
         assertThat(r.accepted()).isFalse();
         assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
         assertThat(r.rejectReason()).containsIgnoringCase("no stop-loss leg");
@@ -608,7 +608,7 @@ class SaxoBrokerProviderTest {
             ]}
             """)));
         // Request target modification when no TP leg exists
-        var r = provider.modifyBracket("9001", null, new java.math.BigDecimal("115"));
+        var r = provider.modifyBracket("9001", "AAPL", null, new java.math.BigDecimal("115"));
         assertThat(r.accepted()).isFalse();
         assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
         assertThat(r.rejectReason()).containsIgnoringCase("no take-profit leg");
