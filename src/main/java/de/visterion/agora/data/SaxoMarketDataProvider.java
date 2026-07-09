@@ -6,6 +6,8 @@ import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -81,8 +83,51 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
 
     @Override
     public List<OhlcBar> ohlc(String symbol, int days) {
-        throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                "saxo ohlc not implemented yet", null);
+        String bearer = requireBearer();
+        long uic = resolver.resolve(symbol);
+        String accountKey = access.accountKey().orElseThrow(() -> new MarketDataException(
+                MarketDataException.Kind.UNAVAILABLE, "saxo: no account key available", null));
+        int count = Math.min(days, 1200);   // Saxo chart max sample count
+
+        JsonNode root;
+        try {
+            root = access.http().get()
+                    .uri(uri -> uri.path("/chart/v3/charts")
+                            .queryParam("Uic", uic)
+                            .queryParam("AssetType", "Stock")
+                            .queryParam("Horizon", 1440)
+                            .queryParam("Count", count)
+                            .queryParam("AccountKey", accountKey)
+                            .build())
+                    .header("Authorization", bearer)
+                    .retrieve().body(JsonNode.class);
+        } catch (Exception e) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    "saxo charts failed for " + symbol + ": " + e.getMessage(), e);
+        }
+        if (root == null) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    "saxo returned empty chart for " + symbol, null);
+        }
+
+        List<OhlcBar> out = new ArrayList<>();
+        JsonNode data = root.path("Data");
+        if (data.isArray()) {
+            for (JsonNode b : data) {                        // Saxo returns oldest-first
+                String t = b.path("Time").asString("");
+                if (t.length() < 10) continue;
+                LocalDate date;
+                try { date = LocalDate.parse(t.substring(0, 10)); }
+                catch (Exception e) { continue; }
+                out.add(new OhlcBar(date, bd(b.path("Open")), bd(b.path("High")),
+                        bd(b.path("Low")), bd(b.path("Close")),
+                        (long) b.path("Volume").asDouble(0)));
+            }
+        }
+        if (out.size() > days) {
+            out = new ArrayList<>(out.subList(out.size() - days, out.size()));
+        }
+        return out;
     }
 
     private String requireBearer() {
