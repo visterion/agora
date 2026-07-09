@@ -103,6 +103,16 @@ no matching working order), the call still 404s with the same `NOT_FOUND` semant
 before. This makes the post-fill ratchet use-case (move the stop once the entry fills)
 work without any special-casing on the consumer side.
 
+**Assumption / self-id exclusion:** the fallback is designed for ONE bracket's detached
+protective legs per symbol (Dracul holds one position per symbol). It explicitly excludes
+the caller's own bracket parent id from the `Uic`-matching scan. This matters for a subtle
+edge case: "parent found but its `RelatedOpenOrders[]` is empty" also triggers the
+fallback (same as parent-not-found), and in that state the parent order itself still
+appears in `/port/v1/orders/me` sharing the resolved `Uic`. Without the exclusion, the
+scan could misclassify the entry order as a stop/take-profit leg (its `OpenOrderType` is
+typically `"Limit"`, matching the TP classification) and PATCH it — corrupting the entry
+price instead of correctly 404ing.
+
 ### Alpaca — leg-aware, mirrors Saxo's parent-lookup + symbol-fallback pattern
 
 Alpaca's `PATCH /orders/{id}` only accepts fields that apply to *that specific order*: a
