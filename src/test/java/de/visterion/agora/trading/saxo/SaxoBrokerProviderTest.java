@@ -542,6 +542,7 @@ class SaxoBrokerProviderTest {
 
     @Test
     void modifyBracketWithoutChildrenIsNotFound() {
+        stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me"))
                 .willReturn(okJson("{\"Data\":[]}")));
         assertThatThrownBy(() -> provider.modifyBracket("9001", "AAPL",
@@ -549,6 +550,22 @@ class SaxoBrokerProviderTest {
                 .isInstanceOf(BrokerException.class)
                 .extracting(e -> ((BrokerException) e).kind())
                 .isEqualTo(BrokerException.Kind.NOT_FOUND);
+    }
+
+    @Test
+    void modifyBracket_postFill_fallsBackToSymbolLegs() {
+        // stubInstrument() maps AAPL -> Uic 211 (see helper above)
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"sl-77","Uic":211,"OpenOrderType":"Stop","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"tp-77","Uic":211,"OpenOrderType":"Limit","Duration":{"DurationType":"GoodTillCancel"}}]}""")));
+        wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"sl-77\"}")));
+
+        var r = provider.modifyBracket("gone-parent", "AAPL", new java.math.BigDecimal("95"), null);
+        assertThat(r.accepted()).isTrue();
+        wm.verify(patchRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderId", equalTo("sl-77"))));
     }
 
     @Test

@@ -77,20 +77,33 @@ for Saxo flatten — a Market order's placement response has no synchronous fill
 take-profit level of an *existing* bracket. **The correct `orderId` to pass differs by
 broker and is not interchangeable:**
 
-### Saxo — pass the bracket **parent's** OrderId (pre-fill only)
+Both brokers resolve legs the same two-step way: **parent lookup first, symbol fallback
+second.** The caller always passes the bracket parent's id (from `place_bracket`'s
+`orderId`) *and* the symbol — the symbol is what makes the fallback possible once the
+parent is gone.
+
+### Saxo — parent lookup, then post-fill symbol fallback
 
 SIM-verified (see `saxo-sim-spike.md` referenced in code comments): pre-fill, only the
 bracket parent shows up as a top-level entry in `/port/v1/orders/me` (its
 `OrderRelation` is `IfDoneMaster`); the SL/TP legs are **embedded** in that parent's
 `RelatedOpenOrders[]`, each carrying its own `OrderId`. `modify_bracket` looks the parent
 up by the id you pass, reads its `RelatedOpenOrders[]`, and PATCHes each affected leg
-individually with the correct field. **Post-fill**, the parent id vanishes entirely and
-the legs detach into sibling-referencing `Oco` orders with no parent backlink — at that
-point `modify_bracket` 404s ("filled orders' protection legs must be modified
-individually"). This is a genuine, documented Saxo API characteristic, not a bug in this
-provider — there's no post-fill leg-modification path today.
+individually with the correct field.
 
-### Alpaca — leg-aware, mirrors Saxo's parent-lookup pattern
+**Post-fill**, the parent id vanishes entirely and the legs detach into
+sibling-referencing `Oco` orders with no parent backlink. When that happens (or the
+parent id is otherwise not found), `modify_bracket` falls back to a **symbol-based
+lookup**: it resolves the symbol to Saxo's `Uic` (via the same instrument resolver
+`place_bracket` uses), re-scans the flat `/port/v1/orders/me` list for top-level working
+orders matching that `Uic`, classifies them by `OpenOrderType` (contains `"Stop"` → SL
+leg, `"Limit"` → TP leg), and PATCHes the requested one(s) directly — no parent needed.
+If the fallback can't find a leg satisfying the request either (symbol unresolvable, or
+no matching working order), the call still 404s with the same `NOT_FOUND` semantics as
+before. This makes the post-fill ratchet use-case (move the stop once the entry fills)
+work without any special-casing on the consumer side.
+
+### Alpaca — leg-aware, mirrors Saxo's parent-lookup + symbol-fallback pattern
 
 Alpaca's `PATCH /orders/{id}` only accepts fields that apply to *that specific order*: a
 stop order accepts `stop_price`, a limit order accepts `limit_price`. The bracket
@@ -101,11 +114,18 @@ parent id + symbol** the same way Saxo's does: it fetches the parent via
 `"stop_limit"` → stop-loss leg, `type: "limit"` → take-profit leg), and PATCHes each
 leg with **only its own price field** — `stop_price` on the SL leg id, `limit_price` on
 the TP leg id. A single call can move both stop and target; each leg PATCH is issued
-separately. If the requested leg isn't found on the parent (e.g. only a TP leg exists and
-a stop change was requested), the call is rejected with `LEG_NOT_FOUND` rather than
-silently PATCHing the wrong order. If the parent lookup itself 404s (post-fill, id
-unknown), a symbol-based fallback lookup is used instead (see Task 3 for its
-implementation) before giving up.
+separately.
+
+If the parent lookup 404s (post-fill, id no longer resolvable — Alpaca detaches bracket
+legs into independent working orders once the entry fills, same shape as Saxo's `Oco`
+legs), `modify_bracket` falls back to `GET /orders?status=open&symbols=<symbol>`,
+classifies the flat list of working orders the same way (`type: "stop"`/`"stop_limit"` →
+SL, `"limit"` → TP), and PATCHes the requested leg directly. This is largely a safety
+net on Alpaca (nested lookup already tends to reflect post-fill legs), but keeps the
+resolution strategy — and the ratchet use-case it enables — identical across both
+brokers. If the requested leg still isn't found by either lookup (e.g. only a TP leg
+exists and a stop change was requested), the call is rejected with `LEG_NOT_FOUND`
+rather than silently PATCHing the wrong order.
 
 ## `place_bracket` — response shape
 
