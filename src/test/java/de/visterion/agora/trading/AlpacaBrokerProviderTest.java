@@ -169,6 +169,59 @@ class AlpacaBrokerProviderTest {
         assertThat(result.takeProfitLegId()).isNull();
     }
 
+    @Test
+    void submitBracket_nullClientRef_bodyHasNoClientOrderIdKey() {
+        // M-T5: a null clientRef must not be serialized as an explicit "client_order_id":null —
+        // that erases the only idempotency key.
+        wm.stubFor(post(urlEqualTo("/orders"))
+                .willReturn(okJson("""
+                    {"id":"oid-1","status":"accepted"}
+                    """)));
+
+        var req = new BracketOrderRequest(
+                "AAPL", "buy", new BigDecimal("10"), "limit", "gtc",
+                new BigDecimal("190"), new BigDecimal("185"), null,
+                new BigDecimal("200"), null);
+
+        provider.submitBracket(req);
+
+        wm.verify(postRequestedFor(urlEqualTo("/orders"))
+                .withRequestBody(notMatching(".*client_order_id.*")));
+    }
+
+    @Test
+    void submitBracket_transportFailureWithClientRef_messageHintsAtRetrySafety() {
+        // M-T5: on a transport-level submit failure with a clientRef supplied, the exception
+        // message must hint at checking via get_order_by_ref before retrying.
+        wm.stubFor(post(urlEqualTo("/orders"))
+                .willReturn(aResponse().withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
+
+        var req = new BracketOrderRequest(
+                "AAPL", "buy", new BigDecimal("10"), "limit", "gtc",
+                new BigDecimal("190"), new BigDecimal("185"), null,
+                new BigDecimal("200"), "ref-idempotent");
+
+        assertThatThrownBy(() -> provider.submitBracket(req))
+                .isInstanceOfSatisfying(BrokerException.class, ex ->
+                        assertThat(ex.getMessage()).contains("order may already exist")
+                                .contains("get_order_by_ref"));
+    }
+
+    @Test
+    void submitBracket_transportFailureNoClientRef_messageHasNoRetryHint() {
+        wm.stubFor(post(urlEqualTo("/orders"))
+                .willReturn(aResponse().withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
+
+        var req = new BracketOrderRequest(
+                "AAPL", "buy", new BigDecimal("10"), "limit", "gtc",
+                new BigDecimal("190"), new BigDecimal("185"), null,
+                new BigDecimal("200"), null);
+
+        assertThatThrownBy(() -> provider.submitBracket(req))
+                .isInstanceOfSatisfying(BrokerException.class, ex ->
+                        assertThat(ex.getMessage()).doesNotContain("order may already exist"));
+    }
+
     // ---- modifyBracket ----
 
     @Test
@@ -202,19 +255,89 @@ class AlpacaBrokerProviderTest {
     }
 
     @Test
-    void modifyBracket_parentGone_fallsBackToSymbol() {
+    void modifyBracket_parentGone_fallsBackToSymbol_unambiguousSingleStop() {
+        // C5 (fixed): unambiguous case — exactly one detached bracket/oco stop candidate,
+        // no other order carrying its own legs[] on the symbol. Fallback must request nested=true.
         wm.stubFor(get(urlPathEqualTo("/orders/par-x")).willReturn(aResponse().withStatus(404)));
         wm.stubFor(get(urlPathEqualTo("/orders"))
                 .withQueryParam("symbols", equalTo("AAPL"))
+                .withQueryParam("nested", equalTo("true"))
                 .willReturn(okJson("""
-                    [{"id":"sl-9","type":"stop","symbol":"AAPL","status":"held"},
-                     {"id":"tp-9","type":"limit","symbol":"AAPL","status":"held"}]""")));
+                    [{"id":"sl-9","type":"stop","order_class":"bracket","symbol":"AAPL","status":"held"}]""")));
         wm.stubFor(patch(urlEqualTo("/orders/sl-9")).willReturn(okJson("{\"id\":\"sl-9\",\"status\":\"replaced\"}")));
 
         var r = provider.modifyBracket("par-x", "AAPL", new BigDecimal("180"), null);
         assertThat(r.accepted()).isTrue();
         wm.verify(patchRequestedFor(urlEqualTo("/orders/sl-9"))
                 .withRequestBody(matchingJsonPath("$.stop_price", equalTo("180"))));
+    }
+
+    @Test
+    void modifyBracket_parentGone_fallsBackToSymbol_excludesEntryWithOwnLegs_ambiguousTarget() {
+        // C5: two open orders for the symbol — bracket-B's still-unfilled entry (type limit,
+        // carries its own non-empty legs[] => never a protective leg) and a detached stop
+        // belonging to gone bracket A. The stop is unambiguous and gets patched; the target
+        // modify has no unambiguous take-profit candidate (bracket-B's entry is excluded) and
+        // must be refused — bracket-B's entry limit price must never be touched.
+        wm.stubFor(get(urlPathEqualTo("/orders/par-a")).willReturn(aResponse().withStatus(404)));
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .withQueryParam("symbols", equalTo("AAPL"))
+                .withQueryParam("nested", equalTo("true"))
+                .willReturn(okJson("""
+                    [{"id":"entry-b","type":"limit","order_class":"bracket","symbol":"AAPL","status":"new",
+                      "legs":[{"id":"sl-b","type":"stop"},{"id":"tp-b","type":"limit"}]},
+                     {"id":"sl-a","type":"stop","order_class":"bracket","symbol":"AAPL","status":"held"}]""")));
+        wm.stubFor(patch(urlEqualTo("/orders/sl-a")).willReturn(okJson("{\"id\":\"sl-a\",\"status\":\"replaced\"}")));
+
+        var r = provider.modifyBracket("par-a", "AAPL", new BigDecimal("180"), new BigDecimal("210"));
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("AMBIGUOUS_LEGS");
+        assertThat(r.rejectReason()).contains("stop-loss was already moved");
+        wm.verify(patchRequestedFor(urlEqualTo("/orders/sl-a"))
+                .withRequestBody(matchingJsonPath("$.stop_price", equalTo("180"))));
+        wm.verify(0, patchRequestedFor(urlEqualTo("/orders/entry-b")));
+    }
+
+    @Test
+    void modifyBracket_parentGone_fallsBackToSymbol_twoDetachedStops_ambiguousRefused_noPatch() {
+        // C5-ambiguous: two candidate stop-loss orders for the symbol — cannot uniquely
+        // resolve which one belongs to the (gone) bracket. Must refuse without patching either.
+        wm.stubFor(get(urlPathEqualTo("/orders/par-x")).willReturn(aResponse().withStatus(404)));
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .withQueryParam("symbols", equalTo("AAPL"))
+                .withQueryParam("nested", equalTo("true"))
+                .willReturn(okJson("""
+                    [{"id":"sl-9","type":"stop","order_class":"bracket","symbol":"AAPL","status":"held"},
+                     {"id":"sl-10","type":"stop","order_class":"bracket","symbol":"AAPL","status":"held"}]""")));
+
+        var r = provider.modifyBracket("par-x", "AAPL", new BigDecimal("180"), null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("AMBIGUOUS_LEGS");
+        assertThat(r.rejectReason()).contains("cannot uniquely resolve bracket legs for AAPL");
+        wm.verify(0, patchRequestedFor(urlPathMatching("/orders/sl-.*")));
+    }
+
+    @Test
+    void modifyBracket_slPatchSucceeds_tpPatchFails_rejectionMentionsAlreadyMovedStop() {
+        // M-T1: non-atomic modify — SL patch 200, TP patch 422 → rejection must state the
+        // stop-loss was already moved (order stays SL-then-TP).
+        wm.stubFor(get(urlPathEqualTo("/orders/par-1"))
+                .willReturn(okJson("""
+                    {"id":"par-1","symbol":"AAPL","legs":[
+                      {"id":"sl-1","type":"stop"},
+                      {"id":"tp-1","type":"limit"}]}""")));
+        wm.stubFor(patch(urlEqualTo("/orders/sl-1")).willReturn(okJson("{\"id\":\"sl-1\",\"status\":\"replaced\"}")));
+        wm.stubFor(patch(urlEqualTo("/orders/tp-1"))
+                .willReturn(aResponse().withStatus(422).withHeader("Content-Type", "application/json")
+                        .withBody("{\"message\":\"take profit too close to market\"}")));
+
+        var r = provider.modifyBracket("par-1", "AAPL", new BigDecimal("183"), new BigDecimal("202"));
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectReason()).contains("stop-loss was already moved");
+        assertThat(r.rejectReason()).contains("take profit too close to market");
     }
 
     @Test
@@ -231,6 +354,8 @@ class AlpacaBrokerProviderTest {
 
     @Test
     void flatten_200_returnsAccepted() {
+        wm.stubFor(get(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("{\"symbol\":\"AAPL\",\"qty\":\"10\"}")));
         wm.stubFor(delete(urlEqualTo("/positions/AAPL"))
                 .willReturn(okJson("""
                     {"id":"oid-9","client_order_id":null,"status":"accepted"}
@@ -243,6 +368,8 @@ class AlpacaBrokerProviderTest {
 
     @Test
     void flatten_422_returnsRejected_notThrows() {
+        wm.stubFor(get(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("{\"symbol\":\"AAPL\",\"qty\":\"10\"}")));
         wm.stubFor(delete(urlEqualTo("/positions/AAPL"))
                 .willReturn(aResponse().withStatus(422)
                         .withHeader("Content-Type", "application/json")
@@ -259,6 +386,8 @@ class AlpacaBrokerProviderTest {
 
     @Test
     void flatten_403_returnsRejected_notThrows() {
+        wm.stubFor(get(urlPathEqualTo("/positions/GOOG"))
+                .willReturn(okJson("{\"symbol\":\"GOOG\",\"qty\":\"10\"}")));
         wm.stubFor(delete(urlEqualTo("/positions/GOOG"))
                 .willReturn(aResponse().withStatus(403)
                         .withHeader("Content-Type", "application/json")
@@ -274,16 +403,22 @@ class AlpacaBrokerProviderTest {
 
     @Test
     void flatten_404_throwsNotFound() {
-        wm.stubFor(delete(urlEqualTo("/positions/ZZZZ"))
-                .willReturn(aResponse().withStatus(404)));
+        // M-T3: position qty is now fetched BEFORE the DELETE; a 404 on that pre-fetch means
+        // "no open position" — the DELETE is never even attempted.
+        wm.stubFor(get(urlPathEqualTo("/positions/ZZZZ")).willReturn(aResponse().withStatus(404)));
 
         assertThatThrownBy(() -> provider.flatten("ZZZZ", null, null))
-                .isInstanceOfSatisfying(BrokerException.class, ex ->
-                        assertThat(ex.kind()).isEqualTo(BrokerException.Kind.NOT_FOUND));
+                .isInstanceOfSatisfying(BrokerException.class, ex -> {
+                    assertThat(ex.kind()).isEqualTo(BrokerException.Kind.NOT_FOUND);
+                    assertThat(ex.getMessage()).contains("no open position");
+                });
+        wm.verify(0, deleteRequestedFor(urlPathEqualTo("/positions/ZZZZ")));
     }
 
     @Test
     void flatten_withQty_sendsQtyQueryParam() {
+        wm.stubFor(get(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("{\"symbol\":\"AAPL\",\"qty\":\"10\"}")));
         wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
                 .withQueryParam("qty", equalTo("3"))
                 .willReturn(okJson("""
@@ -294,11 +429,14 @@ class AlpacaBrokerProviderTest {
 
         assertThat(result.accepted()).isTrue();
         assertThat(result.closedQty()).isEqualByComparingTo("3");
+        assertThat(result.remainingQty()).isEqualByComparingTo("7");
         wm.verify(deleteRequestedFor(urlPathEqualTo("/positions/AAPL")).withQueryParam("qty", equalTo("3")));
     }
 
     @Test
     void flatten_withFraction_sendsPercentageQueryParam() {
+        wm.stubFor(get(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("{\"symbol\":\"AAPL\",\"qty\":\"10\"}")));
         wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
                 .withQueryParam("percentage", equalTo("50"))
                 .willReturn(okJson("""
@@ -309,16 +447,18 @@ class AlpacaBrokerProviderTest {
 
         assertThat(result.accepted()).isTrue();
         assertThat(result.closedQty()).isEqualByComparingTo("5");
+        assertThat(result.remainingQty()).isEqualByComparingTo("5");
         wm.verify(deleteRequestedFor(urlPathEqualTo("/positions/AAPL")).withQueryParam("percentage", equalTo("50")));
     }
 
     @Test
     void flatten_parsesFilledAvgPriceWhenPresent() {
+        wm.stubFor(get(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("{\"symbol\":\"AAPL\",\"qty\":\"3\"}")));
         wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
                 .willReturn(okJson("""
                     {"id":"oid-9","qty":"3","filled_avg_price":"101.50","status":"filled"}
                     """)));
-        wm.stubFor(get(urlPathEqualTo("/positions/AAPL")).willReturn(aResponse().withStatus(404)));
 
         var result = provider.flatten("AAPL", null, new BigDecimal("3"));
 
@@ -327,48 +467,55 @@ class AlpacaBrokerProviderTest {
     }
 
     @Test
-    void flatten_backfillsRemainingQtyFromPositionsLookup() {
+    void flatten_remainingQtyIsPreQtyMinusClosedQty() {
+        // M-T3: pre-position qty 10, close qty 4 -> remainingQty 6 (not a racy post-close read).
+        wm.stubFor(get(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("{\"symbol\":\"AAPL\",\"qty\":\"10\"}")));
         wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
                 .willReturn(okJson("""
-                    {"id":"cls-1","qty":"3","status":"accepted"}
-                    """)));
-        wm.stubFor(get(urlPathEqualTo("/positions/AAPL"))
-                .willReturn(okJson("""
-                    {"symbol":"AAPL","qty":"7"}
+                    {"id":"cls-1","qty":"4","status":"accepted"}
                     """)));
 
-        var r = provider.flatten("AAPL", null, new BigDecimal("3"));
+        var r = provider.flatten("AAPL", null, new BigDecimal("4"));
 
-        assertThat(r.remainingQty()).isEqualByComparingTo("7");
+        assertThat(r.remainingQty()).isEqualByComparingTo("6");
+        // the position endpoint must only be hit once, BEFORE the delete (no post-close read).
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/positions/AAPL")));
     }
 
     @Test
-    void flatten_positionGone404_remainingQtyZero() {
+    void flatten_fullClose_remainingQtyZero() {
+        wm.stubFor(get(urlPathEqualTo("/positions/AAPL"))
+                .willReturn(okJson("{\"symbol\":\"AAPL\",\"qty\":\"10\"}")));
         wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
                 .willReturn(okJson("""
                     {"id":"cls-2","qty":"10","status":"accepted"}
                     """)));
-        wm.stubFor(get(urlPathEqualTo("/positions/AAPL")).willReturn(aResponse().withStatus(404)));
 
-        var r = provider.flatten("AAPL", null, new BigDecimal("10"));
+        var r = provider.flatten("AAPL", null, null);
 
         assertThat(r.remainingQty()).isEqualByComparingTo("0");
     }
 
     @Test
-    void flatten_followUpReadConnectionFailure_doesNotFailClose() {
-        wm.stubFor(delete(urlPathEqualTo("/positions/AAPL"))
-                .willReturn(okJson("""
-                    {"id":"cls-9","qty":"5","status":"accepted"}
-                    """)));
+    void flatten_preFetchConnectionFault_throwsUnavailable() {
+        // Position qty is now a required pre-condition, not a best-effort follow-up read:
+        // a pre-fetch connection failure must fail the close (never fabricate a remaining qty).
         wm.stubFor(get(urlPathEqualTo("/positions/AAPL"))
                 .willReturn(aResponse().withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
 
-        var r = provider.flatten("AAPL", null, new BigDecimal("5"));
+        assertThatThrownBy(() -> provider.flatten("AAPL", null, new BigDecimal("5")))
+                .isInstanceOfSatisfying(BrokerException.class, ex ->
+                        assertThat(ex.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE));
+        wm.verify(0, deleteRequestedFor(urlPathEqualTo("/positions/AAPL")));
+    }
 
-        assertThat(r.accepted()).isTrue();
-        assertThat(r.closedQty()).isEqualByComparingTo("5");
-        assertThat(r.remainingQty()).isNull();
+    @Test
+    void flatten_blankSymbol_throwsIllegalArgument_beforeAnyHttp() {
+        assertThatThrownBy(() -> provider.flatten("", null, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        wm.verify(0, getRequestedFor(urlPathMatching("/positions/.*")));
+        wm.verify(0, deleteRequestedFor(urlPathMatching("/positions/.*")));
     }
 
     // ---- positions() ----
@@ -423,19 +570,40 @@ class AlpacaBrokerProviderTest {
 
     @Test
     void orders_bracketParentRoleIsEntry() {
+        // M-T4: a top-level bracket/oco order is only "entry" when it still carries its own
+        // (non-empty) legs[] — the realistic shape of an unfilled bracket parent.
         wm.stubFor(get(urlPathEqualTo("/orders"))
                 .willReturn(okJson("""
                     [
                       {"id":"oid-10","client_order_id":"ref-10","symbol":"MSFT",
                        "side":"buy","qty":"3","order_type":"limit","status":"new",
+                       "order_class":"bracket",
+                       "legs":[{"id":"leg-stop","type":"stop"},{"id":"leg-limit","type":"limit"}]}
+                    ]
+                    """)));
+
+        var orders = provider.orders(null);
+
+        assertThat(orders.get(0).role()).isEqualTo("entry");
+    }
+
+    @Test
+    void orders_bracketTopLevelNoLegs_roleDerivedFromType_notEntry() {
+        // M-T4: an orphaned bracket leg fetched/listed standalone (no legs[] of its own) must
+        // NOT be mislabeled "entry" just because it carries the parent's order_class.
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .willReturn(okJson("""
+                    [
+                      {"id":"leg-stop","client_order_id":"ref-11","symbol":"MSFT",
+                       "side":"sell","qty":"3","order_type":"stop","status":"new",
                        "order_class":"bracket"}
                     ]
                     """)));
 
         var orders = provider.orders(null);
 
-        assertThat(orders).hasSize(1);
-        assertThat(orders.get(0).role()).isEqualTo("entry");
+        assertThat(orders.get(0).role()).isEqualTo("stop_loss");
+        assertThat(orders.get(0).parentId()).isNull();
     }
 
     @Test
@@ -496,6 +664,58 @@ class AlpacaBrokerProviderTest {
 
         wm.verify(getRequestedFor(urlPathEqualTo("/orders"))
                 .withQueryParam("nested", equalTo("true")));
+    }
+
+    @Test
+    void orders_paginatesWithKeysetAfterUntilShortPage() {
+        // M-T2: limit=500, direction=asc; loop with after=<submitted_at of last> until a page
+        // returns fewer than 500 rows. First page: 500 rows (submitted_at 000..499); second
+        // page: 3 rows. Total orders() output: 503 (no legs in this fixture).
+        StringBuilder page1 = new StringBuilder("[");
+        for (int i = 0; i < 500; i++) {
+            if (i > 0) page1.append(",");
+            page1.append(String.format("""
+                {"id":"oid-%d","symbol":"AAPL","side":"buy","qty":"1","order_type":"limit",
+                 "status":"new","submitted_at":"2026-01-01T00:00:%02d.000Z"}""", i, i % 60));
+        }
+        page1.append("]");
+
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .withQueryParam("limit", equalTo("500"))
+                .withQueryParam("direction", equalTo("asc"))
+                .inScenario("paging").whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willSetStateTo("page2")
+                .willReturn(okJson(page1.toString())));
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .withQueryParam("limit", equalTo("500"))
+                .withQueryParam("direction", equalTo("asc"))
+                .withQueryParam("after", equalTo("2026-01-01T00:00:19.000Z"))
+                .inScenario("paging").whenScenarioStateIs("page2")
+                .willReturn(okJson("""
+                    [{"id":"oid-500","symbol":"AAPL","side":"buy","qty":"1","order_type":"limit",
+                      "status":"new","submitted_at":"2026-01-01T00:01:00.000Z"},
+                     {"id":"oid-501","symbol":"AAPL","side":"buy","qty":"1","order_type":"limit",
+                      "status":"new","submitted_at":"2026-01-01T00:01:01.000Z"},
+                     {"id":"oid-502","symbol":"AAPL","side":"buy","qty":"1","order_type":"limit",
+                      "status":"new","submitted_at":"2026-01-01T00:01:02.000Z"}]
+                    """)));
+
+        var orders = provider.orders(null);
+
+        assertThat(orders).hasSize(503);
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/orders")));
+    }
+
+    @Test
+    void orders_invalidQuery422_throwsUnavailableWithClearMessage() {
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .willReturn(aResponse().withStatus(422)));
+
+        assertThatThrownBy(() -> provider.orders("bogus-status"))
+                .isInstanceOfSatisfying(BrokerException.class, ex -> {
+                    assertThat(ex.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE);
+                    assertThat(ex.getMessage()).contains("invalid order query");
+                });
     }
 
     // ---- account() ----
@@ -564,6 +784,13 @@ class AlpacaBrokerProviderTest {
         wm.stubFor(delete(urlEqualTo("/orders/missing")).willReturn(aResponse().withStatus(404)));
         assertThatThrownBy(() -> provider.cancel("missing"))
             .isInstanceOf(BrokerException.class);
+    }
+
+    @Test
+    void cancel_blankOrderId_throwsIllegalArgument_beforeAnyHttp() {
+        assertThatThrownBy(() -> provider.cancel(" "))
+                .isInstanceOf(IllegalArgumentException.class);
+        wm.verify(0, deleteRequestedFor(urlPathMatching("/orders/.*")));
     }
 
     @Test
