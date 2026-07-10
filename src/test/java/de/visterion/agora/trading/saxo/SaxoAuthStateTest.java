@@ -1,8 +1,11 @@
 package de.visterion.agora.trading.saxo;
 
 import org.junit.jupiter.api.Test;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SaxoAuthStateTest {
 
@@ -45,10 +48,26 @@ class SaxoAuthStateTest {
     }
 
     @Test
-    void capBoundsPendingStates() {
-        for (int i = 0; i < 1100; i++) states.issue("a");
-        // no assertion on internals needed beyond behavior: issuing still works
-        String s = states.issue("a");
+    void issueRejectsWhenAtCapacityWithAllLiveStatesAndNeverEvictsThem() {
+        List<String> issued = new ArrayList<>();
+        for (int i = 0; i < 1000; i++) issued.add(states.issue("a"));
+
+        assertThatThrownBy(() -> states.issue("a"))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessageContaining("too many pending authorizations");
+
+        // the earliest-issued live state (what the old smallest-expiresAt eviction
+        // would have dropped) must still be resolvable — no live state was evicted.
+        assertThat(states.consume(issued.get(0))).contains("a");
+    }
+
+    @Test
+    void issueSucceedsAfterSweepingExpiredEntriesFreesCapacity() {
+        for (int i = 0; i < 999; i++) states.issue("a");
+        now.addAndGet(5 * 60 * 1000L + 1);   // all 999 now expired
+
+        String s = states.issue("a");        // sweep clears them, well under cap
+
         assertThat(states.consume(s)).contains("a");
     }
 }
