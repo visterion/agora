@@ -110,6 +110,15 @@ class ConnectionRegistryTest {
     }
 
     @Test
+    void duplicateProviderKeyAcrossFactoriesFailsStartupWithClearMessage() {
+        var p = props(Map.of("c1", cfg("stub", ConnectionConfig.Environment.PAPER, "k", "s")));
+        assertThatThrownBy(() -> new ConnectionRegistry(p, List.of(factory("stub"), factory("stub"))))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("stub")
+                .hasMessageContaining("duplicate");
+    }
+
+    @Test
     void multipleConnectionsSameProviderGetDistinctInstances() {
         var connections = new LinkedHashMap<String, ConnectionConfig>();
         connections.put("a", cfg("stub", ConnectionConfig.Environment.PAPER, "k1", "s1"));

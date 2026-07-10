@@ -57,6 +57,30 @@ class FinnhubMarketDataProviderTest {
                 });
     }
 
+    @Test void currencyIsUsdForPlainSymbol() {
+        wm.stubFor(get(urlPathEqualTo("/quote"))
+                .withQueryParam("symbol", equalTo("AAPL"))
+                .willReturn(okJson("""
+                    {"c":190.5,"d":2.4,"dp":1.27}
+                    """)));
+        Quote q = withKey("k").quote("AAPL");
+        assertThat(q.currency()).isEqualTo("USD");
+    }
+
+    // Data lows: Finnhub /quote has no currency field, so USD is only a safe default for
+    // plain (Yahoo-suffix-free) symbols. A suffixed symbol (SAP.DE, AIR.PA, ...) is a non-US
+    // listing whose currency Finnhub cannot tell us — reporting USD there would be a silent
+    // wrong-currency bug, so the provider reports "unknown" (null) instead.
+    @Test void currencyIsNullForYahooSuffixedSymbol() {
+        wm.stubFor(get(urlPathEqualTo("/quote"))
+                .withQueryParam("symbol", equalTo("SAP.DE"))
+                .willReturn(okJson("""
+                    {"c":190.5,"d":2.4,"dp":1.27}
+                    """)));
+        Quote q = withKey("k").quote("SAP.DE");
+        assertThat(q.currency()).isNull();
+    }
+
     @Test void zeroCloseThrowsNotFound() {
         wm.stubFor(get(urlPathEqualTo("/quote")).willReturn(okJson("""
             {"c":0,"d":0,"dp":0,"pc":0}
