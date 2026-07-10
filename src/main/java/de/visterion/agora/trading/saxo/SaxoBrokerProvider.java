@@ -482,11 +482,16 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * lost to the caller, e.g. on a timeout, but which the broker accepted). Protective
      * Stop/Limit legs are excluded from this count — they are not a "close" and are exactly
      * what H6 cancels above, so counting them would make every flatten look
-     * already-in-flight and needlessly block it. If a pending opposite-side Market order of
-     * qty ≥ the requested close is already found, this returns rejected("close already
-     * pending", ...) instead of stacking a second close order. If the lookup fails, this
-     * check is skipped (proceeds as non-idempotent) rather than blocking a legitimate close
-     * during a transient outage.
+     * already-in-flight and needlessly block it. The requested close size (whether derived
+     * from the full position, a fraction, or an explicit qty) is the target TOTAL amount to
+     * close; any already-pending opposite-side Market quantity counts toward that target and
+     * is subtracted from it before placing this call's order — placing the full target on top
+     * of a smaller pending close would stack more sell (or buy) interest than the position
+     * actually holds. If the pending quantity already covers the requested close (≥ target),
+     * this returns rejected("close already pending", ...) instead of placing a second order.
+     * If the lookup fails, this check is skipped (the pending quantity is treated as zero, so
+     * the full target is placed) rather than blocking a legitimate close during a transient
+     * outage.
      */
     @Override
     public OrderResult flatten(String symbol, BigDecimal fraction, BigDecimal qty) {
@@ -550,13 +555,26 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 pendingOppositeCloseQty = pendingOppositeCloseQty.add(bd(n.path("Amount")));
             }
         }
-        if (related.error() == null && pendingOppositeCloseQty.compareTo(closeQty) >= 0) {
-            return OrderResult.rejected("close already pending", "CLOSE_ALREADY_PENDING");
+        // M-T6: closeQty is the target TOTAL to close; any already-pending opposite-side
+        // Market quantity counts toward that target, so only the remainder is placed here.
+        // Placing the full closeQty on top of a smaller pending close would stack more
+        // sell/buy interest than the position holds (oversell / unintended short once both
+        // fill) — see finding M-T6 follow-up.
+        BigDecimal effectiveCloseQty = closeQty.subtract(pendingOppositeCloseQty);
+        if (effectiveCloseQty.signum() <= 0) {
+            return OrderResult.rejected(
+                    "a close of >= the requested size is already working", "CLOSE_ALREADY_PENDING");
         }
 
+        // H6: only cancel protective legs on the OPPOSITE side of the position (a genuine
+        // SL/TP for this position is always opposite-side). Same-side Stop/Limit orders are
+        // unrelated (e.g. a resting add-to-position limit, or a stop-entry for a new position
+        // on the same instrument) and must be left alone.
         for (JsonNode n : related.orders()) {
             String type = n.path("OpenOrderType").asString("");
-            if (type.contains("Stop") || "Limit".equalsIgnoreCase(type)) {
+            boolean protectiveType = type.contains("Stop") || "Limit".equalsIgnoreCase(type);
+            boolean oppositeSide = opposite.equalsIgnoreCase(n.path("BuySell").asString(""));
+            if (protectiveType && oppositeSide) {
                 String legOrderId = n.path("OrderId").asString(null);
                 if (legOrderId != null) {
                     try {
@@ -573,7 +591,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
         body.put("Uic", ri.uic());
         body.put("AssetType", ri.assetType());
         body.put("BuySell", opposite);
-        body.put("Amount", closeQty);
+        body.put("Amount", effectiveCloseQty);
         body.put("OrderType", "Market");
         body.put("ManualOrder", false);
         body.put("AccountKey", ctx.accountKey());
@@ -590,7 +608,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
             BigDecimal remainingQty = available.subtract(closeQty);
             String status = related.error() == null ? "accepted"
                     : "accepted (warning: " + related.error() + ")";
-            return OrderResult.accepted(orderId, null, status, closeQty, remainingQty, null);
+            return OrderResult.accepted(orderId, null, status, effectiveCloseQty, remainingQty, null);
         } catch (RestClientResponseException e) {
             return writeError(e);
         } catch (Exception e) {
