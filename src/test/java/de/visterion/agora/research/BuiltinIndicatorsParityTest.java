@@ -34,6 +34,25 @@ class BuiltinIndicatorsParityTest {
         return bars;
     }
 
+    /** 6 bars with a VARYING True Range (Task 8 review finding 3). rising()'s True Range is
+     *  constant (high-low=2, high-prevClose=2, low-prevClose=0 every bar), which makes plain
+     *  SMA-of-TR and Wilder-smoothed (MMA) ATR coincidentally equal — a parity test on that
+     *  fixture would pass even if chandelier_stop and IndicatorService.compute() used different
+     *  ATR algorithms. This fixture's True Range genuinely varies bar to bar (TR = 4,4,4,6,4,9
+     *  for period 3 → SMA-ATR(3)=6.333 vs Wilder-ATR(3)=6.556 at the end index — verified to
+     *  diverge), so a passing parityWithIndicatorService test here proves both implementations
+     *  really do compute the same (Wilder MMA) ATR, not a coincidence of the fixture. */
+    private List<OhlcBar> varyingTrueRange() {
+        int[] closes = {10, 12, 11, 15, 13, 20};
+        var bars = new ArrayList<OhlcBar>();
+        for (int i = 0; i < closes.length; i++) {
+            var c = new BigDecimal(closes[i]);
+            bars.add(new OhlcBar(LocalDate.of(2025, 1, 1).plusDays(i),
+                    c, c.add(new BigDecimal("2")), c.subtract(new BigDecimal("2")), c, 1000));
+        }
+        return bars;
+    }
+
     private static IndicatorDef find(String name) {
         return BuiltinIndicators.defs().stream()
                 .filter(d -> d.name().equals(name)).findFirst().orElseThrow();
@@ -57,16 +76,25 @@ class BuiltinIndicatorsParityTest {
 
     @Test
     void parityWithIndicatorService() {
-        var bars = rising(6);
+        // Varying True Range (not rising()'s constant TR) so the chandelier_stop assertion
+        // below actually exercises Wilder-vs-SMA divergence — see varyingTrueRange() doc.
+        var bars = varyingTrueRange();
         var series = Ta4jBars.toSeries(bars);
         var expected = new IndicatorService(SMALL).compute(bars);
 
+        // expected.*() come from IndicatorService's full-precision BigDecimal math (MathContext
+        // .DECIMAL64); at() rounds the registry indicator's Num to scale 4 (Ta4jBars.toBd). The
+        // varying-True-Range fixture above produces non-terminating decimals (unlike the old
+        // rising() fixture's whole numbers), so round both sides to scale 4 before comparing —
+        // this is a rounding-precision accommodation, not a widening of what "parity" means.
         var atr = find("atr").factory().create(series, none(), p(Map.of("period", "3")));
-        assertThat(at(atr, "value", series)).isEqualByComparingTo(expected.atr());
+        assertThat(at(atr, "value", series))
+                .isEqualByComparingTo(expected.atr().setScale(4, java.math.RoundingMode.HALF_UP));
 
         var ch = find("chandelier_stop").factory()
                 .create(series, none(), p(Map.of("period", "3", "multiple", "3.0")));
-        assertThat(at(ch, "value", series)).isEqualByComparingTo(expected.chandelierStop());
+        assertThat(at(ch, "value", series))
+                .isEqualByComparingTo(expected.chandelierStop().setScale(4, java.math.RoundingMode.HALF_UP));
 
         var ma = find("ma_cross").factory()
                 .create(series, in(new ClosePriceIndicator(series)), p(Map.of("fast", "2", "slow", "4")));

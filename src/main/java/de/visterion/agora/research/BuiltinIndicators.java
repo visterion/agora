@@ -34,7 +34,9 @@ import java.util.Map;
 
 /** Java-coded catalog entries: composites and multi-output indicators that cannot be
  *  expressed as one-class-one-constructor YAML entries. The atr/chandelier_stop/
- *  ma_cross/52w_range values reproduce IndicatorService exactly (parity-guarded). */
+ *  ma_cross/52w_range values reproduce IndicatorService.compute() exactly (parity-guarded,
+ *  see BuiltinIndicatorsParityTest) — including chandelier_stop, which both this class and
+ *  IndicatorService compute from Wilder-smoothed (MMA) ATR, not SMA-of-TR (research low (h)). */
 public final class BuiltinIndicators {
 
     private BuiltinIndicators() {}
@@ -100,6 +102,10 @@ public final class BuiltinIndicators {
                         ParamDef.intParam("slow", 200, 2, 1000)),
                 1, List.of("fast", "slow"),
                 p -> p.getInt("slow"),
+                // no "+1": minBars IS the raw window (the slow SMA needs exactly `slow`
+                // input points) — explicit rawWindow so composition (e.g. ma_cross-of-rsi)
+                // doesn't under-count via the default (minBars - 1) convention.
+                p -> p.getInt("slow"),
                 (series, inputs, p) -> {
                     int fast = p.getInt("fast");
                     int slow = p.getInt("slow");
@@ -132,7 +138,10 @@ public final class BuiltinIndicators {
                         ParamDef.intParam("slow", 26, 2, 1000),
                         ParamDef.intParam("signal", 9, 1, 500)),
                 1, List.of("macd", "signal", "histogram"),
-                p -> p.getInt("slow") + p.getInt("signal"),
+                // H3: the signal line is an EMAIndicator (recursive filter, same class RSI/EMA
+                // got the 4x treatment) — convergence-safe minBars, not the exact slow+signal
+                // window. maxPeriod for MACD is slow+signal (research brief).
+                p -> 1 + 4 * (p.getInt("slow") + p.getInt("signal")),
                 (series, inputs, p) -> {
                     int fast = p.getInt("fast");
                     int slow = p.getInt("slow");
@@ -152,6 +161,9 @@ public final class BuiltinIndicators {
                 List.of(ParamDef.intParam("period", 20, 2, 500),
                         ParamDef.decimalParam("k", "2.0", "0.1", "10")),
                 1, List.of("upper", "middle", "lower"),
+                p -> p.getInt("period"),
+                // no "+1": minBars IS the raw window (SMA/stddev need exactly `period`
+                // input points) — explicit rawWindow, see ma_cross() above for rationale.
                 p -> p.getInt("period"),
                 (series, inputs, p) -> {
                     int period = p.getInt("period");

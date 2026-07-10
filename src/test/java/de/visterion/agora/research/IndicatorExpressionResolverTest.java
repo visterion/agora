@@ -207,4 +207,40 @@ class IndicatorExpressionResolverTest {
         var r = resolver.resolve(json("\"sma\""), series);
         assertThat(r.minBars()).isEqualTo(21); // 1 + period(20), unaffected (no 'of' composition)
     }
+
+    // -------------------------------------------------------------------------
+    // Task 8 review finding 2: additive composition must not under-count when the OUTER
+    // indicator's minBars does not follow the "1 + rawWindow" convention (bollinger, macd,
+    // ma_cross). Correct invariant: total = subMinBars - 1 + outerRawWindow.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void bollingerOfRsiComposedMinBarsIsExactNotUnderCounted() {
+        var series = Ta4jBars.toSeries(rising(120));
+        var r = resolver.resolve(json("{\"name\":\"bollinger\",\"of\":\"rsi\"}"), series);
+        int rsiMinBars = 1 + 4 * 14;   // subMinBars
+        int bollingerRawWindow = 20;   // default period; bollinger's minBars IS the raw window
+        int expected = rsiMinBars - 1 + bollingerRawWindow;
+        assertThat(r.minBars()).isEqualTo(expected).isGreaterThanOrEqualTo(expected);
+    }
+
+    @Test
+    void macdOfRsiComposedMinBarsIsExactNotUnderCounted() {
+        var series = Ta4jBars.toSeries(rising(250));
+        var r = resolver.resolve(json("{\"name\":\"macd\",\"of\":\"rsi\"}"), series);
+        int rsiMinBars = 1 + 4 * 14;                 // subMinBars
+        int macdRawWindow = 4 * (26 + 9);            // macd's own minBars is 1 + 4*(slow+signal)
+        int expected = rsiMinBars - 1 + macdRawWindow;
+        assertThat(r.minBars()).isEqualTo(expected).isGreaterThanOrEqualTo(expected);
+    }
+
+    @Test
+    void maCrossOfRsiComposedMinBarsIsExactNotUnderCounted() {
+        var series = Ta4jBars.toSeries(rising(300));
+        var r = resolver.resolve(json("{\"name\":\"ma_cross\",\"of\":\"rsi\"}"), series);
+        int rsiMinBars = 1 + 4 * 14;   // subMinBars
+        int maCrossRawWindow = 200;    // default slow; ma_cross's minBars IS the raw window
+        int expected = rsiMinBars - 1 + maCrossRawWindow;
+        assertThat(r.minBars()).isEqualTo(expected).isGreaterThanOrEqualTo(expected);
+    }
 }

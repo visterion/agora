@@ -112,7 +112,32 @@ class BuiltinIndicatorsTest {
                 Ta4jBars.toBd(expectedMacd.getValue(end).minus(expectedSignal.getValue(end)), 4));
         // rising closes: fast EMA above slow EMA → macd positive (guards against swapped args)
         assertThat(at(outs, "macd", series)).isPositive();
-        assertThat(def.minBars().applyAsInt(ResolvedParams.defaults(def.params()))).isEqualTo(35);
+        // H3: the signal line is an EMAIndicator (recursive filter) -> convergence-safe minBars
+        // (1 + 4*maxPeriod), not the exact slow+signal window (was 35).
+        assertThat(def.minBars().applyAsInt(ResolvedParams.defaults(def.params())))
+                .isEqualTo(1 + 4 * (26 + 9));
+    }
+
+    @Test
+    void macdUnavailableAtOldMinBarsThenAvailableAtConvergenceSafeMinBars() {
+        // Old (exact) minBars for macd(12,26,9) was slow+signal = 35. H3 mandates the signal
+        // line (a recursive EMA) needs convergence-safe minBars = 1 + 4*(slow+signal) = 141.
+        var def = find("macd");
+        int oldMinBars = 26 + 9;
+        int convergenceSafeMinBars = 1 + 4 * (26 + 9);
+        assertThat(def.minBars().applyAsInt(ResolvedParams.defaults(def.params())))
+                .isNotEqualTo(oldMinBars)
+                .isEqualTo(convergenceSafeMinBars);
+
+        // At the convergence-safe bar count, macd/signal/histogram are available with a sane
+        // (non-degenerate) value.
+        var series = Ta4jBars.toSeries(rising(convergenceSafeMinBars));
+        var outs = def.factory().create(series, in(new ClosePriceIndicator(series)),
+                ResolvedParams.defaults(def.params()));
+        var value = at(outs, "macd", series);
+        assertThat(value.doubleValue()).isFinite();
+        // rising closes: fast EMA above slow EMA -> macd positive, same sanity check as above
+        assertThat(value).isPositive();
     }
 
     @Test
