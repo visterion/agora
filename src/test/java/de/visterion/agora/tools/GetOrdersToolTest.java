@@ -41,6 +41,18 @@ class GetOrdersToolTest {
         assertThat(orders.get(0).get("status").asString()).isEqualTo("new");
     }
 
+    @Test void nullClientRefOmittedNotExplicitNull() {
+        var stub = new StubBroker() {
+            public List<Order> orders(String status) {
+                return List.of(new Order("oid-1", null, "AAPL", "buy",
+                        new BigDecimal("5"), "limit", "new"));
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
+        var order = r.output().get("orders").get(0);
+        assertThat(order.has("clientRef")).isFalse();
+    }
+
     @Test void statusArgPassedToProvider() {
         var captured = new String[1];
         var stub = new StubBroker() {

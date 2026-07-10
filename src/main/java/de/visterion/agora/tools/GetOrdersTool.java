@@ -56,7 +56,7 @@ public class GetOrdersTool implements AgoraTool {
             for (Order o : orders) {
                 ObjectNode node = arr.addObject();
                 node.put("brokerOrderId", o.brokerOrderId());
-                node.put("clientRef", o.clientRef());
+                if (o.clientRef() != null) node.put("clientRef", o.clientRef());
                 node.put("symbol", o.symbol());
                 node.put("side", o.side());
                 node.put("qty", o.qty());

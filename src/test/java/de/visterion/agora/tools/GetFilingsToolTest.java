@@ -45,6 +45,28 @@ class GetFilingsToolTest {
         assertThat(new GetFilingsTool(svc).call(mapper.createObjectNode().put("symbol", "ZZZZ")).available()).isFalse();
     }
 
+    @Test void fromAfterToUnavailable() {
+        var args = mapper.createObjectNode().put("symbol", "AAPL").put("from", "2025-05-10").put("to", "2025-05-01");
+        assertThat(new GetFilingsTool(Mockito.mock(EdgarService.class)).call(args).available()).isFalse();
+    }
+
+    @Test void nonIntegralLimitUnavailable() {
+        var args = mapper.createObjectNode().put("symbol", "AAPL").put("limit", 2.5);
+        assertThat(new GetFilingsTool(Mockito.mock(EdgarService.class)).call(args).available()).isFalse();
+    }
+
+    @Test void fullPageMarksTruncated() {
+        EdgarService svc = Mockito.mock(EdgarService.class);
+        when(svc.resolveCik(any(), any())).thenReturn("0000320193");
+        when(svc.filings(any(), any(), any(), any(), any(), anyInt())).thenReturn(List.of(
+                new FilingRef("acc1", "8-K", LocalDate.parse("2025-05-02"), LocalDate.parse("2025-05-01"), "doc1", "url1"),
+                new FilingRef("acc2", "8-K", LocalDate.parse("2025-05-02"), LocalDate.parse("2025-05-01"), "doc2", "url2")));
+        var args = mapper.createObjectNode().put("symbol", "AAPL").put("limit", 2);
+        var r = new GetFilingsTool(svc).call(args);
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("truncated").asBoolean()).isTrue();
+    }
+
     @Test void oversizedLimitIsClampedTo100() {
         EdgarService svc = Mockito.mock(EdgarService.class);
         when(svc.resolveCik(any(), any())).thenReturn("0000320193");

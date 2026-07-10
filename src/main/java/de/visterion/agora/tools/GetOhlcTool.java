@@ -4,6 +4,8 @@ import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.MarketDataService;
 import de.visterion.agora.data.OhlcBar;
 import de.visterion.agora.tool.AgoraTool;
+import de.visterion.agora.tool.ToolParams;
+import de.visterion.agora.tool.ToolParams.InvalidArgumentException;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -39,7 +41,13 @@ public class GetOhlcTool implements AgoraTool {
     public ToolResult call(JsonNode args) {
         if (args == null || !args.hasNonNull("symbol")) return ToolResult.unavailable("no symbol provided");
         String symbol = args.get("symbol").asString();
-        int days = (args.has("days") && args.get("days").isIntegralNumber()) ? args.get("days").asInt() : DEFAULT_DAYS;
+        int days;
+        try {
+            Integer daysArg = ToolParams.optionalInt(args, "days");
+            days = daysArg == null ? DEFAULT_DAYS : daysArg;
+        } catch (InvalidArgumentException e) {
+            return ToolResult.unavailable(e.getMessage());
+        }
         days = Math.clamp(days, 1, MAX_DAYS);
         try {
             List<OhlcBar> bars = service.ohlc(symbol, days);

@@ -68,6 +68,22 @@ class GetForm4TransactionsToolTest {
                 .isEqualTo("general");
     }
 
+    @Test void fromAfterToUnavailable() {
+        var args = mapper.createObjectNode().put("from", "2025-05-10").put("to", "2025-05-01");
+        assertThat(new GetForm4TransactionsTool(Mockito.mock(EdgarSearchService.class)).call(args).available()).isFalse();
+    }
+
+    @Test void nonIntegralLimitUnavailable() {
+        var args = mapper.createObjectNode().put("limit", 2.5);
+        assertThat(new GetForm4TransactionsTool(Mockito.mock(EdgarSearchService.class)).call(args).available()).isFalse();
+    }
+
+    @Test void descriptionMentionsReturnedTransactions() {
+        String description = new GetForm4TransactionsTool(Mockito.mock(EdgarSearchService.class)).inputSchema()
+                .path("properties").path("limit").path("description").asString();
+        assertThat(description).contains("transactions to return");
+    }
+
     @Test void oversizedLimitIsClampedTo100() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
         when(svc.form4Transactions(any(), any(), anyInt()))

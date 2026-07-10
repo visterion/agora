@@ -34,6 +34,7 @@ public class GetIndexConstituentsTool implements AgoraTool {
 
     public ToolResult call(JsonNode args) {
         String index = args == null ? "sp500" : args.path("index").asString("sp500");
+        if (index.isBlank()) index = "sp500"; // low: blank 'index' should default like absent
         try {
             List<Constituent> constituents = service.constituents(index);
             ObjectNode out = mapper.createObjectNode();

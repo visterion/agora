@@ -7,6 +7,8 @@ import de.visterion.agora.research.IndicatorService;
 import de.visterion.agora.research.Indicators;
 import de.visterion.agora.research.ResearchDefaults;
 import de.visterion.agora.tool.AgoraTool;
+import de.visterion.agora.tool.ToolParams;
+import de.visterion.agora.tool.ToolParams.InvalidArgumentException;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -77,14 +79,48 @@ public class GetRFrameworkTool implements AgoraTool {
         if (args == null || !args.hasNonNull("symbol")) return ToolResult.unavailable("no symbol provided");
         String symbol = args.get("symbol").asString();
 
-        BigDecimal atrMultiple = (args.has("atrMultiple") && !args.get("atrMultiple").isNull())
-                ? new BigDecimal(args.get("atrMultiple").asString()) : defaultAtrMultiple;
-        List<BigDecimal> rMultiples = defaultRMultiples;
-        if (args.has("rMultiples") && args.get("rMultiples").isArray()) {
-            List<BigDecimal> parsed = new java.util.ArrayList<>();
-            for (JsonNode n : args.get("rMultiples")) parsed.add(new BigDecimal(n.asString()));
-            if (!parsed.isEmpty()) rMultiples = parsed;
+        BigDecimal atrMultiple;
+        List<BigDecimal> rMultiples;
+        String direction;
+        BigDecimal explicitStopLevel;
+        try {
+            atrMultiple = (args.has("atrMultiple") && !args.get("atrMultiple").isNull())
+                    ? ToolParams.optionalDecimal(args, "atrMultiple") : defaultAtrMultiple;
+            if (atrMultiple.compareTo(BigDecimal.ZERO) <= 0)
+                throw new InvalidArgumentException("atrMultiple must be > 0");
+
+            if (args.has("rMultiples") && !args.get("rMultiples").isNull()) {
+                JsonNode rmNode = args.get("rMultiples");
+                if (!rmNode.isArray())
+                    throw new InvalidArgumentException("rMultiples must be an array");
+                if (rmNode.isEmpty())
+                    throw new InvalidArgumentException("rMultiples must be non-empty");
+                List<BigDecimal> parsed = new java.util.ArrayList<>();
+                for (JsonNode n : rmNode) {
+                    BigDecimal m;
+                    try {
+                        m = new BigDecimal(n.asString());
+                    } catch (NumberFormatException e) {
+                        throw new InvalidArgumentException("invalid numeric entry in rMultiples");
+                    }
+                    if (m.compareTo(BigDecimal.ZERO) <= 0)
+                        throw new InvalidArgumentException("rMultiples entries must be > 0");
+                    parsed.add(m);
+                }
+                rMultiples = parsed;
+            } else {
+                rMultiples = defaultRMultiples;
+            }
+
+            direction = args.hasNonNull("direction") ? args.get("direction").asString() : "long";
+            if (!"long".equalsIgnoreCase(direction) && !"short".equalsIgnoreCase(direction))
+                throw new InvalidArgumentException("direction must be 'long' or 'short'");
+
+            explicitStopLevel = ToolParams.optionalDecimal(args, "stopLevel");
+        } catch (InvalidArgumentException e) {
+            return ToolResult.unavailable(e.getMessage());
         }
+        boolean isShort = "short".equalsIgnoreCase(direction);
 
         List<OhlcBar> bars;
         try { bars = service.ohlc(symbol, fetchDays); }
@@ -94,12 +130,9 @@ public class GetRFrameworkTool implements AgoraTool {
         if (ind.currentClose() == null) return ToolResult.unavailable("no price for " + symbol);
         BigDecimal price = ind.currentClose();
 
-        String direction = args.hasNonNull("direction") ? args.get("direction").asString() : "long";
-        boolean isShort = "short".equalsIgnoreCase(direction);
-
         BigDecimal stopLevel;
-        if (args.has("stopLevel") && !args.get("stopLevel").isNull()) {
-            stopLevel = new BigDecimal(args.get("stopLevel").asString());
+        if (explicitStopLevel != null) {
+            stopLevel = explicitStopLevel;
             if (!isShort && stopLevel.compareTo(price) >= 0)
                 return ToolResult.unavailable("stopLevel must be below price for a long");
             if (isShort && stopLevel.compareTo(price) <= 0)
