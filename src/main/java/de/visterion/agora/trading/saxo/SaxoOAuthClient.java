@@ -1,6 +1,7 @@
 package de.visterion.agora.trading.saxo;
 
 import de.visterion.agora.trading.ConnectionConfig;
+import de.visterion.agora.trading.TradingHttp;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
@@ -26,6 +27,9 @@ public class SaxoOAuthClient {
         public InvalidGrantException(String message) { super(message); }
     }
 
+    // JdkClientHttpRequestFactory's read timeout bounds the entire exchange (connect + response)
+    // for a plain, non-pooled client — unlike TradingHttp's Apache client, there is no separate
+    // connect-timeout leg to configure, so no 3s/10s split is needed here.
     private final JdkClientHttpRequestFactory requestFactory;
 
     @Autowired
@@ -35,7 +39,7 @@ public class SaxoOAuthClient {
     }
 
     /** Default-timeout convenience ctor (tests). */
-    public SaxoOAuthClient() { this(10_000L); }
+    public SaxoOAuthClient() { this(TradingHttp.DEFAULT_TIMEOUT_MS); }
 
     public SaxoTokens exchangeCode(ConnectionConfig cfg, String code) {
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
