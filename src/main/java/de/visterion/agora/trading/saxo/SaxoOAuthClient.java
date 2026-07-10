@@ -50,7 +50,7 @@ public class SaxoOAuthClient {
         form.add("grant_type", "authorization_code");
         form.add("code", code);
         String redirect = cfg.getExtra().get("redirect-uri");
-        if (redirect != null) form.add("redirect_uri", redirect);
+        if (redirect != null && !redirect.isBlank()) form.add("redirect_uri", redirect);
         return post(cfg, form);
     }
 

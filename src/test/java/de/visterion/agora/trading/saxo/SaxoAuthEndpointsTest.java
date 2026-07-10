@@ -45,6 +45,11 @@ class SaxoAuthEndpointsTest {
                 new SaxoTokenStores(dir, now::get), new SaxoAuthState(now::get), oauth);
     }
 
+    private SaxoAuthEndpoints endpointsWithConfig(ConnectionConfig cfg, SaxoOAuthClient oauth) {
+        return new SaxoAuthEndpoints(registry(cfg),
+                new SaxoTokenStores(dir, now::get), new SaxoAuthState(now::get), oauth);
+    }
+
     @Test
     void loginRedirectsToAuthorizeWithStateAndClientId() {
         ResponseEntity<String> r = endpoints(mock(SaxoOAuthClient.class)).login("saxo-sim");
@@ -55,6 +60,45 @@ class SaxoAuthEndpointsTest {
                 .contains("client_id=app-key")
                 .contains("redirect_uri=http")
                 .contains("state=");
+    }
+
+    @Test
+    void authorizeUrlPercentEncodesReservedCharsInRedirectUri() {
+        ConnectionConfig cfg = saxoCfg();
+        String rawRedirect = "http://localhost:8091/callback?a=1&b=2";
+        cfg.getExtra().put("redirect-uri", rawRedirect);
+
+        ResponseEntity<String> r = endpointsWithConfig(cfg, mock(SaxoOAuthClient.class)).login("saxo-sim");
+        String loc = r.getHeaders().getFirst("Location");
+
+        var query = org.springframework.web.util.UriComponentsBuilder.fromUriString(loc).build(true).getQueryParams();
+        String decoded = java.net.URLDecoder.decode(query.getFirst("redirect_uri"), java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(decoded).isEqualTo(rawRedirect);
+        // a literal '&' inside the unencoded value would have split into a spurious 'b' param
+        assertThat(query.get("b")).isNull();
+    }
+
+    @Test
+    void blankRedirectUriIsOmittedFromAuthorizeUrl() {
+        ConnectionConfig cfg = saxoCfg();
+        cfg.getExtra().put("redirect-uri", "   ");
+
+        ResponseEntity<String> r = endpointsWithConfig(cfg, mock(SaxoOAuthClient.class)).login("saxo-sim");
+        String loc = r.getHeaders().getFirst("Location");
+
+        assertThat(loc).doesNotContain("redirect_uri");
+    }
+
+    @Test
+    void loginReturnsErrorWithoutEvictingLiveStatesWhenAtCapacity() {
+        SaxoAuthState states = new SaxoAuthState(now::get);
+        for (int i = 0; i < 1000; i++) states.issue("saxo-sim");
+        SaxoAuthEndpoints ep = new SaxoAuthEndpoints(registry(saxoCfg()),
+                new SaxoTokenStores(dir, now::get), states, mock(SaxoOAuthClient.class));
+
+        ResponseEntity<String> r = ep.login("saxo-sim");
+
+        assertThat(r.getStatusCode().value()).isIn(429, 503);
     }
 
     @Test
