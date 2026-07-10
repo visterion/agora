@@ -2,6 +2,8 @@ package de.visterion.agora.fetch.split;
 
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.fetch.alpaca.AlpacaDataClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -15,6 +17,12 @@ import java.util.List;
 @Order(10)
 public class AlpacaSplitProvider implements SplitProvider {
 
+    private static final Logger log = LoggerFactory.getLogger(AlpacaSplitProvider.class);
+
+    // Guards against a misbehaving upstream returning a repeating/cyclic next_page_token,
+    // which would otherwise spin this loop forever (mirrors the Saxo __next page cap).
+    private static final int MAX_PAGES = 50;
+
     private final AlpacaDataClient client;
 
     public AlpacaSplitProvider(AlpacaDataClient client) { this.client = client; }
@@ -27,7 +35,9 @@ public class AlpacaSplitProvider implements SplitProvider {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "alpaca: no api key", null);
         List<SplitEvent> out = new ArrayList<>();
         String pageToken = null;
+        int pages = 0;
         do {
+            pages++;
             JsonNode root;
             String currentToken = pageToken;
             try {
@@ -54,6 +64,10 @@ public class AlpacaSplitProvider implements SplitProvider {
             addSplits(out, ca.path("reverse_splits"));
             JsonNode next = root.path("next_page_token");
             pageToken = (next.isMissingNode() || next.isNull()) ? null : next.asString(null);
+            if (pageToken != null && pages >= MAX_PAGES) {
+                log.debug("alpaca corporate-actions pagination capped at {} pages for symbol={}", MAX_PAGES, symbol);
+                break;
+            }
         } while (pageToken != null);
         return out;
     }
