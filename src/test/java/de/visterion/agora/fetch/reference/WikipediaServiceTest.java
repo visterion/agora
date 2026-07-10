@@ -76,6 +76,18 @@ class WikipediaServiceTest {
         assertThatThrownBy(() -> svc().constituents("sp500")).isInstanceOf(MarketDataException.class);
     }
 
+    @Test
+    void slowResponseFailsFastAsUnavailable() {
+        wm.stubFor(get(urlPathEqualTo("/w/api.php"))
+                .willReturn(okJson("{}").withFixedDelay(3_000)));
+        var fast = new WikipediaService(wm.baseUrl(), "TestAgent/1.0", "List of S&P 500 companies", 86_400L, 250L);
+        long t0 = System.nanoTime();
+        assertThatThrownBy(() -> fast.constituents("sp500"))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+        assertThat((System.nanoTime() - t0) / 1_000_000L).isLessThan(2_500L);
+    }
+
     // Helper: JSON-encode a string (quotes + escapes) for embedding in the stub body.
     private static String toJsonString(String s) {
         return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\"";

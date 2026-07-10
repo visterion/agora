@@ -12,6 +12,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -30,18 +31,26 @@ public class FinnhubEarningsProvider implements EarningsProvider {
 
     /**
      * Constructor bound by Spring via {@code @Value} and also invoked directly from WireMock tests
-     * with an explicit base-url + key (both parameters are plain strings, so no separate test ctor
-     * is needed).
+     * with an explicit base-url + key + timeout (all parameters are plain values, so no separate
+     * test ctor is needed).
      */
     @Autowired
     public FinnhubEarningsProvider(
             @Value("${agora.data.finnhub.base-url}") String baseUrl,
-            @Value("${agora.data.finnhub.key}") String key) {
+            @Value("${agora.data.finnhub.key}") String key,
+            @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
         this.client = RestClient.builder()
-                .requestFactory(new JdkClientHttpRequestFactory())
+                .requestFactory(rf)
                 .baseUrl(baseUrl)
                 .build();
         this.key = key;
+    }
+
+    /** Convenience constructor (default per-request timeout); used by tests. */
+    public FinnhubEarningsProvider(String baseUrl, String key) {
+        this(baseUrl, key, 15_000L);
     }
 
     @Override

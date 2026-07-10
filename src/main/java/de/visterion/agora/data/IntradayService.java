@@ -9,6 +9,7 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -28,14 +29,17 @@ public class IntradayService {
                            @Value("${agora.data.yahoo.user-agent}") String userAgent,
                            @Value("${agora.data.intraday.interval:5m}") String interval,
                            @Value("${agora.data.intraday.range:1d}") String range,
-                           @Value("${agora.data.cache.ttl.prices-seconds:120}") long ttlSeconds) {
-        this(baseUrl, userAgent, interval, range, ttlSeconds, System::currentTimeMillis);
+                           @Value("${agora.data.cache.ttl.prices-seconds:120}") long ttlSeconds,
+                           @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
+        this(baseUrl, userAgent, interval, range, ttlSeconds, timeoutMs, System::currentTimeMillis);
     }
 
     IntradayService(String baseUrl, String userAgent, String interval, String range,
-                    long ttlSeconds, LongSupplier now) {
+                    long ttlSeconds, long timeoutMs, LongSupplier now) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
         this.client = RestClient.builder()
-                .requestFactory(new JdkClientHttpRequestFactory())
+                .requestFactory(rf)
                 .baseUrl(baseUrl)
                 .defaultHeader("User-Agent", userAgent)
                 .build();

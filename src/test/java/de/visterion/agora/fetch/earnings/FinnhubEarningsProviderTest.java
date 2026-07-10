@@ -67,4 +67,16 @@ class FinnhubEarningsProviderTest {
         var out = p("k").earnings(null, LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-03"));
         assertThat(out).extracting(EarningsEvent::symbol).containsExactly("AAPL");
     }
+
+    @Test
+    void slowResponseFailsFastAsUnavailable() {
+        wm.stubFor(get(urlPathEqualTo("/calendar/earnings"))
+                .willReturn(okJson("{\"earningsCalendar\":[]}").withFixedDelay(3_000)));
+        var fast = new FinnhubEarningsProvider(wm.baseUrl(), "k", 250L);
+        long t0 = System.nanoTime();
+        assertThatThrownBy(() -> fast.earnings("AAPL", LocalDate.parse("2026-07-01"), LocalDate.parse("2026-07-10")))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+        assertThat((System.nanoTime() - t0) / 1_000_000L).isLessThan(2_500L);
+    }
 }

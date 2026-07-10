@@ -55,6 +55,11 @@ agora:
         secret: ${AGORA_TRADING_SAXO_LIVE_APP_SECRET:}
         extra:
           redirect-uri: ${AGORA_TRADING_SAXO_LIVE_REDIRECT_URI:}
+  fetch:
+    # per-request read timeout for reference/fundamentals fetch clients; generous because
+    # EDGAR company-facts / filing-text responses are multi-MB and the JDK HttpClient
+    # request timeout runs until the full body has arrived
+    timeout-ms: ${AGORA_FETCH_TIMEOUT_MS:15000}
   data:
     # per-request read timeout for all market-data HTTP providers (fail fast into the next provider)
     provider-timeout-ms: ${AGORA_DATA_PROVIDER_TIMEOUT_MS:4000}

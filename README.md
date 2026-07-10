@@ -311,6 +311,7 @@ for the full list and defaults). Key ones:
 | `AGORA_DATA_FINNHUB_KEY` | Finnhub API key |
 | `AGORA_DATA_TWELVEDATA_KEY` | TwelveData API key |
 | `AGORA_DATA_PROVIDER_TIMEOUT_MS` | Per-request read timeout for market-data providers, so a slow upstream fails fast into the next (default `4000`) |
+| `AGORA_FETCH_TIMEOUT_MS` | Read timeout for EDGAR/Finnhub/Wikipedia/Yahoo-earnings fetch clients in ms (default `15000`; generous for multi-MB EDGAR downloads) |
 | `AGORA_DATA_EDGAR_USER_AGENT` | SEC-required User-Agent for EDGAR |
 | `AGORA_DATA_CACHE_TTL_*` | Per-family cache TTLs |
 | `AGORA_RESEARCH_*` | Default indicator periods (ATR 22, MA 50/200, RSI 14, and so on) |
