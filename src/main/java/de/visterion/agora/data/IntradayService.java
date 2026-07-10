@@ -45,7 +45,8 @@ public class IntradayService {
                 .build();
         this.defaultInterval = interval;
         this.defaultRange = range;
-        this.cache = new TtlCache<>(ttlSeconds * 1000L, now);
+        // Keyed by symbol+interval+range; quote/ohlc-scale cardinality.
+        this.cache = new TtlCache<>(ttlSeconds * 1000L, 4096, now);
     }
 
     public List<IntradayBar> intraday(String symbol, String interval, String range) {

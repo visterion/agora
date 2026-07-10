@@ -45,7 +45,7 @@ public class SaxoInstrumentResolver {
         this.client = client;
         this.bearer = bearer;
         this.exchangeId = (exchangeId == null || exchangeId.isBlank()) ? null : exchangeId;
-        this.cache = new TtlCache<>(ttlMillis, nowMillis);
+        this.cache = new TtlCache<>(ttlMillis, 2048, nowMillis);
         this.nowMillis = nowMillis;
     }
 

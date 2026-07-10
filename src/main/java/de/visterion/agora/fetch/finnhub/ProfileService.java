@@ -29,7 +29,7 @@ public class ProfileService {
 
     ProfileService(FinnhubClient client, long ttlSeconds, LongSupplier now) {
         this.client = client;
-        this.cache = new TtlCache<>(ttlSeconds * 1000L, now);
+        this.cache = new TtlCache<>(ttlSeconds * 1000L, 4096, now);
     }
 
     public Profile profile(String symbol) {
