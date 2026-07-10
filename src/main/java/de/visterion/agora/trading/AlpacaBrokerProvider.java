@@ -133,8 +133,10 @@ public class AlpacaBrokerProvider implements BrokerProvider {
     }
 
     /**
-     * @param slAmbiguous true when the symbol-fallback found more-or-fewer-than-one stop-loss
-     *                    candidate (never set by the direct parent lookup, which has ground truth).
+     * @param slAmbiguous true when the symbol-fallback found more than one stop-loss candidate
+     *                    (never set by the direct parent lookup, which has ground truth). Zero
+     *                    candidates is NOT ambiguous — it leaves {@code slLegId} null and routes
+     *                    through the existing LEG_NOT_FOUND path instead.
      * @param tpAmbiguous same for the take-profit candidate.
      */
     private record LegIds(String slLegId, String tpLegId, boolean slAmbiguous, boolean tpAmbiguous) {
@@ -177,9 +179,10 @@ public class AlpacaBrokerProvider implements BrokerProvider {
      *       bracket ENTRY, never a protective leg (this is the C5 fix: the old code let a
      *       resting bracket-B entry limit order masquerade as bracket-A's take-profit).</li>
      * </ul>
-     * If more than one candidate matches a leg type (or a requested leg type has zero
-     * candidates among a non-empty candidate set), that leg cannot be safely resolved and is
-     * flagged ambiguous — {@link #modifyBracket} refuses rather than guessing.
+     * If more than one candidate matches a leg type, that leg cannot be safely resolved and is
+     * flagged ambiguous — {@link #modifyBracket} refuses rather than guessing. If zero candidates
+     * match, the leg is simply not found (not ambiguous) and {@link #modifyBracket} takes its
+     * existing LEG_NOT_FOUND path.
      */
     private LegIds resolveLegsBySymbol(String parentId, String symbol) {
         try {
@@ -206,8 +209,11 @@ public class AlpacaBrokerProvider implements BrokerProvider {
 
             String slLegId = slCandidates.size() == 1 ? slCandidates.get(0) : null;
             String tpLegId = tpCandidates.size() == 1 ? tpCandidates.get(0) : null;
-            boolean slAmbiguous = slCandidates.size() != 1;
-            boolean tpAmbiguous = tpCandidates.size() != 1;
+            // Zero candidates is "not found", not "ambiguous" — only more than one candidate is
+            // genuinely ambiguous. Conflating the two here previously made modifyBracket report
+            // AMBIGUOUS_LEGS ("multiple candidate orders") when there were in fact none.
+            boolean slAmbiguous = slCandidates.size() > 1;
+            boolean tpAmbiguous = tpCandidates.size() > 1;
             return new LegIds(slLegId, tpLegId, slAmbiguous, tpAmbiguous);
         } catch (RestClientResponseException e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
