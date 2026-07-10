@@ -31,7 +31,10 @@ public class FxWarmer {
         if (warmPairs == null || warmPairs.isBlank()) return;
         for (String raw : warmPairs.split(",")) {
             String pair = raw.strip().toUpperCase();
-            if (pair.length() != 6) continue;
+            if (pair.length() != 6) {
+                log.warn("FX warm skipped malformed pair '{}' (expected 6 letters, e.g. EURUSD)", raw.strip());
+                continue;
+            }
             try {
                 fx.rate(pair.substring(0, 3), pair.substring(3, 6));
             } catch (RuntimeException e) {

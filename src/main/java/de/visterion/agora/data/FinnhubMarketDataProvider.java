@@ -89,14 +89,24 @@ public class FinnhubMarketDataProvider implements MarketDataProvider {
             throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
                     "Symbol " + symbol + " not found at Finnhub", null);
         }
-        // Finnhub /quote has no currency field.
-        return new Quote(symbol, price, bd(node, "dp"), "USD");
+        // Finnhub /quote has no currency field. USD is a safe default only for plain (non-suffixed)
+        // symbols; a Yahoo-style exchange suffix (SAP.DE, AIR.PA, ...) means a non-US listing whose
+        // real currency we don't know here — report it as unknown (null) rather than silently wrong.
+        String currency = hasYahooSuffix(symbol) ? null : "USD";
+        return new Quote(symbol, price, bd(node, "dp"), currency);
     }
 
     @Override
     public List<OhlcBar> ohlc(String symbol, int days) {
         throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                 "finnhub: quote-only (no ohlc)", null);
+    }
+
+    /** True for Yahoo-style suffixed symbols such as "SAP.DE" or "AIR.PA" (a dot not at the start
+     *  or end of the string). */
+    private static boolean hasYahooSuffix(String symbol) {
+        int dot = symbol.lastIndexOf('.');
+        return dot > 0 && dot < symbol.length() - 1;
     }
 
     private static BigDecimal bd(JsonNode node, String field) {

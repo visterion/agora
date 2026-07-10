@@ -20,7 +20,9 @@ import java.util.function.LongSupplier;
  * chain falls through to a provider that speaks it (the map never needs to be complete).
  * Saxo's ExchangeId for Xetra is FSE, not XETR. Without a suffix the symbol is treated as a
  * US equity and requires an exact ticker match on NYSE/NASDAQ (only reached when Alpaca is
- * down). Successful lookups are cached for 24h, keyed by the full symbol string.
+ * down). Successful lookups are cached for 24h, keyed by the full symbol string. Failed
+ * lookups are negatively cached for 60s so a burst of requests for an unresolvable/rate-limited
+ * symbol doesn't hammer the Saxo instrument-search endpoint.
  */
 @Component
 public class SaxoDataSymbolResolver {
@@ -31,9 +33,11 @@ public class SaxoDataSymbolResolver {
             "TO", "TSE");   // Toronto
     private static final Set<String> US_EXCHANGES = Set.of("NYSE", "NASDAQ");
     private static final long TTL_MILLIS = 24 * 3600 * 1000L;
+    private static final long NEGATIVE_TTL_MILLIS = 60 * 1000L;
 
     private final SaxoDataAccess access;
     private final TtlCache<String, Long> cache;
+    private final TtlCache<String, MarketDataException> failureCache;
 
     @Autowired
     public SaxoDataSymbolResolver(SaxoDataAccess access) {
@@ -43,11 +47,23 @@ public class SaxoDataSymbolResolver {
     SaxoDataSymbolResolver(SaxoDataAccess access, LongSupplier nowMillis) {
         this.access = access;
         this.cache = new TtlCache<>(TTL_MILLIS, 4096, nowMillis);
+        this.failureCache = new TtlCache<>(NEGATIVE_TTL_MILLIS, 4096, nowMillis);
     }
 
-    /** Resolves to a UIC or throws MarketDataException (UNAVAILABLE / NOT_FOUND). */
+    /** Resolves to a UIC or throws MarketDataException (UNAVAILABLE / NOT_FOUND). A prior
+     *  failure for the same symbol within the last 60s is replayed from the negative cache
+     *  instead of re-hitting Saxo. */
     public long resolve(String symbol) {
-        return cache.get(symbol, () -> lookup(symbol));
+        Optional<MarketDataException> cachedFailure = failureCache.peek(symbol);
+        if (cachedFailure.isPresent()) {
+            throw cachedFailure.get();
+        }
+        try {
+            return cache.get(symbol, () -> lookup(symbol));
+        } catch (MarketDataException e) {
+            failureCache.put(symbol, e);
+            throw e;
+        }
     }
 
     private long lookup(String symbol) {

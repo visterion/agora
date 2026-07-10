@@ -22,7 +22,13 @@ public class ConnectionRegistry {
 
     public ConnectionRegistry(ConnectionsProperties props, List<BrokerProviderFactory> factories) {
         Map<String, BrokerProviderFactory> byProvider = factories.stream()
-                .collect(Collectors.toMap(BrokerProviderFactory::provider, Function.identity()));
+                .collect(Collectors.toMap(BrokerProviderFactory::provider, Function.identity(),
+                        (a, b) -> {
+                            throw new IllegalStateException(
+                                    "duplicate BrokerProviderFactory for provider key '"
+                                            + a.provider() + "': " + a.getClass().getSimpleName()
+                                            + " and " + b.getClass().getSimpleName());
+                        }));
 
         Map<String, RegisteredConnection> out = new LinkedHashMap<>();
         props.getConnections().forEach((id, cfg) -> {

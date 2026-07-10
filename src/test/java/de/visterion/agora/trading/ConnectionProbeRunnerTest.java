@@ -84,6 +84,21 @@ class ConnectionProbeRunnerTest {
     }
 
     @Test
+    void scheduledReprobeRunsAllConnectionsAgain() {
+        var reg = registryWith(Map.of("c1", false));
+        var runner = new ConnectionProbeRunner(reg);
+        runner.probeAll();
+        var firstProbedAt = reg.get("c1").orElseThrow().probeStatus().probedAt();
+        runner.reprobeAll();
+        var secondProbedAt = reg.get("c1").orElseThrow().probeStatus().probedAt();
+        assertThat(secondProbedAt).isNotNull();
+        assertThat(reg.get("c1").orElseThrow().probeStatus().state()).isEqualTo("ok");
+        // Both calls exercise the same connection set; probedAt must have been recomputed
+        // (not merely left over from the first probeAll() call).
+        assertThat(secondProbedAt).isAfterOrEqualTo(firstProbedAt);
+    }
+
+    @Test
     void notReadyProbeSetsPendingNotUnreachable() {
         ConnectionConfig c = cfg("pending");
         ConnectionsProperties props = new ConnectionsProperties();

@@ -1,6 +1,7 @@
 package de.visterion.agora.data;
 
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -67,6 +68,26 @@ public class TtlCache<K, V> {
     public boolean isFresh(K key) {
         Entry<V> e = map.get(key);
         return e != null && e.expiresAtMillis() > nowMillis.getAsLong();
+    }
+
+    /** Reads a fresh value without invoking a loader; empty on miss or expiry. Lets callers
+     *  populate the cache manually via {@link #put} (e.g. a negative/failure cache). */
+    public Optional<V> peek(K key) {
+        Entry<V> e = map.get(key);
+        long now = nowMillis.getAsLong();
+        return (e != null && e.expiresAtMillis() > now) ? Optional.of(e.value()) : Optional.empty();
+    }
+
+    /** Manually stores {@code value} for {@code key} with a fresh TTL, subject to the same
+     *  size cap and eviction policy as {@link #get}. Unlike {@code get}'s loader path, this
+     *  lets a caller cache a value it computed itself — including, deliberately, a negative
+     *  result such as a cached failure. */
+    public void put(K key, V value) {
+        long now = nowMillis.getAsLong();
+        if (map.size() >= maxSize) {
+            evictToMakeRoom(now);
+        }
+        map.put(key, new Entry<>(value, now + ttlMillis));
     }
 
     private void evictToMakeRoom(long now) {
