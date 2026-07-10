@@ -1,13 +1,19 @@
 package de.visterion.agora.trading.saxo;
 
 import de.visterion.agora.trading.ConnectionConfig;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
+
+import java.time.Duration;
 
 /** Code-exchange and refresh against Saxo's logonvalidation token endpoint. */
 @Component
@@ -19,6 +25,17 @@ public class SaxoOAuthClient {
     public static class InvalidGrantException extends RuntimeException {
         public InvalidGrantException(String message) { super(message); }
     }
+
+    private final JdkClientHttpRequestFactory requestFactory;
+
+    @Autowired
+    public SaxoOAuthClient(@Value("${agora.trading.provider-timeout-ms:10000}") long timeoutMs) {
+        this.requestFactory = new JdkClientHttpRequestFactory();
+        this.requestFactory.setReadTimeout(Duration.ofMillis(timeoutMs));
+    }
+
+    /** Default-timeout convenience ctor (tests). */
+    public SaxoOAuthClient() { this(10_000L); }
 
     public SaxoTokens exchangeCode(ConnectionConfig cfg, String code) {
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
@@ -38,7 +55,7 @@ public class SaxoOAuthClient {
 
     private SaxoTokens post(ConnectionConfig cfg, MultiValueMap<String, String> form) {
         try {
-            JsonNode n = RestClient.builder().baseUrl(authBaseUrl(cfg)).build()
+            JsonNode n = RestClient.builder().baseUrl(authBaseUrl(cfg)).requestFactory(requestFactory).build()
                     .post().uri("/token")
                     .headers(h -> h.setBasicAuth(cfg.getKeyId(), cfg.getSecret()))
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
@@ -58,6 +75,8 @@ public class SaxoOAuthClient {
                 throw new InvalidGrantException("token grant rejected (HTTP " + status + ")");
             }
             throw new IllegalStateException("token endpoint HTTP " + status, e);
+        } catch (ResourceAccessException e) {
+            throw new IllegalStateException("token endpoint unreachable: " + e.getMessage(), e);
         }
     }
 

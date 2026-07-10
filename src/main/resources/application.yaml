@@ -20,6 +20,9 @@ agora:
   trading:
     tokens: ${AGORA_TRADING_TOKENS:}
     live-tokens: ${AGORA_TRADING_LIVE_TOKENS:}
+    # per-request response timeout for broker/OAuth HTTP calls (no fallback chain here;
+    # this only bounds hangs — well under the 30s scheduler tick)
+    provider-timeout-ms: ${AGORA_TRADING_PROVIDER_TIMEOUT_MS:10000}
     saxo:
       token-dir: ${AGORA_TRADING_SAXO_TOKEN_DIR:/data/saxo}
       refresh-check-ms: ${AGORA_TRADING_SAXO_REFRESH_CHECK_MS:30000}

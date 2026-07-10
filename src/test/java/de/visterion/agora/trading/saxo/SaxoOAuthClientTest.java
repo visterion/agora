@@ -85,4 +85,17 @@ class SaxoOAuthClientTest {
         assertThat(SaxoOAuthClient.authBaseUrl(live)).isEqualTo("https://live.logonvalidation.net");
         assertThat(SaxoOAuthClient.authBaseUrl(cfg)).isEqualTo(wm.baseUrl());   // extra overrides
     }
+
+    @Test
+    void slowTokenEndpointFailsFast() {
+        wm.stubFor(post(urlEqualTo("/token"))
+                .willReturn(okJson("{\"access_token\":\"a\",\"expires_in\":1200,\"refresh_token\":\"r\"}")
+                        .withFixedDelay(3_000)));
+        var fastClient = new SaxoOAuthClient(250L);
+        long t0 = System.nanoTime();
+        assertThatThrownBy(() -> fastClient.refresh(cfg, "ref-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("unreachable");
+        assertThat((System.nanoTime() - t0) / 1_000_000L).isLessThan(2_500L);
+    }
 }
