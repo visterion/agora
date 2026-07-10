@@ -54,6 +54,9 @@ public class SaxoBrokerProvider implements BrokerProvider {
 
     @Override public String name() { return "saxo"; }
 
+    /** Package-visible for factory/store-keying tests (M-T7). */
+    SaxoTokenStore tokenStore() { return store; }
+
     String bearer() {
         return store.authorizationHeaderValue();
     }

@@ -9,6 +9,9 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -16,15 +19,21 @@ import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.function.LongSupplier;
 
 /**
  * Token state for ONE Saxo connection. Only the (rolling) refresh token is persisted —
- * the short-lived access token lives in memory. The new refresh token is written to disk
- * BEFORE it replaces the in-memory one: a crash between refresh and persist must not
- * lose the session. File perms are owner-only; token values are never logged.
+ * the short-lived access token lives in memory. Persistence is attempted BEFORE the
+ * in-memory swap (so a successful persist is never silently lost), but a persist
+ * failure does NOT abort the update (M-T8): the in-memory swap happens regardless,
+ * because a live session carried only in memory is strictly better than a dead one —
+ * disk (read-only volume, full disk, ...) is an availability concern, not a correctness
+ * one, and the next successful persist will catch the file up. File perms are
+ * owner-only, re-asserted on every persist (not just at creation); token values are
+ * never logged.
  *
  * <p>All mutable state is held as a single immutable {@link TokenState} snapshot behind
  * one volatile reference so readers never observe a torn/partial update: every reader
@@ -70,7 +79,38 @@ public final class SaxoTokenStore {
     }
 
     public synchronized void update(String accessToken, long expiresInSeconds, String newRefreshToken) {
-        persistRefreshToken(newRefreshToken);            // disk first — crash-safe rolling
+        applyUpdate(accessToken, expiresInSeconds, newRefreshToken);
+    }
+
+    /**
+     * H7 CAS: applies the update only if the store's current refresh token still equals
+     * {@code expectedRefreshToken} — the caller captures that token before an in-flight
+     * network refresh so a concurrent {@code /auth/saxo/callback} (human re-authorizing)
+     * can't be clobbered by a stale result landing afterwards. Returns whether it applied.
+     */
+    public synchronized boolean updateIfCurrent(String expectedRefreshToken, String accessToken,
+            long expiresInSeconds, String newRefreshToken) {
+        if (!Objects.equals(expectedRefreshToken, state.refreshToken())) {
+            return false;
+        }
+        applyUpdate(accessToken, expiresInSeconds, newRefreshToken);
+        return true;
+    }
+
+    private void applyUpdate(String accessToken, long expiresInSeconds, String newRefreshToken) {
+        // C6: Saxo may legally omit refresh_token on a refresh response (RFC 6749 §6) —
+        // that means "keep the one you have", not "the session no longer has one".
+        if (newRefreshToken == null || newRefreshToken.isBlank()) {
+            newRefreshToken = state.refreshToken();
+        }
+        // M-T8: persist first so a successful write is never lost, but a persist failure
+        // must not prevent the in-memory swap — see class-level comment.
+        try {
+            persistRefreshToken(newRefreshToken);
+        } catch (UncheckedIOException e) {
+            log.error("Saxo token persist failed for '{}' — session survives in memory only: {}",
+                    connectionId, e.getMessage());
+        }
         long ttl = expiresInSeconds * 1000L;
         this.state = new TokenState(
                 accessToken,
@@ -132,6 +172,22 @@ public final class SaxoTokenStore {
                 s.accessToken(), s.accessExpiresAtMillis(), s.accessTtlMillis(), s.refreshToken(), reason);
     }
 
+    /**
+     * H7 CAS counterpart to {@link #markDead(String)}: only marks dead if the store's
+     * current refresh token still equals {@code expectedRefreshToken}. Returns whether it
+     * applied — the caller must not treat a false return as "session is fine", but also
+     * must not overwrite whatever the concurrent winner (a fresh authorize) just set.
+     */
+    public synchronized boolean markDeadIfCurrent(String expectedRefreshToken, String reason) {
+        TokenState s = this.state;
+        if (!Objects.equals(expectedRefreshToken, s.refreshToken())) {
+            return false;
+        }
+        this.state = new TokenState(
+                s.accessToken(), s.accessExpiresAtMillis(), s.accessTtlMillis(), s.refreshToken(), reason);
+        return true;
+    }
+
     public boolean dead() { return state.deadReason() != null; }
     public String deadReason() { return state.deadReason(); }
     public String connectionId() { return connectionId; }
@@ -145,8 +201,18 @@ public final class SaxoTokenStore {
             ObjectNode json = MAPPER.createObjectNode();
             json.put("refreshToken", token);
             json.put("obtainedAtMillis", nowMillis.getAsLong());
-            Files.writeString(tmp, json.toString(), StandardOpenOption.TRUNCATE_EXISTING);
+            byte[] bytes = json.toString().getBytes(StandardCharsets.UTF_8);
+            // fsync the tmp file's content before the atomic move so a crash right after
+            // rename can never observe a file whose bytes didn't actually make it to disk.
+            try (FileChannel ch = FileChannel.open(tmp,
+                    StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)) {
+                ch.write(ByteBuffer.wrap(bytes));
+                ch.force(true);
+            }
             Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            // re-assert owner-only perms on every persist, not only at file creation — a
+            // REPLACE_EXISTING move can otherwise inherit/keep looser perms from a prior file.
+            Files.setPosixFilePermissions(file, OWNER_RW);
         } catch (IOException e) {
             throw new UncheckedIOException("failed to persist token file for " + connectionId, e);
         }
@@ -169,6 +235,9 @@ public final class SaxoTokenStore {
     private static void createDirectoryOwnerOnly(Path dir) {
         try {
             Files.createDirectories(dir, OWNER_RWX_ATTR);
+            // Files.createDirectories is a no-op on an already-existing dir and does NOT
+            // reset its perms — re-assert owner-only every call, not only at first creation.
+            Files.setPosixFilePermissions(dir, OWNER_RWX);
         } catch (IOException e) {
             throw new UncheckedIOException("failed to create token directory " + dir, e);
         }

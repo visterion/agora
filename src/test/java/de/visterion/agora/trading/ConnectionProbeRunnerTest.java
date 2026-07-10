@@ -44,11 +44,11 @@ class ConnectionProbeRunnerTest {
         props.setConnections(conns);
         BrokerProviderFactory good = new BrokerProviderFactory() {
             public String provider() { return "good"; }
-            public BrokerProvider create(ConnectionConfig c) { return probeStub(false); }
+            public BrokerProvider create(String connectionId, ConnectionConfig c) { return probeStub(false); }
         };
         BrokerProviderFactory bad = new BrokerProviderFactory() {
             public String provider() { return "bad"; }
-            public BrokerProvider create(ConnectionConfig c) { return probeStub(true); }
+            public BrokerProvider create(String connectionId, ConnectionConfig c) { return probeStub(true); }
         };
         return new ConnectionRegistry(props, List.of(good, bad));
     }
@@ -92,7 +92,7 @@ class ConnectionProbeRunnerTest {
         props.setConnections(conns);
         BrokerProviderFactory f = new BrokerProviderFactory() {
             public String provider() { return "pending"; }
-            public BrokerProvider create(ConnectionConfig cc) {
+            public BrokerProvider create(String connectionId, ConnectionConfig cc) {
                 return new BrokerProvider() {
                     public String name() { return "pending"; }
                     public OrderResult submitBracket(BracketOrderRequest r) { return null; }

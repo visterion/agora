@@ -24,7 +24,7 @@ public final class TestConnections {
 
         BrokerProviderFactory factory = new BrokerProviderFactory() {
             public String provider() { return "stub"; }
-            public BrokerProvider create(ConnectionConfig c) { return provider; }
+            public BrokerProvider create(String connectionId, ConnectionConfig c) { return provider; }
         };
 
         ConnectionRegistry registry = new ConnectionRegistry(props, List.of(factory));

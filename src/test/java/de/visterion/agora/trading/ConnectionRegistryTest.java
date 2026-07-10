@@ -30,7 +30,7 @@ class ConnectionRegistryTest {
     private static BrokerProviderFactory factory(String key) {
         return new BrokerProviderFactory() {
             public String provider() { return key; }
-            public BrokerProvider create(ConnectionConfig cfg) { return dummyProvider(); }
+            public BrokerProvider create(String connectionId, ConnectionConfig cfg) { return dummyProvider(); }
         };
     }
 

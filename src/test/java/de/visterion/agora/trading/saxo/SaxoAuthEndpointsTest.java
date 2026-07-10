@@ -35,7 +35,7 @@ class SaxoAuthEndpointsTest {
         props.setConnections(Map.of("saxo-sim", cfg));
         BrokerProviderFactory f = new BrokerProviderFactory() {
             public String provider() { return "saxo"; }
-            public BrokerProvider create(ConnectionConfig c) { return null; }
+            public BrokerProvider create(String connectionId, ConnectionConfig c) { return null; }
         };
         return new ConnectionRegistry(props, List.of(f));
     }

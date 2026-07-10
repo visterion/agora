@@ -20,7 +20,7 @@ class AlpacaBrokerProviderFactoryTest {
         cfg.setKeyId("k");
         cfg.setSecret("s");
 
-        BrokerProvider p = new AlpacaBrokerProviderFactory(10_000L).create(cfg);
+        BrokerProvider p = new AlpacaBrokerProviderFactory(10_000L).create("alpaca-paper", cfg);
 
         assertThat(p).isInstanceOf(AlpacaBrokerProvider.class);
         assertThat(p.name()).isEqualTo("alpaca");

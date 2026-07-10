@@ -58,7 +58,7 @@ class PlaceBracketWebhookIT {
                 @Override public String provider() { return "stub"; }
 
                 @Override
-                public BrokerProvider create(de.visterion.agora.trading.ConnectionConfig cfg) {
+                public BrokerProvider create(String connectionId, de.visterion.agora.trading.ConnectionConfig cfg) {
                     return new BrokerProvider() {
                         @Override public String name() { return "stub"; }
 

@@ -33,7 +33,7 @@ class ListConnectionsToolTest {
         props.setConnections(conns);
         BrokerProviderFactory f = new BrokerProviderFactory() {
             public String provider() { return "stub"; }
-            public BrokerProvider create(ConnectionConfig c) { return null; }  // provider unused by this tool
+            public BrokerProvider create(String connectionId, ConnectionConfig c) { return null; }  // provider unused by this tool
         };
         return new ConnectionRegistry(props, List.of(f));
     }

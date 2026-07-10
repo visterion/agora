@@ -4,5 +4,10 @@ package de.visterion.agora.trading;
 public interface BrokerProviderFactory {
     /** Provider key matched against ConnectionConfig.provider, e.g. "alpaca". */
     String provider();
-    BrokerProvider create(ConnectionConfig cfg);
+    /**
+     * @param connectionId the yaml connection id (map key in {@code agora.trading.connections}) —
+     *                      factories that key per-connection state (e.g. Saxo's token store) MUST
+     *                      use this, not a value derived from {@code cfg} (M-T7).
+     */
+    BrokerProvider create(String connectionId, ConnectionConfig cfg);
 }
