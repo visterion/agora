@@ -12,7 +12,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import org.mockito.ArgumentCaptor;
 
 class GetSearchFilingsToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
@@ -59,5 +62,17 @@ class GetSearchFilingsToolTest {
     @Test void namespaceIsGeneral() {
         assertThat(new GetSearchFilingsTool(Mockito.mock(EdgarSearchService.class)).namespace())
                 .isEqualTo("general");
+    }
+
+    @Test void oversizedLimitIsClampedTo100() {
+        EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
+        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(List.of());
+        var args = mapper.createObjectNode();
+        args.putArray("forms").add("8-K");
+        args.put("limit", 100_000);
+        new GetSearchFilingsTool(svc).call(args);
+        ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
+        verify(svc).search(any(), any(), any(), any(), captor.capture());
+        assertThat(captor.getValue()).isEqualTo(100);
     }
 }

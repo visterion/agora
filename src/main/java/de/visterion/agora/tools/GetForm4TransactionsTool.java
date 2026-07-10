@@ -18,6 +18,7 @@ import java.util.List;
 @Component
 public class GetForm4TransactionsTool implements AgoraTool {
 
+    private static final int MAX_LIMIT = 100;
     private final EdgarSearchService service;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -35,7 +36,7 @@ public class GetForm4TransactionsTool implements AgoraTool {
         ObjectNode props = schema.putObject("properties");
         props.putObject("from").put("type", "string").put("description", "earliest filing date ISO (YYYY-MM-DD); default now-30d");
         props.putObject("to").put("type", "string").put("description", "latest filing date ISO (YYYY-MM-DD); default now");
-        props.putObject("limit").put("type", "integer").put("description", "max filings to scan; default 100");
+        props.putObject("limit").put("type", "integer").put("description", "max filings to scan; default 100, max " + MAX_LIMIT);
         return schema;
     }
 
@@ -50,7 +51,7 @@ public class GetForm4TransactionsTool implements AgoraTool {
         } catch (DateTimeParseException e) {
             return ToolResult.unavailable("invalid date");
         }
-        int limit = args == null ? 100 : args.path("limit").asInt(100);
+        int limit = Math.clamp(args == null ? 100 : args.path("limit").asInt(100), 1, MAX_LIMIT);
 
         try {
             List<Form4Transaction> txns = service.form4Transactions(from, to, limit);
