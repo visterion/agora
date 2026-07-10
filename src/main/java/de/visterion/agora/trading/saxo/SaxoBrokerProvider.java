@@ -132,11 +132,11 @@ public class SaxoBrokerProvider implements BrokerProvider {
     public List<Position> positions() {
         AccountContext ctx = accountContext();
         // See comment in account() re: TEMPLATE_AND_VALUES encoding.
-        JsonNode resp = getJson(b -> b.path("/port/v1/netpositions")
+        JsonNode resp = followPagination(getJson(b -> b.path("/port/v1/netpositions")
                 .queryParam("ClientKey", "{ck}")
                 .queryParam("AccountKey", "{ak}")
                 .queryParam("FieldGroups", "{fg}")
-                .build(ctx.clientKey(), ctx.accountKey(), "NetPositionBase,NetPositionView,DisplayAndFormat"));
+                .build(ctx.clientKey(), ctx.accountKey(), "NetPositionBase,NetPositionView,DisplayAndFormat")));
         List<Position> out = new ArrayList<>();
         for (JsonNode n : resp.path("Data")) {
             JsonNode base = n.path("NetPositionBase");
@@ -165,17 +165,20 @@ public class SaxoBrokerProvider implements BrokerProvider {
      */
     @Override
     public List<Order> orders(String status) {
-        JsonNode resp = getJson("/port/v1/orders/me?fieldGroups=DisplayAndFormat");
+        JsonNode resp = followPagination(getJson("/port/v1/orders/me?FieldGroups=DisplayAndFormat"));
         List<Order> out = new ArrayList<>();
         for (JsonNode n : resp.path("Data")) {
-            Order parent = parseOrder(n, null);
+            Order parent = parseOrder(n, null, null);
             if (status == null || status.isBlank() || parent.status().equalsIgnoreCase(status)) {
                 out.add(parent);
             }
             JsonNode children = n.path("RelatedOpenOrders");
             if (children.isArray()) {
+                // Legs embedded in RelatedOpenOrders rarely carry their own DisplayAndFormat —
+                // fall back to the parent's already-resolved symbol so a leg never surfaces
+                // with an empty symbol; only truly orphaned legs (no parent symbol either) get "?".
                 for (JsonNode c : children) {
-                    Order leg = parseOrder(c, parent.brokerOrderId());
+                    Order leg = parseOrder(c, parent.brokerOrderId(), parent.symbol());
                     if (status == null || status.isBlank() || leg.status().equalsIgnoreCase(status)) {
                         out.add(leg);
                     }
@@ -219,7 +222,11 @@ public class SaxoBrokerProvider implements BrokerProvider {
         body.put("ManualOrder", false);
         body.put("AccountKey", ctx.accountKey());
         if (req.clientRef() != null) body.put("ExternalReference", req.clientRef());
-        body.set("OrderDuration", durationNode(mapTif(req.timeInForce())));
+        // 🔶 Saxo semantics: a Market entry order defaults to DayOrder (Saxo rejects/normalizes
+        // GoodTillCancel on Market orders — a market order that doesn't fill same-session has
+        // nothing left to "keep good"). Limit entries keep the GoodTillCancel default. An
+        // explicit timeInForce always wins over either default.
+        body.set("OrderDuration", durationNode(mapTif(req.timeInForce(), limit ? "GoodTillCancel" : "DayOrder")));
 
         ObjectNode takeProfit = MAPPER.createObjectNode();
         takeProfit.put("OrderType", "Limit");
@@ -284,6 +291,11 @@ public class SaxoBrokerProvider implements BrokerProvider {
             if (found != null) return found;
             if (attempt < legLookupMaxAttempts) {
                 sleepBetweenLegLookups(attempt);
+                // A caller-thread interrupt during the delay must abort the retry loop, not
+                // just be swallowed into the next attempt — sleepBetweenLegLookups restores
+                // the flag (Thread.currentThread().interrupt()) but a plain loop continuation
+                // would ignore it entirely and keep sleeping/retrying on an interrupted thread.
+                if (Thread.currentThread().isInterrupted()) break;
             }
         }
         return OrderResult.accepted(orderId, clientRef, "accepted");
@@ -417,14 +429,16 @@ public class SaxoBrokerProvider implements BrokerProvider {
     }
 
     private OrderResult patchLeg(AccountContext ctx, JsonNode child, BigDecimal newPrice) {
-        String durationType = child.path("Duration").path("DurationType").asString("GoodTillCancel");
         ObjectNode body = MAPPER.createObjectNode();
         body.put("AccountKey", ctx.accountKey());
         body.put("OrderId", child.path("OrderId").asString(""));
-        body.put("AssetType", "Stock");
+        // Preserve the leg's own AssetType from the fetched order rather than hardcoding
+        // "Stock" — Saxo ReplaceOrder rejects a mismatched AssetType for non-equity legs
+        // (e.g. options/futures brackets), and "Stock" is only the right default absent info.
+        body.put("AssetType", child.path("AssetType").asString("Stock"));
         body.put("OrderType", child.path("OpenOrderType").asString(""));
         body.put("OrderPrice", newPrice);
-        body.set("OrderDuration", durationNode(durationType));
+        body.set("OrderDuration", durationNode(child.path("Duration")));
         try {
             client.patch().uri("/trade/v2/orders")
                     .header("Authorization", bearer())
@@ -450,9 +464,36 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * does simple truncation (no lot-size table), documented as a limitation in
      * exit-tools.md. avgFillPrice is always null: a Market order's placement response
      * carries no synchronous fill price.
+     *
+     * <p><b>H6 — 🔶 Saxo semantics:</b> unlike Alpaca (whose bracket auto-cancels its
+     * sibling leg on OCO), Saxo does NOT auto-cancel a bracket's detached SL/TP legs when
+     * the position is closed independently (e.g. via this flatten, or a manual close in the
+     * Saxo UI). A stop left working after flatten can later execute against a since-reversed
+     * or absent position → an unintended reverse position with no protection. So before
+     * placing the closing Market order, this looks up open orders sharing the position's Uic
+     * and cancels any protective (Stop-type or Limit-type) legs it finds — cancel-first, so
+     * a stop can't fire mid-close. If that lookup itself fails, the close still proceeds (Saxo
+     * requires an explicit, deliberate flatten to go through even degraded), but the
+     * accepted result's status carries a visible warning so the caller knows the legs were
+     * not verified/canceled and may need manual cleanup.
+     *
+     * <p><b>M-T6 — idempotent retry:</b> the same lookup also counts any already-working
+     * opposite-side Market order on this Uic (a prior flatten call whose HTTP response was
+     * lost to the caller, e.g. on a timeout, but which the broker accepted). Protective
+     * Stop/Limit legs are excluded from this count — they are not a "close" and are exactly
+     * what H6 cancels above, so counting them would make every flatten look
+     * already-in-flight and needlessly block it. If a pending opposite-side Market order of
+     * qty ≥ the requested close is already found, this returns rejected("close already
+     * pending", ...) instead of stacking a second close order. If the lookup fails, this
+     * check is skipped (proceeds as non-idempotent) rather than blocking a legitimate close
+     * during a transient outage.
      */
     @Override
     public OrderResult flatten(String symbol, BigDecimal fraction, BigDecimal qty) {
+        if (fraction != null && (fraction.signum() <= 0 || fraction.compareTo(BigDecimal.ONE) > 0)) {
+            return OrderResult.rejected(
+                    "fraction must be in (0,1]: " + fraction.toPlainString(), "INVALID_FRACTION");
+        }
         SaxoInstrumentResolver.ResolvedInstrument ri;
         try {
             ri = resolver.resolve(symbol);
@@ -460,11 +501,11 @@ public class SaxoBrokerProvider implements BrokerProvider {
             return OrderResult.rejected(e.getMessage(), "SYMBOL");
         }
         AccountContext ctx = accountContext();
-        JsonNode resp = getJson(b -> b.path("/port/v1/netpositions")
+        JsonNode resp = followPagination(getJson(b -> b.path("/port/v1/netpositions")
                 .queryParam("ClientKey", "{ck}")
                 .queryParam("AccountKey", "{ak}")
                 .queryParam("FieldGroups", "{fg}")
-                .build(ctx.clientKey(), ctx.accountKey(), "NetPositionBase,NetPositionView,DisplayAndFormat"));
+                .build(ctx.clientKey(), ctx.accountKey(), "NetPositionBase,NetPositionView,DisplayAndFormat")));
 
         JsonNode match = null;
         for (JsonNode n : resp.path("Data")) {
@@ -500,6 +541,34 @@ public class SaxoBrokerProvider implements BrokerProvider {
             closeQty = available;
         }
 
+        RelatedOrdersLookup related = lookupRelatedOrders(ri.uic());
+
+        BigDecimal pendingOppositeCloseQty = BigDecimal.ZERO;
+        for (JsonNode n : related.orders()) {
+            String type = n.path("OpenOrderType").asString("");
+            if ("Market".equalsIgnoreCase(type) && opposite.equalsIgnoreCase(n.path("BuySell").asString(""))) {
+                pendingOppositeCloseQty = pendingOppositeCloseQty.add(bd(n.path("Amount")));
+            }
+        }
+        if (related.error() == null && pendingOppositeCloseQty.compareTo(closeQty) >= 0) {
+            return OrderResult.rejected("close already pending", "CLOSE_ALREADY_PENDING");
+        }
+
+        for (JsonNode n : related.orders()) {
+            String type = n.path("OpenOrderType").asString("");
+            if (type.contains("Stop") || "Limit".equalsIgnoreCase(type)) {
+                String legOrderId = n.path("OrderId").asString(null);
+                if (legOrderId != null) {
+                    try {
+                        cancel(legOrderId);
+                    } catch (Exception e) {
+                        related = related.withError("failed to cancel related order " + legOrderId
+                                + ": " + e.getMessage());
+                    }
+                }
+            }
+        }
+
         ObjectNode body = MAPPER.createObjectNode();
         body.put("Uic", ri.uic());
         body.put("AssetType", ri.assetType());
@@ -519,12 +588,39 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .retrieve().body(JsonNode.class);
             String orderId = resp2 == null ? null : resp2.path("OrderId").asString(null);
             BigDecimal remainingQty = available.subtract(closeQty);
-            return OrderResult.accepted(orderId, null, "accepted", closeQty, remainingQty, null);
+            String status = related.error() == null ? "accepted"
+                    : "accepted (warning: " + related.error() + ")";
+            return OrderResult.accepted(orderId, null, status, closeQty, remainingQty, null);
         } catch (RestClientResponseException e) {
             return writeError(e);
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "saxo flatten failed: " + e.getMessage(), e);
+        }
+    }
+
+    /** Open orders sharing a position's Uic, plus an optional lookup-failure message (H6/M-T6). */
+    private record RelatedOrdersLookup(List<JsonNode> orders, String error) {
+        RelatedOrdersLookup withError(String newError) { return new RelatedOrdersLookup(orders, newError); }
+    }
+
+    /**
+     * Single lookup shared by H6 (cancel protective legs) and M-T6 (idempotent pending-close
+     * check) so flatten costs at most one extra GET, not two. A lookup failure yields an
+     * empty order list plus a message: H6 treats that as "proceed with a warning", M-T6
+     * treats it as "can't verify, don't block the close".
+     */
+    private RelatedOrdersLookup lookupRelatedOrders(long uic) {
+        try {
+            JsonNode resp = followPagination(getJson("/port/v1/orders/me"));
+            List<JsonNode> matches = new ArrayList<>();
+            for (JsonNode n : resp.path("Data")) {
+                if (n.path("Uic").asLong(-1) == uic) matches.add(n);
+            }
+            return new RelatedOrdersLookup(matches, null);
+        } catch (Exception e) {
+            return new RelatedOrdersLookup(List.of(),
+                    "could not verify/cancel related protective orders: " + e.getMessage());
         }
     }
 
@@ -560,18 +656,34 @@ public class SaxoBrokerProvider implements BrokerProvider {
         return "Buy".equals(side) ? "Sell" : "Buy";
     }
 
-    private static String mapTif(String tif) {
-        if (tif == null) return "GoodTillCancel";
+    private static String mapTif(String tif, String defaultValue) {
+        if (tif == null) return defaultValue;
         return switch (tif.toLowerCase(Locale.ROOT)) {
             case "gtc" -> "GoodTillCancel";
             case "day" -> "DayOrder";
-            default -> "GoodTillCancel";
+            default -> defaultValue;
         };
     }
 
     private static ObjectNode durationNode(String durationType) {
         ObjectNode d = MAPPER.createObjectNode();
         d.put("DurationType", durationType);
+        return d;
+    }
+
+    /**
+     * Builds OrderDuration from a fetched leg's own {@code Duration} node, preserving
+     * {@code ExpirationDateTime} when the leg is GoodTillDate — dropping it (as the previous
+     * hardcoded {@code durationNode(String)} did) turns a GTD leg into an accidental GTC on
+     * PATCH, silently extending its life indefinitely.
+     */
+    private static ObjectNode durationNode(JsonNode childDuration) {
+        ObjectNode d = MAPPER.createObjectNode();
+        d.put("DurationType", childDuration.path("DurationType").asString("GoodTillCancel"));
+        JsonNode expiry = childDuration.path("ExpirationDateTime");
+        if (!expiry.isMissingNode() && !expiry.isNull()) {
+            d.put("ExpirationDateTime", expiry.asString(""));
+        }
         return d;
     }
 
@@ -641,6 +753,37 @@ public class SaxoBrokerProvider implements BrokerProvider {
         }
     }
 
+    /** Bounded — a runaway/misbehaving `__next` chain stops after this many pages. */
+    private static final int MAX_PAGINATION_PAGES = 20;
+
+    /**
+     * Follows Saxo's {@code __next} link (an absolute URL to the next page) on list
+     * endpoints (orders/positions/netpositions) until it is absent, merging every page's
+     * {@code Data} array into one combined node — capped at {@link #MAX_PAGINATION_PAGES}
+     * pages so a misbehaving/looping {@code __next} chain can't hang the caller. Without
+     * this, any account with more open orders/positions than fit on one page silently loses
+     * the overflow (M-T2-adjacent).
+     */
+    private JsonNode followPagination(JsonNode first) {
+        List<JsonNode> allData = new ArrayList<>();
+        first.path("Data").forEach(allData::add);
+        JsonNode current = first;
+        int pages = 1;
+        while (pages < MAX_PAGINATION_PAGES) {
+            String next = current.path("__next").asString(null);
+            if (next == null || next.isBlank()) break;
+            current = exchange(() -> client.get().uri(URI.create(next)).header("Authorization", bearer())
+                    .retrieve().body(JsonNode.class));
+            current.path("Data").forEach(allData::add);
+            pages++;
+        }
+        ObjectNode combined = MAPPER.createObjectNode();
+        var arr = MAPPER.createArrayNode();
+        allData.forEach(arr::add);
+        combined.set("Data", arr);
+        return combined;
+    }
+
     static BrokerException readError(RestClientResponseException e) {
         int status = e.getStatusCode().value();
         if (status == 404) {
@@ -649,6 +792,10 @@ public class SaxoBrokerProvider implements BrokerProvider {
         if (status == 401 || status == 403) {
             return new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "saxo auth failed (HTTP " + status + ") — re-authorize via /auth/saxo/login", e);
+        }
+        if (status == 429) {
+            return new BrokerException(BrokerException.Kind.NOT_READY,
+                    "saxo rate limited (HTTP 429) — retry shortly", e);
         }
         return new BrokerException(BrokerException.Kind.UNAVAILABLE, "saxo HTTP " + status, e);
     }
@@ -662,12 +809,16 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * parent), else "other". filledQty/avgFillPrice are always null here — see the gap note
      * on {@link #orders}.
      */
-    static Order parseOrder(JsonNode n, String parentId) {
+    static Order parseOrder(JsonNode n, String parentId, String fallbackSymbol) {
         String type = n.path("OpenOrderType").asString("").toLowerCase(Locale.ROOT);
+        String symbol = baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString(""));
+        if (symbol.isBlank()) {
+            symbol = (fallbackSymbol != null && !fallbackSymbol.isBlank()) ? fallbackSymbol : "?";
+        }
         return new Order(
                 n.path("OrderId").asString(""),
                 n.path("ExternalReference").asString(null),
-                baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString("")),
+                symbol,
                 n.path("BuySell").asString("").toLowerCase(Locale.ROOT),
                 bd(n.path("Amount")),
                 type,
