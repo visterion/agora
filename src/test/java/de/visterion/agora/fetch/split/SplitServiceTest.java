@@ -18,12 +18,29 @@ class SplitServiceTest {
         return new SplitService(providers, 21600_000L, System::currentTimeMillis);
     }
 
-    @Test void firstNonEmptyWins_secondNotCalled() {
+    @Test void bothProvidersConsulted_resultIsUnion() {
+        // M-F11: alpaca and finnhub are BOTH consulted (not first-non-empty-wins), and their
+        // split histories are merged so pre-2015 finnhub data isn't shadowed by alpaca's 2015+ cap.
         AtomicInteger finnhubCalls = new AtomicInteger();
-        SplitProvider alpaca = stub("alpaca", () -> List.of(ev()));
-        SplitProvider finnhub = stub("finnhub", () -> { finnhubCalls.incrementAndGet(); return List.of(); });
-        assertThat(svc(List.of(alpaca, finnhub)).splits("NVDA")).hasSize(1);
-        assertThat(finnhubCalls.get()).isZero();
+        SplitEvent alpacaEvent = new SplitEvent(LocalDate.parse("2024-06-10"), BigDecimal.ONE, BigDecimal.TEN);
+        SplitEvent finnhubOldEvent = new SplitEvent(LocalDate.parse("2000-03-01"), BigDecimal.ONE, BigDecimal.TWO);
+        SplitProvider alpaca = stub("alpaca", () -> List.of(alpacaEvent));
+        SplitProvider finnhub = stub("finnhub", () -> { finnhubCalls.incrementAndGet(); return List.of(finnhubOldEvent); });
+        List<SplitEvent> merged = svc(List.of(alpaca, finnhub)).splits("NVDA");
+        assertThat(finnhubCalls.get()).isEqualTo(1);
+        assertThat(merged).hasSize(2);
+        assertThat(merged).extracting(SplitEvent::date)
+                .containsExactly(LocalDate.parse("2000-03-01"), LocalDate.parse("2024-06-10"));
+    }
+
+    @Test void unionByDate_alpacaWinsConflicts() {
+        SplitEvent alpacaEvent = new SplitEvent(LocalDate.parse("2024-06-10"), BigDecimal.ONE, BigDecimal.TEN);
+        SplitEvent finnhubConflict = new SplitEvent(LocalDate.parse("2024-06-10"), BigDecimal.ONE, BigDecimal.valueOf(4));
+        SplitProvider alpaca = stub("alpaca", () -> List.of(alpacaEvent));
+        SplitProvider finnhub = stub("finnhub", () -> List.of(finnhubConflict));
+        List<SplitEvent> merged = svc(List.of(alpaca, finnhub)).splits("NVDA");
+        assertThat(merged).hasSize(1);
+        assertThat(merged.get(0).toFactor()).isEqualByComparingTo("10"); // alpaca wins the conflict
     }
 
     @Test void firstEmpty_fallsThroughToSecond() {

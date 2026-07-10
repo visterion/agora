@@ -49,6 +49,23 @@ class EdgarServiceCompanyFactsTest {
         assertThat(facts.series("Missing").datapoints()).isEmpty();
     }
 
+    @Test void perTagUnitSelectionPrefersUsd_neverMerges() {
+        wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyfacts/CIK0000320193.json"))
+                .willReturn(okJson("""
+                    {"cik":320193,"facts":{"us-gaap":{
+                      "Assets":{"units":{
+                        "EUR":[{"end":"2023-09-30","val":1,"fy":2023,"fp":"FY","form":"10-K","filed":"2023-11-03"}],
+                        "USD":[{"end":"2023-09-30","val":352583000000,"fy":2023,"fp":"FY","form":"10-K","filed":"2023-11-03"}]
+                      }}
+                    }}}
+                    """)));
+        EdgarService.CompanyFacts facts = svc().companyFacts("AAPL", null);
+        EdgarService.ConceptSeries assets = facts.series("Assets");
+        assertThat(assets.unit()).isEqualTo("USD");
+        assertThat(assets.datapoints()).hasSize(1);
+        assertThat(assets.datapoints().get(0).value()).isEqualByComparingTo("352583000000");
+    }
+
     @Test void unreachableEdgarYieldsEmptyFacts() {
         wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyfacts/CIK0000320193.json"))
                 .willReturn(aResponse().withStatus(404)));

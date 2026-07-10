@@ -85,6 +85,36 @@ class EdgarServiceCompanyConceptTest {
         assertThat(d.value().toPlainString()).isEqualTo("2.40"); // scale preserved via USE_BIG_DECIMAL_FOR_FLOATS
     }
 
+    @Test void prefersUsdUnitOverOtherCurrencies_neverMerges() {
+        wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyconcept/CIK0000320193/us-gaap/Assets.json"))
+                .willReturn(okJson("""
+                    {"units":{
+                      "EUR":[{"start":"2024-01-01","end":"2024-12-31","val":1,"fy":2024,"fp":"FY","form":"10-K","filed":"2025-01-31"}],
+                      "USD":[{"start":"2024-01-01","end":"2024-12-31","val":2,"fy":2024,"fp":"FY","form":"10-K","filed":"2025-01-31"}]
+                    }}
+                    """)));
+        EdgarService.ConceptSeries series = svc().companyConcept("AAPL", null, "us-gaap", "Assets");
+        assertThat(series.unit()).isEqualTo("USD");
+        assertThat(series.datapoints()).hasSize(1);
+        assertThat(series.datapoints().get(0).value()).isEqualByComparingTo("2");
+    }
+
+    @Test void withoutUsdPicksUnitWithMostDatapoints() {
+        wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyconcept/CIK0000320193/us-gaap/Assets.json"))
+                .willReturn(okJson("""
+                    {"units":{
+                      "EUR":[{"start":"2024-01-01","end":"2024-12-31","val":1,"fy":2024,"fp":"FY","form":"10-K","filed":"2025-01-31"}],
+                      "GBP":[
+                        {"start":"2023-01-01","end":"2023-12-31","val":10,"fy":2023,"fp":"FY","form":"10-K","filed":"2024-01-31"},
+                        {"start":"2024-01-01","end":"2024-12-31","val":20,"fy":2024,"fp":"FY","form":"10-K","filed":"2025-01-31"}
+                      ]
+                    }}
+                    """)));
+        EdgarService.ConceptSeries series = svc().companyConcept("AAPL", null, "us-gaap", "Assets");
+        assertThat(series.unit()).isEqualTo("GBP");
+        assertThat(series.datapoints()).hasSize(2);
+    }
+
     @Test void notFoundConceptYieldsEmptySeries() {
         wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyconcept/CIK0000320193/us-gaap/Nonexistent.json"))
                 .willReturn(aResponse().withStatus(404)));
