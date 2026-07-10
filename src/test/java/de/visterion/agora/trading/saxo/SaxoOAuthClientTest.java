@@ -68,6 +68,15 @@ class SaxoOAuthClientTest {
     }
 
     @Test
+    void http401MeansAppCredentialsRejectedNotSessionDeath() {
+        wm.stubFor(post(urlEqualTo("/token")).willReturn(aResponse().withStatus(401)));
+        assertThatThrownBy(() -> client.refresh(cfg, "ref-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .isNotInstanceOf(SaxoOAuthClient.InvalidGrantException.class)
+                .hasMessageContaining("saxo app credentials rejected (HTTP 401)");
+    }
+
+    @Test
     void http500IsTransient() {
         wm.stubFor(post(urlEqualTo("/token")).willReturn(aResponse().withStatus(500)));
         assertThatThrownBy(() -> client.refresh(cfg, "ref-1"))

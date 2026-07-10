@@ -35,7 +35,7 @@ public class ConnectionRegistry {
                 throw new IllegalStateException(
                         "connection '" + id + "': unknown provider '" + cfg.getProvider() + "'");
             }
-            out.put(id, new RegisteredConnection(id, cfg, factory.create(cfg)));
+            out.put(id, new RegisteredConnection(id, cfg, factory.create(id, cfg)));
         });
         this.connections = Collections.unmodifiableMap(out);
     }

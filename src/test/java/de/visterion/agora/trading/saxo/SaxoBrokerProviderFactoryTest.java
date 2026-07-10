@@ -28,18 +28,24 @@ class SaxoBrokerProviderFactoryTest {
     }
 
     @Test
-    void storeKeyFollowsConnectionIdConvention() {
-        assertThat(SaxoBrokerProviderFactory.storeKey(cfg(ConnectionConfig.Environment.PAPER)))
-                .isEqualTo("saxo-sim");
-        assertThat(SaxoBrokerProviderFactory.storeKey(cfg(ConnectionConfig.Environment.LIVE)))
-                .isEqualTo("saxo-live");
-    }
-
-    @Test
     void createBuildsSaxoProvider() {
         var p = new SaxoBrokerProviderFactory(new SaxoTokenStores(dir, () -> 0L), 10_000L)
-                .create(cfg(ConnectionConfig.Environment.PAPER));
+                .create("saxo-sim", cfg(ConnectionConfig.Environment.PAPER));
         assertThat(p).isInstanceOf(SaxoBrokerProvider.class);
         assertThat(p.name()).isEqualTo("saxo");
+    }
+
+    // M-T7: the token store must be keyed by connection id, not by environment — any saxo
+    // slot not literally named "saxo-sim"/"saxo-live" must still get the store the auth
+    // endpoints/refresher/data provider use for that same connection id.
+    @Test
+    void createKeysTheTokenStoreByConnectionIdNotEnvironment() {
+        SaxoTokenStores stores = new SaxoTokenStores(dir, () -> 0L);
+        var factory = new SaxoBrokerProviderFactory(stores, 10_000L);
+
+        var provider = (SaxoBrokerProvider) factory.create("saxo-custom", cfg(ConnectionConfig.Environment.PAPER));
+
+        stores.forConnection("saxo-custom").update("acc-1", 1200, "ref-1");
+        assertThat(provider.tokenStore().validAccessToken()).contains("acc-1");
     }
 }

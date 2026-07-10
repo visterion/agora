@@ -32,7 +32,7 @@ class SaxoTokenRefresherTest {
         props.setConnections(Map.of("saxo-sim", saxoCfg()));
         BrokerProviderFactory f = new BrokerProviderFactory() {
             public String provider() { return "saxo"; }
-            public BrokerProvider create(ConnectionConfig c) { return null; }
+            public BrokerProvider create(String connectionId, ConnectionConfig c) { return null; }
         };
         return new ConnectionRegistry(props, List.of(f));
     }
@@ -156,7 +156,7 @@ class SaxoTokenRefresherTest {
         props.setConnections(Map.of("other", alpaca));
         BrokerProviderFactory f = new BrokerProviderFactory() {
             public String provider() { return "stub"; }
-            public BrokerProvider create(ConnectionConfig c) { return null; }
+            public BrokerProvider create(String connectionId, ConnectionConfig c) { return null; }
         };
         SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
 
@@ -222,5 +222,65 @@ class SaxoTokenRefresherTest {
         verify(oauth, times(1)).refresh(any(), any());
         assertThat(store.dead()).isFalse();
         assertThat(store.validAccessToken()).contains("acc-1");
+    }
+
+    // --- H7: CAS against the refresh token captured before the network call ---
+
+    @Test
+    void staleRefreshResultIsDiscardedWhenCallbackWonTheRace() {
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-0", 1200, "ref-0");
+        now.addAndGet(1_300_000L);                                  // access expired
+        SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+        when(oauth.refresh(any(), eq("ref-0"))).thenAnswer(invocation -> {
+            // simulate a concurrent /auth/saxo/callback landing fresh tokens mid-flight
+            store.update("acc-manual", 1200, "ref-manual");
+            return new SaxoOAuthClient.SaxoTokens("acc-stale", 1200, "ref-stale");
+        });
+
+        new SaxoTokenRefresher(registry(), stores, oauth).tick();
+
+        assertThat(store.refreshToken()).isEqualTo("ref-manual");
+        assertThat(store.validAccessToken()).contains("acc-manual");
+    }
+
+    @Test
+    void staleInvalidGrantDoesNotKillFreshlyAuthorizedSession() {
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-0", 1200, "ref-0");
+        now.addAndGet(1_300_000L);
+        SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+        when(oauth.refresh(any(), eq("ref-0"))).thenAnswer(invocation -> {
+            // a human re-authorized concurrently while the stale refresh (ref-0) was in flight
+            store.update("acc-manual", 1200, "ref-manual");
+            throw new SaxoOAuthClient.InvalidGrantException("rejected");
+        });
+        ConnectionRegistry registry = registry();
+
+        new SaxoTokenRefresher(registry, stores, oauth).tick();
+
+        assertThat(store.dead()).isFalse();
+        assertThat(store.refreshToken()).isEqualTo("ref-manual");
+        // markDead path must not touch probe status when CAS is stale
+        assertThat(registry.get("saxo-sim").orElseThrow().probeStatus().state()).isEqualTo("unknown");
+    }
+
+    // --- 401 (bad app credentials) is transient/config, not session death ---
+
+    @Test
+    void http401DoesNotMarkSessionDead() {
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-0", 1200, "ref-0");
+        now.addAndGet(1_300_000L);
+        SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+        when(oauth.refresh(any(), any())).thenThrow(
+                new IllegalStateException("saxo app credentials rejected (HTTP 401) — check app key/secret"));
+
+        new SaxoTokenRefresher(registry(), stores, oauth).tick();
+
+        assertThat(store.dead()).isFalse();
     }
 }

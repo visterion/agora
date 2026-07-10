@@ -45,7 +45,7 @@ class BrokerServiceTest {
         props.setConnections(conns);
         BrokerProviderFactory f = new BrokerProviderFactory() {
             public String provider() { return "stub"; }
-            public BrokerProvider create(ConnectionConfig cfg) {
+            public BrokerProvider create(String connectionId, ConnectionConfig cfg) {
                 return stub(cfg.getEnvironment() == ConnectionConfig.Environment.LIVE ? "acc-L" : "acc-P");
             }
         };
