@@ -11,7 +11,9 @@ import java.util.List;
 
 /** The two most recent fiscal-year values of a concept: current (t) and prior (t-1).
  *  {@code available} = both present; {@code hasCurrent} = at least the current year present.
- *  Durations use ~annual (350-380d) points; instants use point-in-time facts (periodStart null). */
+ *  Durations use ~annual (350-380d) points; instants use point-in-time facts
+ *  (periodStart null) tagged fp="FY" — quarterly 10-Q snapshots must not be
+ *  compared against fiscal-year durations. */
 public record AnnualFacts(BigDecimal current, BigDecimal prior, boolean available, boolean hasCurrent) {
 
     private static final long MIN = 350, MAX = 380;
@@ -24,7 +26,7 @@ public record AnnualFacts(BigDecimal current, BigDecimal prior, boolean availabl
                 .filter(p -> p.periodEnd() != null && p.value() != null)
                 .filter(p -> duration
                         ? p.periodStart() != null && annual(p.periodStart(), p.periodEnd())
-                        : p.periodStart() == null)
+                        : p.periodStart() == null && "FY".equals(p.fiscalPeriod()))
                 .sorted(Comparator.comparing(ConceptDatapoint::periodEnd).reversed())
                 .toList();
         LocalDate curEnd = null;
