@@ -65,7 +65,7 @@ public class SaxoTokenRefresher {
                 SaxoOAuthClient.SaxoTokens t = oauth.refresh(c.config(), inHand);
                 boolean applied = store.updateIfCurrent(inHand, t.accessToken(), t.expiresInSeconds(), t.refreshToken());
                 if (!applied) {
-                    log.info("Saxo connection '{}': stale refresh result discarded for '{}'", c.id(), inHand);
+                    log.info("Saxo connection '{}': stale refresh result discarded (concurrent re-auth won)", c.id());
                     continue;
                 }
                 c.setProbeStatus(ProbeStatus.ok(Instant.now()));
@@ -73,7 +73,7 @@ public class SaxoTokenRefresher {
             } catch (SaxoOAuthClient.InvalidGrantException e) {
                 boolean applied = store.markDeadIfCurrent(inHand, "refresh rejected");
                 if (!applied) {
-                    log.info("Saxo connection '{}': stale refresh result discarded for '{}'", c.id(), inHand);
+                    log.info("Saxo connection '{}': stale refresh result discarded (concurrent re-auth won)", c.id());
                     continue;
                 }
                 c.setProbeStatus(ProbeStatus.unreachable(Instant.now(),
@@ -81,8 +81,12 @@ public class SaxoTokenRefresher {
                 log.warn("Saxo connection '{}' refresh rejected — re-authorize via /auth/saxo/login?connection={}",
                         c.id(), c.id());
             } catch (Exception e) {
+                // Log the cause (SaxoOAuthClient categorises to "token endpoint HTTP 401",
+                // "saxo app credentials rejected", "token endpoint unreachable: ..." etc.) so a
+                // dead session is diagnosable — the Saxo token endpoint carries no secret in the
+                // URL (Basic-auth header), so the message is safe to log.
                 log.warn("Saxo connection '{}' token refresh failed (will retry): {}",
-                        c.id(), e.getClass().getSimpleName());
+                        c.id(), e.toString());
             }
         }
     }
