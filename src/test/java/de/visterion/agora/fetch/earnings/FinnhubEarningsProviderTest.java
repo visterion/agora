@@ -24,7 +24,7 @@ class FinnhubEarningsProviderTest {
     @Test void parsesEarningsRows() {
         wm.stubFor(get(urlPathEqualTo("/calendar/earnings"))
                 .withQueryParam("symbol", equalTo("AAPL"))
-                .withQueryParam("token", equalTo("k"))
+                .withHeader("X-Finnhub-Token", equalTo("k"))
                 .willReturn(okJson("""
                     {"earningsCalendar":[
                       {"symbol":"AAPL","date":"2025-05-01","epsActual":1.5,"epsEstimate":1.4,"revenueActual":95000,"revenueEstimate":94000}
@@ -35,6 +35,14 @@ class FinnhubEarningsProviderTest {
         assertThat(ev.get(0).symbol()).isEqualTo("AAPL");
         assertThat(ev.get(0).epsActual()).isEqualByComparingTo("1.5");
         assertThat(ev.get(0).epsSurprisePct()).isNotNull();
+    }
+
+    @Test void keyNeverSentAsQueryParam() {
+        wm.stubFor(get(urlPathEqualTo("/calendar/earnings"))
+                .withHeader("X-Finnhub-Token", equalTo("supersecret"))
+                .willReturn(okJson("{\"earningsCalendar\":[]}")));
+        p("supersecret").earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"));
+        wm.verify(getRequestedFor(urlPathEqualTo("/calendar/earnings")).withoutQueryParam("token"));
     }
 
     @Test void blankKeyThrowsUnavailable() {

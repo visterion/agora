@@ -1,7 +1,10 @@
 package de.visterion.agora.fetch.split;
 
 import de.visterion.agora.data.MarketDataException;
+import de.visterion.agora.data.ProviderErrors;
 import de.visterion.agora.fetch.finnhub.FinnhubClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -14,6 +17,8 @@ import java.util.List;
 @Component
 @Order(20)
 public class FinnhubSplitProvider implements SplitProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(FinnhubSplitProvider.class);
 
     private final FinnhubClient client;
 
@@ -32,13 +37,14 @@ public class FinnhubSplitProvider implements SplitProvider {
                             .queryParam("symbol", symbol)
                             .queryParam("from", "1990-01-01")
                             .queryParam("to", LocalDate.now().toString())
-                            .queryParam("token", client.token())
                             .build())
+                    .header(FinnhubClient.TOKEN_HEADER, client.token())
                     .retrieve()
                     .body(JsonNode.class);
         } catch (Exception e) {
+            log.warn("finnhub split request failed for {}", symbol, e);
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "finnhub split unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("finnhub split", e), e);
         }
         List<SplitEvent> out = new ArrayList<>();
         if (arr != null && arr.isArray()) {

@@ -24,7 +24,7 @@ class FundamentalsServiceTest {
         wm.stubFor(get(urlPathEqualTo("/stock/metric"))
                 .withQueryParam("symbol", equalTo("AAPL"))
                 .withQueryParam("metric", equalTo("all"))
-                .withQueryParam("token", equalTo("k"))
+                .withHeader("X-Finnhub-Token", equalTo("k"))
                 .willReturn(okJson("""
                     {"metric":{"peTTM":28.5,"52WeekHigh":199.6,"roaTTM":0.28},"metricType":"all","symbol":"AAPL"}
                     """)));

@@ -26,7 +26,7 @@ class EarningsEstimatesServiceTest {
     @Test void parsesEarnings() {
         wm.stubFor(get(urlPathEqualTo("/stock/earnings"))
             .withQueryParam("symbol", equalTo("AAPL"))
-            .withQueryParam("token", equalTo("k"))
+            .withHeader("X-Finnhub-Token", equalTo("k"))
             .willReturn(okJson("""
                 [{"period":"2026-03-31","actual":1.5,"estimate":1.4,"surprise":0.1,"surprisePercent":7.14},
                  {"period":"2025-12-31","actual":2.1,"estimate":2.2,"surprise":-0.1,"surprisePercent":-4.5}]

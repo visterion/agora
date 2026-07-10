@@ -1,7 +1,10 @@
 package de.visterion.agora.fetch.finnhub;
 
 import de.visterion.agora.data.MarketDataException;
+import de.visterion.agora.data.ProviderErrors;
 import de.visterion.agora.data.TtlCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -15,6 +18,8 @@ import java.util.function.LongSupplier;
 /** Earnings surprises (actual/estimate/surprise) via Finnhub, cached (fundamentals TTL). */
 @Component
 public class EarningsEstimatesService {
+
+    private static final Logger log = LoggerFactory.getLogger(EarningsEstimatesService.class);
 
     private final FinnhubClient client;
     private final TtlCache<String, List<EarningsEstimate>> cache;
@@ -42,13 +47,14 @@ public class EarningsEstimatesService {
             arr = client.http().get()
                     .uri(uri -> uri.path("/stock/earnings")
                             .queryParam("symbol", symbol)
-                            .queryParam("token", client.token())
                             .build())
+                    .header(FinnhubClient.TOKEN_HEADER, client.token())
                     .retrieve()
                     .body(JsonNode.class);
         } catch (Exception e) {
+            log.warn("finnhub earnings-estimates request failed for {}", symbol, e);
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "finnhub earnings unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("finnhub earnings-estimates", e), e);
         }
         if (arr == null || !arr.isArray())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "empty earnings body", null);

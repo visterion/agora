@@ -1,7 +1,10 @@
 package de.visterion.agora.fetch.finnhub;
 
 import de.visterion.agora.data.MarketDataException;
+import de.visterion.agora.data.ProviderErrors;
 import de.visterion.agora.data.TtlCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -12,6 +15,8 @@ import java.util.function.LongSupplier;
 /** Company profile for a symbol via Finnhub /stock/profile2 (whole object passthrough), cached per-family. */
 @Component
 public class ProfileService {
+
+    private static final Logger log = LoggerFactory.getLogger(ProfileService.class);
 
     private final FinnhubClient client;
     private final TtlCache<String, Profile> cache;
@@ -39,13 +44,14 @@ public class ProfileService {
             body = client.http().get()
                     .uri(uri -> uri.path("/stock/profile2")
                             .queryParam("symbol", symbol)
-                            .queryParam("token", client.token())
                             .build())
+                    .header(FinnhubClient.TOKEN_HEADER, client.token())
                     .retrieve()
                     .body(JsonNode.class);
         } catch (Exception e) {
+            log.warn("finnhub profile request failed for {}", symbol, e);
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "finnhub profile unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("finnhub profile", e), e);
         }
         if (body == null || !body.isObject() || body.isEmpty())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "no profile for " + symbol, null);

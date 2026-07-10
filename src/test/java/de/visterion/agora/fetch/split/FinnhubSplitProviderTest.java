@@ -43,6 +43,14 @@ class FinnhubSplitProviderTest {
         assertThat(provider("k").splits("NVDA")).hasSize(1);
     }
 
+    @Test void keyNeverSentAsQueryParam() {
+        wm.stubFor(get(urlPathEqualTo("/stock/split"))
+            .withHeader("X-Finnhub-Token", equalTo("supersecret"))
+            .willReturn(okJson("[]")));
+        provider("supersecret").splits("NVDA");
+        wm.verify(getRequestedFor(urlPathEqualTo("/stock/split")).withoutQueryParam("token"));
+    }
+
     @Test void blankKeyThrows() {
         assertThatThrownBy(() -> provider("").splits("NVDA")).isInstanceOf(MarketDataException.class);
     }

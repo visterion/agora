@@ -22,7 +22,7 @@ class FinnhubMarketDataProviderTest {
     @Test void quoteParsesCurrentAndPercent() {
         wm.stubFor(get(urlPathEqualTo("/quote"))
                 .withQueryParam("symbol", equalTo("AAPL"))
-                .withQueryParam("token", equalTo("k"))
+                .withHeader("X-Finnhub-Token", equalTo("k"))
                 .willReturn(okJson("""
                     {"c":190.5,"d":2.4,"dp":1.27,"h":191.0,"l":188.0,"o":188.5,"pc":188.1}
                     """)));
@@ -30,6 +30,31 @@ class FinnhubMarketDataProviderTest {
         assertThat(q.price()).isEqualByComparingTo("190.5");
         assertThat(q.dayChangePercent()).isEqualByComparingTo("1.27");
         assertThat(q.currency()).isEqualTo("USD");
+    }
+
+    // H8: the key must ride as a header, never as a `token=` query param (query params end up
+    // embedded in ResourceAccessException messages on I/O failure).
+    @Test void keyNeverSentAsQueryParam() {
+        wm.stubFor(get(urlPathEqualTo("/quote"))
+                .withHeader("X-Finnhub-Token", equalTo("supersecret"))
+                .willReturn(okJson("""
+                    {"c":190.5,"d":2.4,"dp":1.27}
+                    """)));
+        withKey("supersecret").quote("AAPL");
+        wm.verify(getRequestedFor(urlPathEqualTo("/quote")).withoutQueryParam("token"));
+    }
+
+    // H8b: a transport-layer failure (e.g. a ResourceAccessException wrapping a timeout) must not
+    // leak the request URL or the API key into the client-facing MarketDataException message.
+    @Test void transportFailureMessageDoesNotLeakUrlOrKey() {
+        wm.stubFor(get(urlPathEqualTo("/quote")).willReturn(okJson("{}").withFixedDelay(2_000)));
+        var fast = new FinnhubMarketDataProvider(wm.baseUrl(), "supersecretkey123", 200L);
+        assertThatThrownBy(() -> fast.quote("AAPL"))
+                .isInstanceOfSatisfying(MarketDataException.class, e -> {
+                    assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE);
+                    assertThat(e.getMessage()).doesNotContain("supersecretkey123");
+                    assertThat(e.getMessage().toLowerCase()).doesNotContain("http");
+                });
     }
 
     @Test void zeroCloseThrowsNotFound() {
