@@ -1,6 +1,8 @@
 package de.visterion.agora.tools;
 
 import de.visterion.agora.tool.AgoraTool;
+import de.visterion.agora.tool.ToolParams;
+import de.visterion.agora.tool.ToolParams.InvalidArgumentException;
 import de.visterion.agora.tool.ToolResult;
 import de.visterion.agora.trading.BrokerException;
 import de.visterion.agora.trading.BrokerService;
@@ -45,36 +47,39 @@ public class ModifyBracketTool implements AgoraTool {
 
     @Override
     public ToolResult call(JsonNode args) {
-        if (args == null || !args.hasNonNull("connection"))
-            return ToolResult.unavailable("missing required argument: connection");
-        String connection = args.get("connection").asString();
-        if (!args.hasNonNull("orderId"))
-            return ToolResult.unavailable("missing required argument: orderId");
+        String connection;
+        String orderId;
+        BigDecimal stop;
+        BigDecimal target;
+        try {
+            connection = ToolParams.requiredString(args, "connection");
+            orderId = ToolParams.requiredString(args, "orderId");
+            stop = ToolParams.optionalDecimal(args, "stop");
+            target = ToolParams.optionalDecimal(args, "target");
+        } catch (InvalidArgumentException e) {
+            return ToolResult.unavailable(e.getMessage());
+        }
 
-        String orderId = args.get("orderId").asString();
-        BigDecimal stop = safeDecimal(args, "stop");
-        BigDecimal target = safeDecimal(args, "target");
+        if (stop != null && stop.signum() <= 0)
+            return ToolResult.unavailable("stop must be positive");
+        if (target != null && target.signum() <= 0)
+            return ToolResult.unavailable("target must be positive");
 
         if (stop == null && target == null)
             return ToolResult.unavailable("must provide at least one of: stop, target");
 
-        if (!args.hasNonNull("symbol"))
-            return ToolResult.unavailable("missing required argument: symbol");
-        String symbol = args.get("symbol").asString();
+        String symbol;
+        try {
+            symbol = ToolParams.requiredString(args, "symbol");
+        } catch (InvalidArgumentException e) {
+            return ToolResult.unavailable(e.getMessage());
+        }
 
         try {
             OrderResult r = broker.modifyBracket(connection, orderId, symbol, stop, target);
             return mapResult(r);
         } catch (BrokerException e) {
             return ToolResult.unavailable(e.getMessage());
-        }
-    }
-
-    private BigDecimal safeDecimal(JsonNode args, String field) {
-        try {
-            return args.hasNonNull(field) ? args.get(field).decimalValue() : null;
-        } catch (Exception e) {
-            return null;
         }
     }
 
