@@ -246,6 +246,37 @@ class SaxoTokenRefresherTest {
     }
 
     @Test
+    void staleDiscardNeverLogsTheRefreshToken() {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(SaxoTokenRefresher.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+            SaxoTokenStore store = stores.forConnection("saxo-sim");
+            store.update("acc-0", 1200, "ref-secret-0");
+            now.addAndGet(1_300_000L);
+            SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+            when(oauth.refresh(any(), eq("ref-secret-0"))).thenAnswer(invocation -> {
+                store.update("acc-manual", 1200, "ref-manual");   // concurrent callback wins the CAS
+                return new SaxoOAuthClient.SaxoTokens("acc-stale", 1200, "ref-stale");
+            });
+
+            new SaxoTokenRefresher(registry(), stores, oauth).tick();
+
+            String logs = appender.list.stream()
+                    .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            assertThat(logs).contains("stale refresh result discarded");
+            assertThat(logs).doesNotContain("ref-secret-0");   // the refresh token must never reach the log
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
     void staleInvalidGrantDoesNotKillFreshlyAuthorizedSession() {
         SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
         SaxoTokenStore store = stores.forConnection("saxo-sim");
