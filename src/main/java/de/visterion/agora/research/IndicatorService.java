@@ -2,6 +2,7 @@ package de.visterion.agora.research;
 
 import de.visterion.agora.data.OhlcBar;
 import org.ta4j.core.BarSeries;
+import org.ta4j.core.indicators.ATRIndicator;
 import org.ta4j.core.indicators.averages.SMAIndicator;
 import org.ta4j.core.indicators.helpers.ClosePriceIndicator;
 import org.ta4j.core.indicators.helpers.HighPriceIndicator;
@@ -21,8 +22,11 @@ import java.util.List;
  * and 52-week high/low range. Backed by ta4j primitives (see {@code Ta4jBars}).
  * All coupling to order management, sizing, or time-in-trade is excluded by design.</p>
  *
- * <p>ATR = simple SMA of the last {@code atrPeriod} True Range values.
- * MA names are {@code maFast}/{@code maSlow} with configurable periods.</p>
+ * <p>ATR = simple SMA of the last {@code atrPeriod} True Range values. Chandelier stop uses a
+ * separately computed Wilder-smoothed (MMA) ATR via ta4j's {@code ATRIndicator} — NOT the
+ * SMA-based {@code atr} value above (research low (h); kept in sync with
+ * {@code BuiltinIndicators.chandelierStop()}). MA names are {@code maFast}/{@code maSlow}
+ * with configurable periods.</p>
  *
  * <p>This class is pure Java — no Spring, no database dependencies.</p>
  */
@@ -94,14 +98,20 @@ public class IndicatorService {
             atr = atrIndicator.getValue(end).bigDecimalValue();
         }
 
-        // --- Chandelier stop = highestHigh(last atrPeriod bars) - atrMultiple * atr ---
+        // --- Chandelier stop = highestHigh(last atrPeriod bars) - atrMultiple * Wilder-ATR ---
+        // Uses Wilder-smoothed (MMA) ATR via ta4j's ATRIndicator, NOT the SMA-of-TR `atr` value
+        // above — same algorithm as BuiltinIndicators.chandelierStop() (research low (h)), kept
+        // in sync so the catalog entry and this consumer path agree (parity-guarded, see
+        // BuiltinIndicatorsParityTest).
         BigDecimal chandelierStop = null;
         boolean chandelierBreached = false;
         if (atrAvailable) {
             HighestValueIndicator highestHigh =
                     new HighestValueIndicator(new HighPriceIndicator(series), params.atrPeriod());
             BigDecimal hh = highestHigh.getValue(end).bigDecimalValue();
-            chandelierStop = hh.subtract(params.atrMultiple().multiply(atr, MC));
+            BigDecimal wilderAtr = new ATRIndicator(series, params.atrPeriod())
+                    .getValue(end).bigDecimalValue();
+            chandelierStop = hh.subtract(params.atrMultiple().multiply(wilderAtr, MC));
             chandelierBreached = currentClose.compareTo(chandelierStop) < 0;
         }
 

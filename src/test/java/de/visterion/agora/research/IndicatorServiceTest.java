@@ -84,11 +84,16 @@ class IndicatorServiceTest {
      *
      * Mirrors Dracul's chandelierBreachWhenCloseBelowStop.
      *
-     * Math with atrPeriod=4, atrMultiple=3.0 (custom params to avoid stop==close degeneracy):
-     *   bars: flat(100)×4 + crash(close=50, high=100, low=50)
-     *   TR[1]=TR[2]=TR[3]=0, TR[4]: hl=50, hpc=0, lpc=50 → TR=50
-     *   ATR(period=4) = (0+0+0+50)/4 = 12.5
-     *   highestHigh(last 4 bars: indices 1..4) = 100
+     * Math with atrPeriod=4, atrMultiple=3.0 (custom params to avoid stop==close degeneracy).
+     * chandelierStop now uses Wilder-smoothed (MMA) ATR (research low (h)), not SMA-of-TR — see
+     * IndicatorService.compute(). 8 leading flat bars (rather than the old 4) give the Wilder
+     * recursion enough history that it isn't still returning the raw, unconverged seed value at
+     * the point of the crash bar; TR is 0 for every flat bar, so the Wilder-smoothed ATR over the
+     * last 4 TR values here happens to coincide with the plain average (0+0+0+50)/4 = 12.5:
+     *   bars: flat(100)×8 + crash(close=50, high=100, low=50)
+     *   TR[1..7]=0, TR[8]: hl=50, hpc=0, lpc=50 → TR=50
+     *   Wilder-ATR(period=4) at end = 12.5 (verified against ta4j's ATRIndicator directly)
+     *   highestHigh(last 4 bars) = 100
      *   chandelierStop = 100 − 3×12.5 = 62.5
      *   currentClose=50 < 62.5 → chandelierBreached=true
      */
@@ -96,8 +101,8 @@ class IndicatorServiceTest {
     void chandelierBreachWhenCloseBelowStop() {
         var params = new IndicatorService.Params(4, new BigDecimal("3.0"), 2, 5, 5);
         var bars = new ArrayList<OhlcBar>();
-        for (int i = 0; i < 4; i++) bars.add(flat(i, 100));
-        bars.add(new OhlcBar(LocalDate.of(2025, 1, 1).plusDays(4),
+        for (int i = 0; i < 8; i++) bars.add(flat(i, 100));
+        bars.add(new OhlcBar(LocalDate.of(2025, 1, 1).plusDays(8),
                 new BigDecimal("50"), new BigDecimal("100"), new BigDecimal("50"),
                 new BigDecimal("50"), 1000));
         var ind = svc.compute(bars, params);

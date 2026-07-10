@@ -106,16 +106,19 @@ public class IndicatorExpressionResolver {
 
         String label = explicitLabel != null ? explicitLabel
                 : subLabel == null ? name : name + "(" + subLabel + ")";
-        // research low (c): composition must be additive, not max. The outer indicator needs
-        // a full window of *stable* inner values, not just the inner's first stable point — so
-        // outer(inner) requires innerMin + outerWindow - 1 bars in total. Every minBars formula
-        // in this catalog follows the "1 + rawWindow" convention (rawWindow = the param(s) that
-        // actually drive convergence, e.g. period, possibly x4 for recursive filters), so
-        // ownMinBars - 1 recovers rawWindow, and subMinBars + (ownMinBars - 1) - 1 is the total —
-        // i.e. subMinBars + ownMinBars - 2. subMinBars is 0 for a plain price-source input
-        // ('of' omitted or a price source string), which keeps the old (non-additive) behavior.
+        // research low (c) / H3 follow-up: composition must be additive, not max. The outer
+        // indicator needs a full window of `outerRawWindow` *stable* inner values, not just the
+        // inner's first stable point. The inner's first stable point sits at index
+        // subMinBars - 1, so the outer's window (starting there) completes at
+        // subMinBars - 1 + outerRawWindow total bars. def.rawWindow() supplies outerRawWindow
+        // directly (defaults to ownMinBars - 1 for the common "1 + rawWindow" indicators, but is
+        // explicit for outers like bollinger/ma_cross whose minBars has no "+1" — see
+        // IndicatorDef). subMinBars is 0 for a plain price-source input ('of' omitted or a price
+        // source string), which keeps the old (non-additive) behavior.
         int ownMinBars = def.minBars().applyAsInt(params);
-        int minBars = subMinBars > 0 ? Math.max(1, subMinBars + ownMinBars - 2) : ownMinBars;
+        int minBars = subMinBars > 0
+                ? Math.max(1, subMinBars - 1 + def.rawWindow().applyAsInt(params))
+                : ownMinBars;
         return new Resolved(label, def, outputs, minBars);
     }
 

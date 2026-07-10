@@ -229,6 +229,35 @@ class GetIndicatorsToolTest {
         assertThat(v).isGreaterThan(BigDecimal.ZERO).isLessThan(new BigDecimal("100"));
     }
 
+    // -------------------------------------------------------------------------
+    // H3 follow-up (Task 8 review finding 1): macd's signal line is an EMAIndicator
+    // (recursive filter) -> must not report garbage as "available" at the old exact
+    // minBars (slow+signal=35).
+    // -------------------------------------------------------------------------
+
+    @Test
+    void macdUnavailableAtOldMinBarsThirtyFive() {
+        ObjectNode args = mapper.createObjectNode().put("symbol", "AAPL");
+        args.putArray("indicators").add("macd");
+        var r = tool(rising(35)).call(args);
+        JsonNode macd = value(r.output(), "macd");
+        assertThat(macd.get("available").asBoolean()).isFalse();
+        assertThat(macd.get("error").asString()).contains("insufficient history");
+    }
+
+    @Test
+    void macdAvailableAndNonDegenerateAtConvergenceSafeMinBars() {
+        ObjectNode args = mapper.createObjectNode().put("symbol", "AAPL");
+        args.putArray("indicators").add("macd");
+        // convergence-safe minBars for macd(12,26,9) = 1 + 4*(26+9) = 141
+        var bars = mixed(150);
+        var r = tool(bars).call(args);
+        JsonNode macd = value(r.output(), "macd");
+        assertThat(macd.get("available").asBoolean()).isTrue();
+        // macd has multiple outputs (macd/signal/histogram) -> "value" is an object
+        assertThat(macd.get("value").get("macd").decimalValue().doubleValue()).isFinite();
+    }
+
     /** N bars with an up/down zig-zag so RSI reflects mixed gains and losses. */
     private List<OhlcBar> mixed(int n) {
         List<OhlcBar> bars = new ArrayList<>();
