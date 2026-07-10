@@ -26,7 +26,7 @@ class NewsServiceTest {
     @Test void parsesHeadlines() {
         wm.stubFor(get(urlPathEqualTo("/company-news"))
                 .withQueryParam("symbol", equalTo("AAPL"))
-                .withQueryParam("token", equalTo("k"))
+                .withHeader("X-Finnhub-Token", equalTo("k"))
                 .willReturn(okJson("""
                     [{"headline":"Apple beats","summary":"strong quarter","source":"Reuters","datetime":1749600000,"url":"http://x/1"},
                      {"headline":"","summary":"skip me","source":"X","datetime":1749600001,"url":"http://x/2"}]
@@ -47,6 +47,16 @@ class NewsServiceTest {
         wm.stubFor(get(urlPathEqualTo("/company-news")).willReturn(aResponse().withStatus(500)));
         assertThatThrownBy(() -> svc("k").companyNews("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-01-08")))
                 .isInstanceOf(MarketDataException.class);
+    }
+
+    @Test void missingDatetimeYieldsNullNotEpochZero() {
+        wm.stubFor(get(urlPathEqualTo("/company-news"))
+                .willReturn(okJson("""
+                    [{"headline":"Apple beats","summary":"s","source":"Reuters","url":"http://x/1"}]
+                    """)));
+        List<NewsItem> news = svc("k").companyNews("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-01-08"));
+        assertThat(news).hasSize(1);
+        assertThat(news.get(0).datetime()).isNull();
     }
 
     @Test void cachesSuccess() {

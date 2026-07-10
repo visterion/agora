@@ -48,6 +48,44 @@ class AlpacaSplitProviderTest {
         assertThat(provider(true).splits("NVDA")).isEmpty();
     }
 
+    @Test void followsNextPageToken_mergesAllPages() {
+        wm.stubFor(get(urlPathEqualTo("/v1beta1/corporate-actions"))
+            .withQueryParam("symbols", equalTo("NVDA"))
+            .withQueryParam("page_token", com.github.tomakehurst.wiremock.client.WireMock.absent())
+            .willReturn(okJson("""
+                {"corporate_actions":{"forward_splits":[
+                  {"ex_date":"2000-06-27","new_rate":2,"old_rate":1,"symbol":"NVDA"}
+                ]},"next_page_token":"abc123"}
+                """)));
+        wm.stubFor(get(urlPathEqualTo("/v1beta1/corporate-actions"))
+            .withQueryParam("symbols", equalTo("NVDA"))
+            .withQueryParam("page_token", equalTo("abc123"))
+            .willReturn(okJson("""
+                {"corporate_actions":{"forward_splits":[
+                  {"ex_date":"2024-06-10","new_rate":10,"old_rate":1,"symbol":"NVDA"}
+                ]}}
+                """)));
+        List<SplitEvent> s = provider(true).splits("NVDA");
+        assertThat(s).hasSize(2);
+        assertThat(s).extracting(e -> e.date().toString()).containsExactlyInAnyOrder("2000-06-27", "2024-06-10");
+    }
+
+    @Test void cyclicPageTokenTerminatesAtPageCap() {
+        // Pathological upstream: every page (including the first) returns the same
+        // next_page_token, forming an infinite cycle. Without a bounded guard this would
+        // spin forever; assert it terminates and stops fetching after the page cap (50).
+        wm.stubFor(get(urlPathEqualTo("/v1beta1/corporate-actions"))
+            .withQueryParam("symbols", equalTo("NVDA"))
+            .willReturn(okJson("""
+                {"corporate_actions":{"forward_splits":[
+                  {"ex_date":"2024-06-10","new_rate":2,"old_rate":1,"symbol":"NVDA"}
+                ]},"next_page_token":"cycle"}
+                """)));
+        List<SplitEvent> s = provider(true).splits("NVDA");
+        assertThat(s).hasSize(50);
+        wm.verify(50, getRequestedFor(urlPathEqualTo("/v1beta1/corporate-actions")));
+    }
+
     @Test void notConfigured_throws() {
         assertThatThrownBy(() -> provider(false).splits("NVDA")).isInstanceOf(MarketDataException.class);
     }

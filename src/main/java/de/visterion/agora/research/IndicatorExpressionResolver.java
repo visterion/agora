@@ -106,7 +106,19 @@ public class IndicatorExpressionResolver {
 
         String label = explicitLabel != null ? explicitLabel
                 : subLabel == null ? name : name + "(" + subLabel + ")";
-        int minBars = Math.max(def.minBars().applyAsInt(params), subMinBars);
+        // research low (c) / H3 follow-up: composition must be additive, not max. The outer
+        // indicator needs a full window of `outerRawWindow` *stable* inner values, not just the
+        // inner's first stable point. The inner's first stable point sits at index
+        // subMinBars - 1, so the outer's window (starting there) completes at
+        // subMinBars - 1 + outerRawWindow total bars. def.rawWindow() supplies outerRawWindow
+        // directly (defaults to ownMinBars - 1 for the common "1 + rawWindow" indicators, but is
+        // explicit for outers like bollinger/ma_cross whose minBars has no "+1" — see
+        // IndicatorDef). subMinBars is 0 for a plain price-source input ('of' omitted or a price
+        // source string), which keeps the old (non-additive) behavior.
+        int ownMinBars = def.minBars().applyAsInt(params);
+        int minBars = subMinBars > 0
+                ? Math.max(1, subMinBars - 1 + def.rawWindow().applyAsInt(params))
+                : ownMinBars;
         return new Resolved(label, def, outputs, minBars);
     }
 

@@ -47,4 +47,30 @@ class Ta4jBarsTest {
         assertThatThrownBy(() -> Ta4jBars.last(close))
                 .isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test void duplicateDateRowsKeepLastAndDoNotThrow() {
+        var bars = List.of(
+                bar("2025-01-02", "10.00", "11.00", "9.50", "10.50", 1000),
+                bar("2025-01-02", "20.00", "21.00", "19.50", "20.50", 2000), // same date, later in list wins
+                bar("2025-01-03", "21.00", "22.00", "20.50", "21.50", 3000));
+        BarSeries series = Ta4jBars.toSeries(bars);
+        assertThat(series.getBarCount()).isEqualTo(2);
+        var close = new ClosePriceIndicator(series);
+        // first (surviving) bar is the second 2025-01-02 row (last-wins)
+        assertThat(close.getValue(0).bigDecimalValue()).isEqualByComparingTo("20.50");
+        assertThat(close.getValue(1).bigDecimalValue()).isEqualByComparingTo("21.50");
+    }
+
+    @Test void nonAscendingProviderDatesAreSorted() {
+        var bars = List.of(
+                bar("2025-01-03", "12.00", "13.00", "11.50", "12.50", 1000),
+                bar("2025-01-01", "10.00", "11.00", "9.50", "10.50", 1000),
+                bar("2025-01-02", "11.00", "12.00", "10.50", "11.50", 1000));
+        BarSeries series = Ta4jBars.toSeries(bars);
+        assertThat(series.getBarCount()).isEqualTo(3);
+        var close = new ClosePriceIndicator(series);
+        assertThat(close.getValue(0).bigDecimalValue()).isEqualByComparingTo("10.50");
+        assertThat(close.getValue(1).bigDecimalValue()).isEqualByComparingTo("11.50");
+        assertThat(close.getValue(2).bigDecimalValue()).isEqualByComparingTo("12.50");
+    }
 }

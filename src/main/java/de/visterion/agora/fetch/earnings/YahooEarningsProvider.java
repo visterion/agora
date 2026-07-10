@@ -1,5 +1,6 @@
 package de.visterion.agora.fetch.earnings;
 
+import de.visterion.agora.data.DataHttp;
 import de.visterion.agora.data.MarketDataException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -11,8 +12,9 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
-import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -25,6 +27,11 @@ import java.util.List;
 @Order(10)
 public class YahooEarningsProvider implements EarningsProvider {
 
+    /** Yahoo's calendar listings are US-centric; the event date is the exchange-local (Eastern) calendar day. */
+    private static final ZoneId EXCHANGE_ZONE = ZoneId.of("America/New_York");
+    private static final int PAGE_SIZE = 100;
+    private static final int MAX_PAGES = 10;
+
     private final RestClient client;
 
     @Autowired
@@ -32,8 +39,7 @@ public class YahooEarningsProvider implements EarningsProvider {
             @Value("${agora.data.yahoo.base-url}") String baseUrl,
             @Value("${agora.data.yahoo.user-agent}") String userAgent,
             @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         this.client = RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl(baseUrl)
@@ -51,12 +57,44 @@ public class YahooEarningsProvider implements EarningsProvider {
 
     @Override
     public List<EarningsEvent> earnings(String symbol, LocalDate from, LocalDate to) {
+        boolean marketWide = symbol == null || symbol.isBlank();
+        String want = marketWide ? "" : symbol.toUpperCase();
+        List<EarningsEvent> out = new ArrayList<>();
+
+        // Busy calendar days can exceed one page; paginate by offset until the requested symbol
+        // is found, a short (last) page is returned, or the page cap is hit.
+        for (int page = 0; page < MAX_PAGES; page++) {
+            int offset = page * PAGE_SIZE;
+            JsonNode body = fetchPage(from, to, offset);
+
+            int rowCount = 0;
+            boolean found = false;
+            for (JsonNode row : body.path("rows")) {
+                rowCount++;
+                String ticker = row.path("ticker").asString("").toUpperCase();
+                if (ticker.isEmpty()) continue;
+                if (!marketWide && !ticker.equals(want)) continue;
+                LocalDate date = eventDate(row);
+                if (date == null) continue;
+                out.add(new EarningsEvent(ticker, date,
+                        dec(row, "epsestimate"), dec(row, "epsactual"), dec(row, "epssurprisepct"),
+                        null, null));
+                if (!marketWide) found = true;
+            }
+            if (found) break;
+            if (rowCount < PAGE_SIZE) break;
+        }
+        return out;
+    }
+
+    private JsonNode fetchPage(LocalDate from, LocalDate to, int offset) {
         JsonNode body;
         try {
             body = client.get()
                     .uri(uri -> uri.path("/v1/finance/calendar/earnings")
                             .queryParam("startdt", from.toString())
                             .queryParam("enddt", to.toString())
+                            .queryParam("offset", offset)
                             .build())
                     .retrieve()
                     .body(JsonNode.class);
@@ -69,27 +107,18 @@ public class YahooEarningsProvider implements EarningsProvider {
         }
         if (body == null)
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "empty earnings body", null);
+        return body;
+    }
 
-        boolean marketWide = symbol == null || symbol.isBlank();
-        String want = marketWide ? "" : symbol.toUpperCase();
-        List<EarningsEvent> out = new ArrayList<>();
-        for (JsonNode row : body.path("rows")) {
-            String ticker = row.path("ticker").asString("").toUpperCase();
-            if (ticker.isEmpty()) continue;
-            if (!marketWide && !ticker.equals(want)) continue;
-            String dt = row.path("startdatetime").asString("");
-            if (dt.length() < 10) continue;
-            LocalDate date;
-            try {
-                date = LocalDate.parse(dt.substring(0, 10));
-            } catch (Exception e) {
-                continue;
-            }
-            out.add(new EarningsEvent(ticker, date,
-                    dec(row, "epsestimate"), dec(row, "epsactual"), dec(row, "epssurprisepct"),
-                    null, null));
+    /** Event date in the exchange-local (Eastern) calendar day, not the raw UTC calendar day. */
+    private static LocalDate eventDate(JsonNode row) {
+        String dt = row.path("startdatetime").asString("");
+        if (dt.isEmpty()) return null;
+        try {
+            return Instant.parse(dt).atZone(EXCHANGE_ZONE).toLocalDate();
+        } catch (Exception e) {
+            return null;
         }
-        return out;
     }
 
     private static BigDecimal dec(JsonNode row, String field) {

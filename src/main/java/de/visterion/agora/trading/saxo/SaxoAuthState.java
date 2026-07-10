@@ -27,11 +27,11 @@ public class SaxoAuthState {
         long now = nowMillis.getAsLong();
         pending.entrySet().removeIf(e -> now > e.getValue().expiresAt());
 
-        // Hard cap: if at capacity, evict oldest expired entry (or arbitrary if none)
+        // Hard cap: reject the new issue rather than evict a still-live pending login —
+        // an unauthenticated login flood must never be able to deny a legitimate operator's
+        // in-flight authorization.
         if (pending.size() >= 1000) {
-            pending.entrySet().stream()
-                .min((e1, e2) -> Long.compare(e1.getValue().expiresAt(), e2.getValue().expiresAt()))
-                .ifPresent(e -> pending.remove(e.getKey()));
+            throw new IllegalStateException("too many pending authorizations");
         }
 
         byte[] b = new byte[16];

@@ -9,7 +9,6 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,8 +35,7 @@ public class IntradayService {
 
     IntradayService(String baseUrl, String userAgent, String interval, String range,
                     long ttlSeconds, long timeoutMs, LongSupplier now) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         this.client = RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl(baseUrl)
@@ -45,7 +43,8 @@ public class IntradayService {
                 .build();
         this.defaultInterval = interval;
         this.defaultRange = range;
-        this.cache = new TtlCache<>(ttlSeconds * 1000L, now);
+        // Keyed by symbol+interval+range; quote/ohlc-scale cardinality.
+        this.cache = new TtlCache<>(ttlSeconds * 1000L, 4096, now);
     }
 
     public List<IntradayBar> intraday(String symbol, String interval, String range) {
@@ -64,8 +63,11 @@ public class IntradayService {
                             .queryParam("range", rg).queryParam("interval", iv).build(symbol))
                     .retrieve().body(JsonNode.class);
         } catch (RestClientResponseException e) {
-            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "Yahoo intraday HTTP " + e.getStatusCode(), e);
+            // 404 means the symbol doesn't exist at Yahoo — NOT_FOUND, not UNAVAILABLE (lows).
+            var kind = e.getStatusCode().value() == 404
+                    ? MarketDataException.Kind.NOT_FOUND
+                    : MarketDataException.Kind.UNAVAILABLE;
+            throw new MarketDataException(kind, "Yahoo intraday HTTP " + e.getStatusCode(), e);
         } catch (Exception e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "Yahoo intraday unreachable: " + e.getMessage(), e);
@@ -82,10 +84,13 @@ public class IntradayService {
         List<IntradayBar> out = new ArrayList<>();
         if (ts.isArray()) {
             for (int i = 0; i < ts.size(); i++) {
-                JsonNode c = closes.path(i);
-                if (c.isNull() || c.isMissingNode()) continue;
+                // H2: any missing O/H/L/C makes the bar unusable — skip it instead of
+                // fabricating a ZERO that would corrupt low/high-based calculations.
+                if (isMissing(opens, i) || isMissing(highs, i) || isMissing(lows, i) || isMissing(closes, i)) {
+                    continue;
+                }
                 out.add(new IntradayBar(Instant.ofEpochSecond(ts.get(i).asLong()),
-                        bd(opens.path(i)), bd(highs.path(i)), bd(lows.path(i)), bd(c),
+                        bd(opens.path(i)), bd(highs.path(i)), bd(lows.path(i)), bd(closes.path(i)),
                         vols.path(i).asLong(0)));
             }
         }
@@ -101,5 +106,10 @@ public class IntradayService {
     private static BigDecimal bd(JsonNode n) {
         if (n == null || n.isNull() || n.isMissingNode()) return BigDecimal.ZERO;
         try { return new BigDecimal(n.asString("0")); } catch (NumberFormatException e) { return BigDecimal.ZERO; }
+    }
+
+    private static boolean isMissing(JsonNode array, int i) {
+        JsonNode n = array.path(i);
+        return n.isNull() || n.isMissingNode();
     }
 }

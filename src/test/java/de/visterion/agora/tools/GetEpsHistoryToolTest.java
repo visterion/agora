@@ -90,6 +90,20 @@ class GetEpsHistoryToolTest {
         assertThat(r.available()).isTrue();
         assertThat(r.output().path("adjusted").asBoolean()).isFalse();
         assertThat(r.output().path("eps").get(0).path("value").decimalValue()).isEqualByComparingTo("6.13");
+        assertThat(r.output().path("splitAdjustment").asString()).isEqualTo("unavailable");
+    }
+
+    @Test void adjusted_cikOnly_notesUnavailable() {
+        EdgarService edgar = mock(EdgarService.class);
+        SplitService splits = mock(SplitService.class);
+        when(edgar.epsHistory(null, "0000320193")).thenReturn(List.of(pt("2024-01-28", "6.13")));
+        var tool = new GetEpsHistoryTool(edgar, splits);
+        ObjectNode args = mapper.createObjectNode(); args.put("cik", "0000320193"); args.put("adjusted", true);
+        ToolResult r = tool.call(args);
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().path("adjusted").asBoolean()).isFalse();
+        assertThat(r.output().path("splitAdjustment").asString()).isEqualTo("unavailable");
+        verifyNoInteractions(splits);
     }
 
     @Test void default_isAsReported() {

@@ -1,6 +1,11 @@
 package de.visterion.agora.fetch.earnings;
 
+import de.visterion.agora.data.DataHttp;
 import de.visterion.agora.data.MarketDataException;
+import de.visterion.agora.data.ProviderErrors;
+import de.visterion.agora.fetch.finnhub.FinnhubClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
@@ -12,7 +17,6 @@ import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,6 +29,8 @@ import java.util.List;
 @Component
 @Order(0)
 public class FinnhubEarningsProvider implements EarningsProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(FinnhubEarningsProvider.class);
 
     private final RestClient client;
     private final String key;
@@ -39,8 +45,7 @@ public class FinnhubEarningsProvider implements EarningsProvider {
             @Value("${agora.data.finnhub.base-url}") String baseUrl,
             @Value("${agora.data.finnhub.key}") String key,
             @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         this.client = RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl(baseUrl)
@@ -67,19 +72,20 @@ public class FinnhubEarningsProvider implements EarningsProvider {
                     .uri(uri -> {
                         uri.path("/calendar/earnings")
                            .queryParam("from", from.toString())
-                           .queryParam("to", to.toString())
-                           .queryParam("token", key);
+                           .queryParam("to", to.toString());
                         if (!marketWide) uri.queryParam("symbol", symbol);
                         return uri.build();
                     })
+                    .header(FinnhubClient.TOKEN_HEADER, key)
                     .retrieve()
                     .body(JsonNode.class);
         } catch (RestClientResponseException e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "finnhub earnings HTTP " + e.getStatusCode(), e);
         } catch (Exception e) {
+            log.warn("finnhub earnings request failed for {}", symbol, e);
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "finnhub earnings unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("finnhub earnings", e), e);
         }
         if (body == null)
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "empty earnings body", null);

@@ -7,6 +7,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -35,7 +37,15 @@ public class LiveAccessGuard {
 
     public boolean hasLiveAccess() {
         String token = callerToken.get();
-        return token != null && liveTokens.contains(token);
+        if (token == null) return false;
+        byte[] candidate = token.getBytes(StandardCharsets.UTF_8);
+        boolean found = false;
+        for (String liveToken : liveTokens) {
+            if (MessageDigest.isEqual(liveToken.getBytes(StandardCharsets.UTF_8), candidate)) {
+                found = true;
+            }
+        }
+        return found;
     }
 
     /** Visibility: paper is visible to every trading caller; live only with live access. */

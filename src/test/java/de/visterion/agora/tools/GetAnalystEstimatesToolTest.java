@@ -24,6 +24,12 @@ class GetAnalystEstimatesToolTest {
         assertThat(r.output().get("recommendations").get(0).get("strongBuy").asInt()).isEqualTo(10);
     }
 
+    @Test void descriptionMentionsRecommendationCountsAndPointsToEarningsEstimates() {
+        String description = new GetAnalystEstimatesTool(Mockito.mock(EstimatesService.class)).description();
+        assertThat(description).containsIgnoringCase("recommendation");
+        assertThat(description).contains("get_earnings_estimates");
+    }
+
     @Test void missingSymbolUnavailable() {
         assertThat(new GetAnalystEstimatesTool(Mockito.mock(EstimatesService.class))
                 .call(mapper.createObjectNode()).available()).isFalse();

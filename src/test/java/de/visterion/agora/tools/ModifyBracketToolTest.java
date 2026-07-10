@@ -6,6 +6,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.*;
 
 class ModifyBracketToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
@@ -91,6 +92,31 @@ class ModifyBracketToolTest {
         var r = tool(accepting()).call(mapper.createObjectNode().put("orderId","oid-1").put("stop",95).put("target",110));
         assertThat(r.available()).isFalse();
         assertThat(r.error()).contains("connection");
+    }
+
+    @Test void malformedStopIsUnavailableAndBrokerNeverCalled() {
+        BrokerProvider broker = mock(BrokerProvider.class);
+        var r = tool(broker).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("orderId", "oid-1").put("symbol", "AAPL").put("stop", "oops"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("invalid numeric argument: stop");
+        verify(broker, never()).modifyBracket(any(), any(), any(), any());
+    }
+
+    @Test void negativeStopIsUnavailableAndBrokerNeverCalled() {
+        BrokerProvider broker = mock(BrokerProvider.class);
+        var r = tool(broker).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("orderId", "oid-1").put("symbol", "AAPL").put("stop", -5));
+        assertThat(r.available()).isFalse();
+        verify(broker, never()).modifyBracket(any(), any(), any(), any());
+    }
+
+    @Test void zeroTargetIsUnavailableAndBrokerNeverCalled() {
+        BrokerProvider broker = mock(BrokerProvider.class);
+        var r = tool(broker).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("orderId", "oid-1").put("symbol", "AAPL").put("target", 0));
+        assertThat(r.available()).isFalse();
+        verify(broker, never()).modifyBracket(any(), any(), any(), any());
     }
 
     static class StubBroker implements BrokerProvider {

@@ -54,6 +54,20 @@ class MarketDataServiceTest {
     }
 
     @Test
+    void nonMarketDataExceptionFromOneProviderDoesNotAbortChain() {
+        // M-D1: a provider throwing a plain RuntimeException (e.g. NPE) must not abort the
+        // fallback chain — the next provider should still be consulted.
+        MarketDataProvider npeProvider = new MarketDataProvider() {
+            public String name() { return "broken"; }
+            public Quote quote(String symbol) { throw new NullPointerException("boom"); }
+            public List<OhlcBar> ohlc(String symbol, int days) { throw new NullPointerException("boom"); }
+        };
+        var svc = new MarketDataService(List.of(npeProvider, ok("b")), 1000, () -> 0L);
+        assertThat(svc.quote("AAPL").price()).isEqualByComparingTo("10.00");
+        assertThat(svc.ohlc("AAPL", 5)).hasSize(1);
+    }
+
+    @Test
     void quotesOmitsOnlyTheFailedSymbol() {
         // Provider succeeds for "AAPL" but throws UNAVAILABLE for "BAD"
         MarketDataProvider provider = new MarketDataProvider() {

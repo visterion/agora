@@ -22,7 +22,11 @@ public class SaxoOAuthClient {
 
     public record SaxoTokens(String accessToken, long expiresInSeconds, String refreshToken) {}
 
-    /** Refresh/auth code definitively rejected (HTTP 400/401) — re-auth required. */
+    /**
+     * Refresh/auth code definitively rejected (HTTP 400) — re-auth required. Distinct from
+     * HTTP 401 (bad app key/secret on the Basic-Auth header of this request), which is a
+     * transient/config problem, not session death — see {@link #post}.
+     */
     public static class InvalidGrantException extends RuntimeException {
         public InvalidGrantException(String message) { super(message); }
     }
@@ -46,7 +50,7 @@ public class SaxoOAuthClient {
         form.add("grant_type", "authorization_code");
         form.add("code", code);
         String redirect = cfg.getExtra().get("redirect-uri");
-        if (redirect != null) form.add("redirect_uri", redirect);
+        if (redirect != null && !redirect.isBlank()) form.add("redirect_uri", redirect);
         return post(cfg, form);
     }
 
@@ -75,8 +79,16 @@ public class SaxoOAuthClient {
                     n.path("refresh_token").asString(null));
         } catch (RestClientResponseException e) {
             int status = e.getStatusCode().value();
-            if (status == 400 || status == 401) {
+            if (status == 400) {
                 throw new InvalidGrantException("token grant rejected (HTTP " + status + ")");
+            }
+            if (status == 401) {
+                // Bad app key/secret (Basic Auth on this same request), not a bad grant —
+                // the refresh/auth-code token is still fine, so this must NOT be treated as
+                // session death like InvalidGrantException. It's a transient/config problem:
+                // retry on the next tick until the app credentials are fixed.
+                throw new IllegalStateException(
+                        "saxo app credentials rejected (HTTP 401) — check app key/secret");
             }
             throw new IllegalStateException("token endpoint HTTP " + status, e);
         } catch (ResourceAccessException e) {

@@ -23,9 +23,9 @@ class GetForm4TransactionsToolTest {
 
     @Test void returnsTransactions() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.form4Transactions(any(), any(), anyInt())).thenReturn(List.of(
+        when(svc.form4Transactions(any(), any(), anyInt())).thenReturn(new EdgarSearchService.Form4Result(List.of(
                 new Form4Transaction("AAPL", "Cook Timothy", "CEO", LocalDate.parse("2025-05-05"),
-                        new BigDecimal("1000"), new BigDecimal("190000"), "P")));
+                        new BigDecimal("1000"), new BigDecimal("190000"), "P", "A", "4")), false));
         var r = new GetForm4TransactionsTool(svc).call(mapper.createObjectNode());
         assertThat(r.available()).isTrue();
         var t = r.output().get("transactions").get(0);
@@ -36,6 +36,18 @@ class GetForm4TransactionsToolTest {
         assertThat(t.get("shares").decimalValue()).isEqualByComparingTo("1000");
         assertThat(t.get("dollarValue").decimalValue()).isEqualByComparingTo("190000");
         assertThat(t.get("code").asString()).isEqualTo("P");
+        assertThat(t.get("acquiredDisposedCode").asString()).isEqualTo("A");
+        assertThat(t.get("form").asString()).isEqualTo("4");
+        assertThat(r.output().get("truncated").asBoolean()).isFalse();
+    }
+
+    @Test void truncatedFlagPassedThrough() {
+        EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
+        when(svc.form4Transactions(any(), any(), anyInt()))
+                .thenReturn(new EdgarSearchService.Form4Result(List.of(), true));
+        var r = new GetForm4TransactionsTool(svc).call(mapper.createObjectNode());
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("truncated").asBoolean()).isTrue();
     }
 
     @Test void invalidDateUnavailable() {
@@ -56,9 +68,26 @@ class GetForm4TransactionsToolTest {
                 .isEqualTo("general");
     }
 
+    @Test void fromAfterToUnavailable() {
+        var args = mapper.createObjectNode().put("from", "2025-05-10").put("to", "2025-05-01");
+        assertThat(new GetForm4TransactionsTool(Mockito.mock(EdgarSearchService.class)).call(args).available()).isFalse();
+    }
+
+    @Test void nonIntegralLimitUnavailable() {
+        var args = mapper.createObjectNode().put("limit", 2.5);
+        assertThat(new GetForm4TransactionsTool(Mockito.mock(EdgarSearchService.class)).call(args).available()).isFalse();
+    }
+
+    @Test void descriptionMentionsReturnedTransactions() {
+        String description = new GetForm4TransactionsTool(Mockito.mock(EdgarSearchService.class)).inputSchema()
+                .path("properties").path("limit").path("description").asString();
+        assertThat(description).contains("transactions to return");
+    }
+
     @Test void oversizedLimitIsClampedTo100() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.form4Transactions(any(), any(), anyInt())).thenReturn(List.of());
+        when(svc.form4Transactions(any(), any(), anyInt()))
+                .thenReturn(new EdgarSearchService.Form4Result(List.of(), false));
         var args = mapper.createObjectNode();
         args.put("limit", 100_000);
         new GetForm4TransactionsTool(svc).call(args);

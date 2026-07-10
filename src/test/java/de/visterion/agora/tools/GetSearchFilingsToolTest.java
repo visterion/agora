@@ -64,6 +64,34 @@ class GetSearchFilingsToolTest {
                 .isEqualTo("general");
     }
 
+    @Test void fromAfterToUnavailable() {
+        var args = mapper.createObjectNode();
+        args.putArray("forms").add("8-K");
+        args.put("from", "2025-05-10");
+        args.put("to", "2025-05-01");
+        assertThat(new GetSearchFilingsTool(Mockito.mock(EdgarSearchService.class)).call(args).available()).isFalse();
+    }
+
+    @Test void nonIntegralLimitUnavailable() {
+        var args = mapper.createObjectNode();
+        args.putArray("forms").add("8-K");
+        args.put("limit", 2.5);
+        assertThat(new GetSearchFilingsTool(Mockito.mock(EdgarSearchService.class)).call(args).available()).isFalse();
+    }
+
+    @Test void fullPageMarksTruncated() {
+        EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
+        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(List.of(
+                new FilingHit("A", "A Inc.", "8-K", LocalDate.parse("2025-05-02"), "acc", "url"),
+                new FilingHit("B", "B Inc.", "8-K", LocalDate.parse("2025-05-02"), "acc2", "url2")));
+        var args = mapper.createObjectNode();
+        args.putArray("forms").add("8-K");
+        args.put("limit", 2);
+        var r = new GetSearchFilingsTool(svc).call(args);
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("truncated").asBoolean()).isTrue();
+    }
+
     @Test void oversizedLimitIsClampedTo100() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
         when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(List.of());

@@ -31,7 +31,8 @@ public class GetEpsHistoryTool implements AgoraTool {
 
     public String name() { return "get_eps_history"; }
     public String description() {
-        return "Reported quarterly EPS history for a company (by symbol or CIK).";
+        return "Reported quarterly EPS history for a company (by symbol or CIK). "
+             + "adjusted=true requires 'symbol' (split-adjustment is not available for CIK-only requests).";
     }
 
     public ObjectNode inputSchema() {
@@ -56,19 +57,33 @@ public class GetEpsHistoryTool implements AgoraTool {
             boolean wantAdjusted = args.path("adjusted").asBoolean(false);
             List<SplitEvent> splits = List.of();
             boolean adjusted = false;
-            if (wantAdjusted && symbol != null && !symbol.isBlank()) {
-                try {
-                    splits = splitService.splits(symbol);
-                    adjusted = !splits.isEmpty();
-                } catch (RuntimeException e) {
-                    adjusted = false; // graceful fallback to as-reported (fetch failure or malformed split data)
+            String note = null;
+            String splitAdjustment = null;
+            if (wantAdjusted) {
+                if (symbol != null && !symbol.isBlank()) {
+                    try {
+                        splits = splitService.splits(symbol);
+                        adjusted = !splits.isEmpty();
+                        if (!adjusted) note = "no split data available; returning as-reported";
+                    } catch (RuntimeException e) {
+                        // graceful fallback to as-reported (fetch failure or malformed split data) —
+                        // but surface that this was a *failure*, not "no splits happened", so
+                        // callers don't silently trust an unadjusted value as adjustment-complete.
+                        adjusted = false;
+                        splitAdjustment = "unavailable";
+                        note = "split-adjustment fetch failed; returning as-reported";
+                    }
+                } else {
+                    // cik-only requests have no ticker to look splits up by.
+                    splitAdjustment = "unavailable";
+                    note = "split-adjustment requires symbol; returning as-reported";
                 }
             }
 
             ObjectNode out = mapper.createObjectNode();
             out.put("adjusted", adjusted);
-            if (wantAdjusted && !adjusted)
-                out.put("note", "no split data available; returning as-reported");
+            if (note != null) out.put("note", note);
+            if (splitAdjustment != null) out.put("splitAdjustment", splitAdjustment);
             ArrayNode arr = out.putArray("eps");
             for (EpsPoint p : eps) {
                 ObjectNode o = arr.addObject();
@@ -86,6 +101,7 @@ public class GetEpsHistoryTool implements AgoraTool {
                 o.put("fiscalPeriod", p.fiscalPeriod());
                 o.put("form", p.form());
                 o.put("filed", p.filed() == null ? null : p.filed().toString());
+                if (p.derived()) o.put("derived", true);
             }
             return ToolResult.ok(out);
         } catch (MarketDataException e) {

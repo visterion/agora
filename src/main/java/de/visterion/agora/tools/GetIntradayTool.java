@@ -12,9 +12,18 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.util.List;
+import java.util.Set;
 
 @Component
 public class GetIntradayTool implements AgoraTool {
+
+    // Yahoo Finance's supported chart intervals/ranges (v8/finance/chart). Validating here means
+    // a typo comes back as an explicit invalid-argument error instead of a misleading Yahoo
+    // error surfaced as "market data unavailable" (fake outage).
+    private static final Set<String> VALID_INTERVALS = Set.of(
+            "1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h", "1d", "5d", "1wk", "1mo", "3mo");
+    private static final Set<String> VALID_RANGES = Set.of(
+            "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max");
 
     private final IntradayService service;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -40,6 +49,10 @@ public class GetIntradayTool implements AgoraTool {
         if (symbol == null || symbol.isBlank()) return ToolResult.unavailable("no symbol provided");
         String interval = args.path("interval").asString(null);
         String range = args.path("range").asString(null);
+        if (interval != null && !interval.isBlank() && !VALID_INTERVALS.contains(interval))
+            return ToolResult.unavailable("invalid interval: " + interval);
+        if (range != null && !range.isBlank() && !VALID_RANGES.contains(range))
+            return ToolResult.unavailable("invalid range: " + range);
         try {
             List<IntradayBar> bars = service.intraday(symbol, interval, range);
             ObjectNode out = mapper.createObjectNode();

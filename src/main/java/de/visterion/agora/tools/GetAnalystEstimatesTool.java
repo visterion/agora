@@ -22,7 +22,11 @@ public class GetAnalystEstimatesTool implements AgoraTool {
     public GetAnalystEstimatesTool(EstimatesService service) { this.service = service; }
 
     public String name() { return "get_analyst_estimates"; }
-    public String description() { return "Analyst recommendation trend for a symbol."; }
+    public String description() {
+        return "Analyst RECOMMENDATION counts for a symbol — buy/hold/sell trend by period "
+             + "(strongBuy/buy/hold/sell/strongSell counts), not EPS or revenue estimates. "
+             + "For EPS/revenue estimates use get_earnings_estimates.";
+    }
 
     public ObjectNode inputSchema() {
         ObjectNode schema = mapper.createObjectNode();

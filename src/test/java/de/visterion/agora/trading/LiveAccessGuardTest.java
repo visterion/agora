@@ -44,4 +44,13 @@ class LiveAccessGuardTest {
         var guard = new LiveAccessGuard(Set.of(), () -> "anything");
         assertThat(guard.hasLiveAccess()).isFalse();
     }
+
+    @Test
+    void tokenComparisonIsNotPrefixSensitive() {
+        // Regression guard for constant-time compare: a token that shares a prefix with a
+        // live token but differs must not be granted access (sanity check on the compare,
+        // not a timing assertion).
+        var guard = new LiveAccessGuard(Set.of("live-token-abcdef"), () -> "live-token-abcxxx");
+        assertThat(guard.hasLiveAccess()).isFalse();
+    }
 }

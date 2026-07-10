@@ -1,6 +1,8 @@
 package de.visterion.agora.tools;
 
 import de.visterion.agora.tool.AgoraTool;
+import de.visterion.agora.tool.ToolParams;
+import de.visterion.agora.tool.ToolParams.InvalidArgumentException;
 import de.visterion.agora.tool.ToolResult;
 import de.visterion.agora.trading.BrokerException;
 import de.visterion.agora.trading.BrokerService;
@@ -37,12 +39,14 @@ public class CancelOrderTool implements AgoraTool {
     }
 
     @Override public ToolResult call(JsonNode args) {
-        if (args == null || !args.hasNonNull("connection"))
-            return ToolResult.unavailable("missing required argument: connection");
-        String connection = args.get("connection").asString();
-        if (!args.hasNonNull("orderId"))
-            return ToolResult.unavailable("missing required argument: orderId");
-        String orderId = args.get("orderId").asString();
+        String connection;
+        String orderId;
+        try {
+            connection = ToolParams.requiredString(args, "connection");
+            orderId = ToolParams.requiredString(args, "orderId");
+        } catch (InvalidArgumentException e) {
+            return ToolResult.unavailable(e.getMessage());
+        }
         try {
             OrderResult r = broker.cancel(connection, orderId);
             ObjectNode out = mapper.createObjectNode();

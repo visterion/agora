@@ -80,4 +80,45 @@ class EarningsServiceTest {
         assertThatThrownBy(() -> svc.earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31")))
                 .isInstanceOf(MarketDataException.class);
     }
+
+    @Test void emptyListFromProviderFallsThroughToNextProvider() {
+        var ev = List.of(new EarningsEvent("AAPL", LocalDate.parse("2025-05-01"),
+                null, null, null, null, null));
+        // finnhub answers successfully but with zero events — must be treated as "no answer",
+        // not as the final result, so yahoo still gets a chance.
+        var svc = new EarningsService(List.of(fixed("finnhub", List.of(), false), fixed("yahoo", ev, false)),
+                120L, System::currentTimeMillis);
+        assertThat(svc.earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"))).hasSize(1);
+    }
+
+    @Test void nonMarketDataExceptionFromOneProviderDoesNotAbortChain() {
+        // M-D1: a provider throwing a plain RuntimeException (e.g. NPE) must not abort the
+        // fallback chain — the next provider should still be consulted.
+        var ev = List.of(new EarningsEvent("AAPL", LocalDate.parse("2025-05-01"),
+                null, null, null, null, null));
+        EarningsProvider broken = new EarningsProvider() {
+            public String name() { return "broken"; }
+            public List<EarningsEvent> earnings(String s, LocalDate f, LocalDate t) { throw new NullPointerException("boom"); }
+        };
+        var svc = new EarningsService(List.of(broken, fixed("yahoo", ev, false)), 120L, System::currentTimeMillis);
+        assertThat(svc.earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"))).hasSize(1);
+    }
+
+    @Test void allEmptyThrowsAndIsNotCached() {
+        int[] count = {0};
+        EarningsProvider countingEmpty = new EarningsProvider() {
+            public String name() { return "counting-empty"; }
+            public List<EarningsEvent> earnings(String s, LocalDate f, LocalDate t) {
+                count[0]++;
+                return List.of();
+            }
+        };
+        var svc = new EarningsService(List.of(countingEmpty), 120L, System::currentTimeMillis);
+        var from = LocalDate.parse("2025-01-01");
+        var to = LocalDate.parse("2025-12-31");
+        assertThatThrownBy(() -> svc.earnings("AAPL", from, to)).isInstanceOf(MarketDataException.class);
+        assertThatThrownBy(() -> svc.earnings("AAPL", from, to)).isInstanceOf(MarketDataException.class);
+        // Nothing was cached on the all-empty outcome: the provider is hit again on the second call.
+        assertThat(count[0]).isEqualTo(2);
+    }
 }

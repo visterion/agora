@@ -24,7 +24,7 @@ class TwelveDataMarketDataProviderTest {
     @Test void quoteParsesCloseAndPercentChange() {
         wm.stubFor(get(urlPathEqualTo("/quote"))
                 .withQueryParam("symbol", equalTo("AAPL"))
-                .withQueryParam("apikey", equalTo("k"))
+                .withHeader("Authorization", equalTo("apikey k"))
                 .willReturn(okJson("""
                     {"symbol":"AAPL","name":"Apple Inc","close":"190.5","percent_change":"1.25","currency":"USD"}
                     """)));
@@ -32,6 +32,64 @@ class TwelveDataMarketDataProviderTest {
         assertThat(q.symbol()).isEqualTo("AAPL");
         assertThat(q.price()).isEqualByComparingTo("190.5");
         assertThat(q.dayChangePercent()).isEqualByComparingTo("1.25");
+    }
+
+    // H8: key must ride as an Authorization header, never as an `apikey=` query param.
+    @Test void keyNeverSentAsQueryParam() {
+        wm.stubFor(get(urlPathEqualTo("/quote"))
+                .withHeader("Authorization", equalTo("apikey supersecret"))
+                .willReturn(okJson("""
+                    {"symbol":"AAPL","close":"190.5","percent_change":"1.25","currency":"USD"}
+                    """)));
+        withKey("supersecret").quote("AAPL");
+        wm.verify(getRequestedFor(urlPathEqualTo("/quote")).withoutQueryParam("apikey"));
+    }
+
+    // H8b: a transport-layer failure must not leak the request URL or the API key.
+    @Test void transportFailureMessageDoesNotLeakUrlOrKey() {
+        wm.stubFor(get(urlPathEqualTo("/quote")).willReturn(okJson("{}").withFixedDelay(2_000)));
+        var fast = new TwelveDataMarketDataProvider(wm.baseUrl(), "supersecretkey123", 200L);
+        assertThatThrownBy(() -> fast.quote("AAPL"))
+                .isInstanceOfSatisfying(MarketDataException.class, e -> {
+                    assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE);
+                    assertThat(e.getMessage()).doesNotContain("supersecretkey123");
+                    assertThat(e.getMessage().toLowerCase()).doesNotContain("http");
+                });
+    }
+
+    // M-D6: a 429/quota payload riding on HTTP 200 must map to UNAVAILABLE, not NOT_FOUND —
+    // otherwise a rate-limit incident looks indistinguishable from "symbol not found".
+    @Test void quote200WithRateLimitPayloadThrowsUnavailableNotNotFound() {
+        wm.stubFor(get(urlPathEqualTo("/quote")).willReturn(okJson("""
+            {"code":429,"message":"You have run out of API credits","status":"error"}
+            """)));
+        assertThatThrownBy(() -> withKey("k").quote("AAPL"))
+                .isInstanceOfSatisfying(MarketDataException.class, e -> {
+                    assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE);
+                    assertThat(e.getMessage()).contains("rate limited");
+                });
+    }
+
+    @Test void quote200WithAuthErrorPayloadThrowsUnavailableNotNotFound() {
+        wm.stubFor(get(urlPathEqualTo("/quote")).willReturn(okJson("""
+            {"code":401,"message":"invalid api key","status":"error"}
+            """)));
+        assertThatThrownBy(() -> withKey("k").quote("AAPL"))
+                .isInstanceOfSatisfying(MarketDataException.class, e -> {
+                    assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE);
+                    assertThat(e.getMessage()).contains("auth failed");
+                });
+    }
+
+    @Test void ohlc200WithRateLimitPayloadThrowsUnavailableNotNotFound() {
+        wm.stubFor(get(urlPathEqualTo("/time_series")).willReturn(okJson("""
+            {"code":429,"message":"You have run out of API credits","status":"error"}
+            """)));
+        assertThatThrownBy(() -> withKey("k").ohlc("AAPL", 30))
+                .isInstanceOfSatisfying(MarketDataException.class, e -> {
+                    assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE);
+                    assertThat(e.getMessage()).contains("rate limited");
+                });
     }
 
     @Test void quoteErrorStatusThrowsNotFound() {
@@ -70,7 +128,7 @@ class TwelveDataMarketDataProviderTest {
         wm.stubFor(get(urlPathEqualTo("/time_series"))
                 .withQueryParam("symbol", equalTo("AAPL"))
                 .withQueryParam("interval", equalTo("1day"))
-                .withQueryParam("apikey", equalTo("k"))
+                .withHeader("Authorization", equalTo("apikey k"))
                 .willReturn(okJson("""
                     {"values":[
                       {"datetime":"2025-01-03","open":"11.0","high":"11.5","low":"10.8","close":"11.2","volume":"3000"},

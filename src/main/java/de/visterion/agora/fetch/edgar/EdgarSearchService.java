@@ -1,7 +1,10 @@
 package de.visterion.agora.fetch.edgar;
 
+import de.visterion.agora.data.DataHttp;
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.TtlCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
@@ -10,9 +13,9 @@ import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -27,25 +30,61 @@ import java.util.function.LongSupplier;
 @Component
 public class EdgarSearchService {
 
-    private static final javax.xml.parsers.DocumentBuilderFactory DBF = hardenedDbf();
+    private static final Logger log = LoggerFactory.getLogger(EdgarSearchService.class);
 
-    private static javax.xml.parsers.DocumentBuilderFactory hardenedDbf() {
+    /** EFTS page size requested per call. */
+    private static final int PAGE_SIZE = 100;
+    /** Hard guard on total hits fetched across pages, regardless of requested limit. */
+    private static final int HARD_FETCH_CAP = 1000;
+    /** SEC EDGAR asks for <=10 req/s; ~110ms spacing keeps sequential archive GETs under that. */
+    private static final long THROTTLE_MS = 110;
+    /** Aggregate deadline for a single form4Transactions() call's sequential archive GETs. */
+    private static final long FORM4_DEADLINE_MS = 30_000;
+    /** Form-4 search window is widened this many days each side of [from,to] to catch late filings
+     *  (the transaction-date filter below narrows back to the caller's exact window). */
+    private static final long FORM4_WINDOW_PAD_DAYS = 10;
+    private static final long DEFAULT_MAX_FILING_BYTES = 5L * 1024 * 1024;
+
+    @FunctionalInterface
+    interface Sleeper { void sleep(long millis) throws InterruptedException; }
+
+    private static final Sleeper REAL_SLEEPER = Thread::sleep;
+
+    private static javax.xml.parsers.DocumentBuilder newDocumentBuilder() {
         var dbf = javax.xml.parsers.DocumentBuilderFactory.newInstance();
         try {
-            dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            // Secure processing caps entity-expansion (billion-laughs) via the JAXP limits — defence
+            // in depth now that DOCTYPE is allowed below.
+            dbf.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
+            // DOCTYPE declarations are benign on their own (many real Form 4s carry one) — allow
+            // them, but keep the external-entity/expansion protections that actually prevent XXE.
+            dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", false);
             dbf.setFeature("http://xml.org/sax/features/external-general-entities", false);
             dbf.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            dbf.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
         } catch (javax.xml.parsers.ParserConfigurationException ignored) { /* best effort */ }
         dbf.setXIncludeAware(false);
         dbf.setExpandEntityReferences(false);
-        return dbf;
+        try {
+            return dbf.newDocumentBuilder();
+        } catch (javax.xml.parsers.ParserConfigurationException e) {
+            throw new IllegalStateException("failed to configure EDGAR XML parser", e);
+        }
     }
+
+    // DocumentBuilderFactory/DocumentBuilder are not guaranteed thread-safe (JAXP). One builder
+    // per thread avoids concurrent newDocumentBuilder()/parse() corruption under parallel requests.
+    private static final ThreadLocal<javax.xml.parsers.DocumentBuilder> DOC_BUILDER =
+            ThreadLocal.withInitial(EdgarSearchService::newDocumentBuilder);
 
     private final RestClient http;
     private final RestClient archiveHttp;
     private final String archiveBase;
+    private final LongSupplier now;
+    private final Sleeper sleeper;
+    private final long maxFilingBytes;
     private final TtlCache<String, List<FilingHit>> searchCache;
-    private final TtlCache<String, List<Form4Transaction>> form4Cache;
+    private final TtlCache<String, Form4Result> form4Cache;
     private final TtlCache<String, FilingText> filingTextCache;
 
     @Autowired
@@ -61,8 +100,7 @@ public class EdgarSearchService {
     }
 
     private static RestClient buildHttp(String baseUrl, String userAgent, long timeoutMs) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         return RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl(baseUrl)
@@ -76,33 +114,94 @@ public class EdgarSearchService {
         this(http, RestClient.builder().baseUrl(archiveBase).build(), archiveBase, ttlSeconds, now);
     }
 
-    // Full constructor: explicit efts + archive RestClients.
+    // Full constructor: explicit efts + archive RestClients, real sleeper + default size cap.
     EdgarSearchService(RestClient http, RestClient archiveHttp, String archiveBase, long ttlSeconds, LongSupplier now) {
+        this(http, archiveHttp, archiveBase, ttlSeconds, now, REAL_SLEEPER, DEFAULT_MAX_FILING_BYTES);
+    }
+
+    // Test constructor: full control over the throttle sleeper and the filing-body size cap, so
+    // throttle/deadline/cap tests run fast and deterministic (no real sleeping, no multi-MB bodies).
+    EdgarSearchService(RestClient http, RestClient archiveHttp, String archiveBase, long ttlSeconds, LongSupplier now,
+                        Sleeper sleeper, long maxFilingBytes) {
         this.http = http;
         this.archiveHttp = archiveHttp;
         this.archiveBase = archiveBase;
-        this.searchCache = new TtlCache<>(ttlSeconds * 1000L, now);
-        this.form4Cache = new TtlCache<>(ttlSeconds * 1000L, now);
-        this.filingTextCache = new TtlCache<>(ttlSeconds * 1000L, now);
+        this.now = now;
+        this.sleeper = sleeper;
+        this.maxFilingBytes = maxFilingBytes;
+        this.searchCache = new TtlCache<>(ttlSeconds * 1000L, 512, now);
+        this.form4Cache = new TtlCache<>(ttlSeconds * 1000L, 512, now);
+        // Filing text bodies run up to ~24KB each — keep this cache small to bound heap.
+        this.filingTextCache = new TtlCache<>(ttlSeconds * 1000L, 32, now);
     }
 
     /** Full-text filing search on efts. ticker on a hit may be empty (fresh registrations). */
     public List<FilingHit> search(List<String> forms, String query, LocalDate from, LocalDate to, int limit) {
         String formsCsv = String.join(",", forms);
-        String key = "search:" + formsCsv + ":" + query + ":" + from + ":" + to + ":" + limit;
+        String key = cacheKey("search", formsCsv, query, str(from), str(to), String.valueOf(limit));
         return searchCache.get(key, () -> fetchSearch(formsCsv, query, from, to, limit));
     }
 
+    // Length-prefixed segment join — a plain ":"-joined key collides whenever a field itself
+    // contains ":" (e.g. forms="a:b" + query="c" vs forms="a" + query="b:c" produce the same
+    // naive key). Prefixing each segment with its length makes the join unambiguous.
+    private static String cacheKey(String... parts) {
+        StringBuilder sb = new StringBuilder();
+        for (String p : parts) {
+            String v = p == null ? "" : p;
+            sb.append(v.length()).append(':').append(v);
+        }
+        return sb.toString();
+    }
+
+    private static String str(Object o) { return o == null ? "" : o.toString(); }
+
     private List<FilingHit> fetchSearch(String formsCsv, String query, LocalDate from, LocalDate to, int limit) {
-        JsonNode search;
+        List<FilingHit> out = new ArrayList<>();
+        int offset = 0;
+        boolean capped = false;
+        while (out.size() < limit) {
+            if (offset >= HARD_FETCH_CAP) { capped = true; break; }
+            JsonNode search = fetchPage(formsCsv, query, from, to, offset);
+            JsonNode hitsNode = search == null ? null : search.path("hits");
+            JsonNode hits = hitsNode == null ? null : hitsNode.path("hits");
+            if (hits == null || !hits.isArray() || hits.isEmpty()) break;
+            int pageCount = hits.size();
+            for (JsonNode hit : hits) {
+                if (out.size() >= limit) break;
+                try {
+                    FilingHit f = parseHit(hit);
+                    if (f != null) out.add(f);
+                } catch (Exception e) {
+                    // skip malformed individual hit
+                }
+            }
+            offset += pageCount;
+            // Stop once the offset reaches EFTS's reported total (real ES/EFTS pagination
+            // semantics). A response that doesn't report a total is treated as exhausted after
+            // this one page — a safe default, never an infinite/runaway pagination loop.
+            long total = hitsNode.path("total").path("value").asLong(0);
+            if (offset >= total) break;
+        }
+        if (capped) {
+            log.debug("EFTS search capped at {} fetched hits (forms={}, query={})", HARD_FETCH_CAP, formsCsv, query);
+        }
+        return out;
+    }
+
+    private JsonNode fetchPage(String formsCsv, String query, LocalDate from, LocalDate to, int offset) {
         try {
-            search = http.get()
+            return http.get()
                     .uri(uri -> {
                         uri.path("/LATEST/search-index")
                                 .queryParam("forms", formsCsv)
-                                .queryParam("dateRange", "custom")
-                                .queryParam("startdt", from == null ? "" : from.toString())
-                                .queryParam("enddt", to == null ? "" : to.toString());
+                                .queryParam("from", offset)
+                                .queryParam("size", PAGE_SIZE);
+                        if (from != null || to != null) {
+                            uri.queryParam("dateRange", "custom")
+                                    .queryParam("startdt", from == null ? "" : from.toString())
+                                    .queryParam("enddt", to == null ? "" : to.toString());
+                        }
                         if (query != null && !query.isBlank()) uri.queryParam("q", query);
                         return uri.build();
                     })
@@ -111,21 +210,6 @@ public class EdgarSearchService {
         } catch (Exception e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR search unreachable: " + e.getMessage(), e);
         }
-        if (search == null) return List.of();
-        JsonNode hits = search.path("hits").path("hits");
-        if (!hits.isArray() || hits.isEmpty()) return List.of();
-
-        List<FilingHit> out = new ArrayList<>();
-        for (JsonNode hit : hits) {
-            if (out.size() >= limit) break;
-            try {
-                FilingHit f = parseHit(hit);
-                if (f != null) out.add(f);
-            } catch (Exception e) {
-                // skip malformed individual hit
-            }
-        }
-        return out;
     }
 
     private FilingHit parseHit(JsonNode hit) {
@@ -176,28 +260,53 @@ public class EdgarSearchService {
         return new FilingHit(ticker, company, form, filedDate, accession, url);
     }
 
+    /** Form-4 transaction list plus a truncation flag (set when the aggregate fetch deadline hit). */
+    public record Form4Result(List<Form4Transaction> transactions, boolean truncated) {}
+
     /**
-     * Non-derivative Form-4 transactions filed in the window. efts search for forms=4,
-     * then per-hit Form-4 XML fetch + DOM parse. Malformed hits/XML are skipped (never
-     * throw per-hit); an efts search failure surfaces as {@link MarketDataException}.
+     * Non-derivative Form-4 (and 4/A amendment) transactions whose <em>transaction</em> date falls
+     * in [from,to] — filed in the window OR filed late (the underlying search widens by
+     * {@value #FORM4_WINDOW_PAD_DAYS} days each side to catch late-filed-but-in-window trades).
+     * efts search for forms=4,4/A, then per-hit Form-4 XML fetch + DOM parse, throttled to stay
+     * under SEC's request-rate limit with an aggregate deadline. Malformed hits/XML are skipped
+     * (never throw per-hit); an efts search failure surfaces as {@link MarketDataException}.
      */
-    public List<Form4Transaction> form4Transactions(LocalDate from, LocalDate to, int limit) {
-        String key = "form4:" + from + ":" + to + ":" + limit;
+    public Form4Result form4Transactions(LocalDate from, LocalDate to, int limit) {
+        String key = cacheKey("form4", str(from), str(to), String.valueOf(limit));
         return form4Cache.get(key, () -> fetchForm4(from, to, limit));
     }
 
-    private List<Form4Transaction> fetchForm4(LocalDate from, LocalDate to, int limit) {
-        List<FilingHit> hits = search(List.of("4"), null, from, to, limit);
+    private Form4Result fetchForm4(LocalDate from, LocalDate to, int limit) {
+        LocalDate searchFrom = from == null ? null : from.minusDays(FORM4_WINDOW_PAD_DAYS);
+        LocalDate searchTo = to == null ? null : to.plusDays(FORM4_WINDOW_PAD_DAYS);
+        List<FilingHit> hits = search(List.of("4", "4/A"), null, searchFrom, searchTo, limit);
         List<Form4Transaction> out = new ArrayList<>();
+        boolean truncated = false;
+        long deadline = now.getAsLong() + FORM4_DEADLINE_MS;
+        boolean first = true;
         for (FilingHit hit : hits) {
             if (out.size() >= limit) break;
+            if (now.getAsLong() >= deadline) {
+                truncated = true;
+                break;
+            }
+            if (!first) {
+                try {
+                    sleeper.sleep(THROTTLE_MS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    truncated = true;
+                    break;
+                }
+            }
+            first = false;
             try {
-                parseForm4(hit, out);
+                parseForm4(hit, out, from, to);
             } catch (Exception e) {
                 // skip malformed individual filings; continue
             }
         }
-        return out;
+        return new Form4Result(out, truncated);
     }
 
     /** A filing's extracted summary/term-sheet text plus extraction metadata. */
@@ -206,19 +315,38 @@ public class EdgarSearchService {
     /**
      * Fetch a filing's primary document from the SEC archive and extract its summary/term-sheet
      * text. {@code url} MUST be an archive URL under the configured archive base (SSRF guard).
-     * Throws {@link MarketDataException} on a non-archive url, a fetch failure, or an empty document.
+     * Throws {@link MarketDataException} on a non-archive url, a fetch failure, an oversized
+     * body (> {@value #DEFAULT_MAX_FILING_BYTES} bytes by default), or an empty document.
      */
     public FilingText filingText(String url) {
         if (url == null || !url.startsWith(archiveBase + "/Archives/")) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "not an SEC archive url: " + url, null);
         }
-        return filingTextCache.get("text:" + url, () -> fetchFilingText(url));
+        return filingTextCache.get(cacheKey("text", url), () -> fetchFilingText(url));
     }
 
     private FilingText fetchFilingText(String url) {
         String raw;
         try {
-            raw = archiveHttp.get().uri(url).retrieve().body(String.class);
+            raw = archiveHttp.get().uri(url).exchange((request, response) -> {
+                long contentLength = response.getHeaders().getContentLength();
+                if (contentLength > maxFilingBytes) {
+                    throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                            "filing document too large (" + contentLength + " bytes): " + url, null);
+                }
+                try (InputStream body = response.getBody()) {
+                    // Bounded read regardless of (possibly absent/lying) Content-Length: never
+                    // buffer more than maxFilingBytes+1 bytes, so we can detect an over-cap body.
+                    byte[] buf = body.readNBytes((int) Math.min(maxFilingBytes + 1, Integer.MAX_VALUE));
+                    if (buf.length > maxFilingBytes) {
+                        throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                                "filing document exceeds size cap: " + url, null);
+                    }
+                    return new String(buf, StandardCharsets.UTF_8);
+                }
+            });
+        } catch (MarketDataException e) {
+            throw e;
         } catch (Exception e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "filing fetch failed: " + e.getMessage(), e);
         }
@@ -229,7 +357,7 @@ public class EdgarSearchService {
         return new FilingText(ex.text(), ex.sectionFound(), ex.truncated(), ex.text().length(), url);
     }
 
-    private void parseForm4(FilingHit hit, List<Form4Transaction> out) throws Exception {
+    private void parseForm4(FilingHit hit, List<Form4Transaction> out, LocalDate from, LocalDate to) throws Exception {
         if (hit.url() == null || hit.url().isEmpty()) return;
 
         String xml;
@@ -241,24 +369,36 @@ public class EdgarSearchService {
         }
         if (xml == null) return;
 
-        var doc = DBF.newDocumentBuilder()
-                .parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+        var builder = DOC_BUILDER.get();
+        builder.reset();
+        var doc = builder.parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
         // The efts _source has no ticker; it lives in the fetched Form-4 XML. May be empty
         // (e.g. some amendments) — emit the transaction anyway, filer/issuer are still known.
         String ticker = "";
         var symbols = doc.getElementsByTagName("issuerTradingSymbol");
         if (symbols.getLength() > 0) ticker = symbols.item(0).getTextContent().trim();
 
+        // Read ALL reportingOwner elements: a Form 4 can list several co-filers (e.g. a trust plus
+        // the individual trustee). Join their names; take the first non-empty officer title/role.
         var owners = doc.getElementsByTagName("reportingOwner");
-        String filerName = "";
+        List<String> filerNames = new ArrayList<>();
         String filerRole = "";
-        if (owners.getLength() > 0) {
-            var owner = (org.w3c.dom.Element) owners.item(0);
+        for (int i = 0; i < owners.getLength(); i++) {
+            var owner = (org.w3c.dom.Element) owners.item(i);
             var names = owner.getElementsByTagName("rptOwnerName");
-            if (names.getLength() > 0) filerName = names.item(0).getTextContent().trim();
-            var titles = owner.getElementsByTagName("officerTitle");
-            if (titles.getLength() > 0) filerRole = titles.item(0).getTextContent().trim();
+            if (names.getLength() > 0) {
+                String n = names.item(0).getTextContent().trim();
+                if (!n.isEmpty()) filerNames.add(n);
+            }
+            if (filerRole.isEmpty()) {
+                var titles = owner.getElementsByTagName("officerTitle");
+                if (titles.getLength() > 0) {
+                    String t = titles.item(0).getTextContent().trim();
+                    if (!t.isEmpty()) filerRole = t;
+                }
+            }
         }
+        String filerName = String.join(", ", filerNames);
 
         var transactions = doc.getElementsByTagName("nonDerivativeTransaction");
         for (int i = 0; i < transactions.getLength(); i++) {
@@ -267,13 +407,24 @@ public class EdgarSearchService {
             String dateStr = valueOf(tx, "transactionDate");
             String sharesStr = valueOf(tx, "transactionShares");
             String priceStr = valueOf(tx, "transactionPricePerShare");
+            String acquiredDisposedCode = valueOf(tx, "transactionAcquiredDisposedCode");
             if (dateStr.isEmpty() || sharesStr.isEmpty()) continue;
+            LocalDate txDate;
+            try {
+                txDate = LocalDate.parse(dateStr);
+            } catch (Exception e) {
+                continue;
+            }
+            // Filter on the TRANSACTION date, not the filing date: the search window above was
+            // widened to catch late filings, so narrow back down to the caller's exact window here.
+            if (from != null && txDate.isBefore(from)) continue;
+            if (to != null && txDate.isAfter(to)) continue;
             BigDecimal shares = new BigDecimal(sharesStr);
             BigDecimal price = priceStr.isEmpty() ? BigDecimal.ZERO : new BigDecimal(priceStr);
             BigDecimal dollar = shares.multiply(price);
             out.add(new Form4Transaction(
                     ticker, filerName, filerRole,
-                    LocalDate.parse(dateStr), shares, dollar, code
+                    txDate, shares, dollar, code, acquiredDisposedCode, hit.form()
             ));
         }
     }

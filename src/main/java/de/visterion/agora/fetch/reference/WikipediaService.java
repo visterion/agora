@@ -1,5 +1,6 @@
 package de.visterion.agora.fetch.reference;
 
+import de.visterion.agora.data.DataHttp;
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.TtlCache;
 import org.slf4j.Logger;
@@ -11,7 +12,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 
-import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -49,8 +49,7 @@ public class WikipediaService {
     }
 
     private static RestClient buildHttp(String baseUrl, String userAgent, long timeoutMs) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         return RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl(baseUrl)
@@ -62,7 +61,9 @@ public class WikipediaService {
     WikipediaService(RestClient http, String pageTitle, long ttlSeconds, LongSupplier now) {
         this.http = http;
         this.pageTitle = pageTitle;
-        this.cache = new TtlCache<>(ttlSeconds * 1000L, now);
+        // Single well-known key ("constituents:sp500") today; a small cap still allows
+        // headroom without pretending this cache needs to scale.
+        this.cache = new TtlCache<>(ttlSeconds * 1000L, 8, now);
     }
 
     /** Constituents of a stock index. Only "sp500" (case-insensitive; null/blank treated as sp500) is known. */
@@ -94,12 +95,19 @@ public class WikipediaService {
         JsonNode wt = body.path("parse").path("wikitext");
         if (!wt.isTextual())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "wikipedia: empty response", null);
+        List<Constituent> result;
         try {
-            return parse(wt.asString());
+            result = parse(wt.asString());
         } catch (Exception e) {
             log.warn("Wikipedia S&P 500 parse failed: {}", e.getMessage());
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "wikipedia: parse failed", e);
         }
+        // An empty parse result means the page structure changed (missing anchor/table/columns)
+        // rather than a genuine "zero constituents" answer — throw so the failure is never
+        // cached as a successful-but-empty index.
+        if (result.isEmpty())
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "wikipedia: no constituents parsed", null);
+        return result;
     }
 
     private List<Constituent> parse(String wikitext) {

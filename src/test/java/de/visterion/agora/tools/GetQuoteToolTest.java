@@ -45,6 +45,36 @@ class GetQuoteToolTest {
     }
 
     @Test
+    void partialFailureAddsUnresolvedAndKeepsResolved() {
+        MarketDataProvider partial = new MarketDataProvider() {
+            public String name() { return "x"; }
+            public Quote quote(String s) {
+                if ("BADSYM".equals(s)) throw new MarketDataException(MarketDataException.Kind.NOT_FOUND, "nf", null);
+                return new Quote(s, new BigDecimal("10"), BigDecimal.ZERO, "USD");
+            }
+            public List<OhlcBar> ohlc(String s, int d) { return List.of(); }
+        };
+        var tool = new GetQuoteTool(svcWith(partial));
+        ObjectNode args = mapper.createObjectNode();
+        args.putArray("symbols").add("AAPL").add("BADSYM");
+        var r = tool.call(args);
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("quotes")).hasSize(1);
+        assertThat(r.output().get("quotes").get(0).get("symbol").asString()).isEqualTo("AAPL");
+        assertThat(r.output().get("unresolved")).isNotNull();
+        assertThat(r.output().get("unresolved").get(0).asString()).isEqualTo("BADSYM");
+    }
+
+    @Test
+    void acceptsCommaSeparatedSymbolsString() {
+        var tool = new GetQuoteTool(svcWith(okProvider()));
+        ObjectNode args = mapper.createObjectNode().put("symbols", "AAPL, MSFT");
+        var r = tool.call(args);
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("quotes")).hasSize(2);
+    }
+
+    @Test
     void unavailableWhenAllFail() {
         MarketDataProvider failing = new MarketDataProvider() {
             public String name() { return "x"; }
