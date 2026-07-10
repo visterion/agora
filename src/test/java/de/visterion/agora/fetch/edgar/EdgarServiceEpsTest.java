@@ -88,6 +88,30 @@ class EdgarServiceEpsTest {
         assertThat(eps.get(0).value()).isEqualByComparingTo("2.55");
     }
 
+    @Test void serverErrorThrowsAndNothingCached() {
+        wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyconcept/CIK0000320193/us-gaap/EarningsPerShareDiluted.json"))
+                .willReturn(aResponse().withStatus(500)));
+        EdgarService svc = svc();
+        assertThatThrownBy(() -> svc.epsHistory("AAPL", null)).isInstanceOf(MarketDataException.class);
+
+        // Reconfigure to succeed; a subsequent call must re-hit upstream (nothing was cached on failure).
+        wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyconcept/CIK0000320193/us-gaap/EarningsPerShareDiluted.json"))
+                .willReturn(okJson("""
+                    {"units":{"USD/shares":[
+                      {"start":"2025-01-01","end":"2025-03-31","val":2.40,"fy":2025,"fp":"Q1","form":"10-Q","filed":"2025-05-01"}
+                    ]}}
+                    """)));
+        List<EpsPoint> eps = svc.epsHistory("AAPL", null);
+        assertThat(eps).hasSize(1);
+        assertThat(eps.get(0).value()).isEqualByComparingTo("2.40");
+    }
+
+    @Test void tooManyRequestsThrows() {
+        wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyconcept/CIK0000320193/us-gaap/EarningsPerShareDiluted.json"))
+                .willReturn(aResponse().withStatus(429)));
+        assertThatThrownBy(() -> svc().epsHistory("AAPL", null)).isInstanceOf(MarketDataException.class);
+    }
+
     @Test void unknownSymbolThrowsNotFound() {
         EdgarCikResolver cik = new EdgarCikResolver(RestClient.builder().baseUrl(wm.baseUrl()).build()) {
             @Override public Optional<String> cik(String t) { return Optional.empty(); }

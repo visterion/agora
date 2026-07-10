@@ -93,6 +93,24 @@ class EdgarServiceCompanyConceptTest {
         assertThat(series.datapoints()).isEmpty();
     }
 
+    @Test void serverErrorThrowsAndNothingCached() {
+        wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyconcept/CIK0000320193/us-gaap/Assets.json"))
+                .willReturn(aResponse().withStatus(503)));
+        EdgarService svc = svc();
+        assertThatThrownBy(() -> svc.companyConcept("AAPL", null, "us-gaap", "Assets"))
+                .isInstanceOf(MarketDataException.class);
+
+        // Reconfigure to succeed; a subsequent call must re-hit upstream (nothing was cached on failure).
+        wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyconcept/CIK0000320193/us-gaap/Assets.json"))
+                .willReturn(okJson("""
+                    {"units":{"USD":[
+                      {"start":"2024-01-01","end":"2024-12-31","val":1,"fy":2024,"fp":"FY","form":"10-K","filed":"2025-01-31"}
+                    ]}}
+                    """)));
+        EdgarService.ConceptSeries series = svc.companyConcept("AAPL", null, "us-gaap", "Assets");
+        assertThat(series.datapoints()).hasSize(1);
+    }
+
     @Test void unknownSymbolThrowsNotFound() {
         EdgarCikResolver cik = new EdgarCikResolver(RestClient.builder().baseUrl(wm.baseUrl()).build()) {
             @Override public Optional<String> cik(String t) { return Optional.empty(); }
