@@ -50,10 +50,10 @@ class BearerTokenFilterTest {
 
     // --- Original tests (updated to new ctor: general, trading, registry) ---
 
-    private final ToolRegistry emptyRegistry = registryWith();
+    private final ToolRegistry pingOnlyRegistry = registryWith(generalTool("ping"));
 
     private final BearerTokenFilter filter =
-            new BearerTokenFilter(List.of("good-token"), List.of(), List.of(), emptyRegistry);
+            new BearerTokenFilter(List.of("good-token"), List.of(), List.of(), pingOnlyRegistry);
 
     @Test
     void rejectsMissingToken() throws Exception {
@@ -138,15 +138,82 @@ class BearerTokenFilterTest {
     }
 
     @Test
-    void unknownToolPath_generalTokenSuffices() throws Exception {
-        // /tools/unknown -> tool not in registry → fall back to general ∪ trading
+    void unknownToolPath_generalTokenIsRejected() throws Exception {
+        // /tools/unknown -> tool not in registry → fail closed: requires trading ∪ live
         MockHttpServletRequest req = new MockHttpServletRequest("POST", "/tools/unknown");
         req.addHeader("Authorization", "Bearer gen-token");
         MockHttpServletResponse res = new MockHttpServletResponse();
         FilterChain chain = mock(FilterChain.class);
         guardFilter().doFilter(req, res, chain);
+        assertThat(res.getStatus()).isEqualTo(401);
+        verify(chain, never()).doFilter(any(), any());
+    }
+
+    @Test
+    void unknownToolPath_tradingTokenSucceeds() throws Exception {
+        // Fail-closed: trading token is accepted for unresolvable tool names.
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/tools/unknown");
+        req.addHeader("Authorization", "Bearer trade-token");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        guardFilter().doFilter(req, res, chain);
         assertThat(res.getStatus()).isEqualTo(200);
         verify(chain).doFilter(any(), any());
+    }
+
+    // --- C1: percent-encoded tool name must not bypass trading-token requirement ---
+
+    @Test
+    void percentEncodedTradingTool_generalTokenIsRejected() throws Exception {
+        // Attack: servlet container leaves requestURI un-decoded; controller decodes it.
+        // The filter must resolve the tool name the same way the controller executes it.
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/tools/%70lace_bracket");
+        req.setServletPath("/tools/trade"); // decoded form maps to the "trade" (trading) stub tool
+        req.addHeader("Authorization", "Bearer gen-token");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        guardFilter().doFilter(req, res, chain);
+        assertThat(res.getStatus()).isEqualTo(401);
+        verify(chain, never()).doFilter(any(), any());
+    }
+
+    @Test
+    void percentEncodedTradingTool_tradingTokenSucceeds() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/tools/%70lace_bracket");
+        req.setServletPath("/tools/trade");
+        req.addHeader("Authorization", "Bearer trade-token");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        guardFilter().doFilter(req, res, chain);
+        assertThat(res.getStatus()).isEqualTo(200);
+        verify(chain).doFilter(any(), any());
+    }
+
+    // --- Low: Bearer scheme should be accepted case-insensitively ---
+
+    @Test
+    void lowercaseBearerScheme_isAccepted() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/tools/gen");
+        req.setServletPath("/tools/gen");
+        req.addHeader("Authorization", "bearer gen-token");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        guardFilter().doFilter(req, res, chain);
+        assertThat(res.getStatus()).isEqualTo(200);
+        verify(chain).doFilter(any(), any());
+    }
+
+    // --- Low: shouldNotFilter must not over-exempt /actuator/health-prefixed paths ---
+
+    @Test
+    void actuatorHealthPrefixLookalike_isFiltered() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/actuator/healthfoo");
+        req.setServletPath("/actuator/healthfoo");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        filter.doFilter(req, res, chain);
+        assertThat(res.getStatus()).isEqualTo(401);
+        verify(chain, never()).doFilter(any(), any());
     }
 
     // --- Live-token tests (connection router) ---
