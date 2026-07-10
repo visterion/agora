@@ -11,7 +11,11 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** Bridges Agora's OhlcBar list to a ta4j BarSeries (DecimalNum precision) and reads values back. */
 public final class Ta4jBars {
@@ -20,13 +24,15 @@ public final class Ta4jBars {
 
     private Ta4jBars() {}
 
-    /** Build a DecimalNum-backed daily series from oldest-first OhlcBars. */
+    /** Build a DecimalNum-backed daily series from provider OhlcBars. Providers occasionally
+     *  return duplicate-date rows (last one wins) or out-of-order rows — de-duplicate and sort
+     *  ascending here instead of letting ta4j throw on a non-monotonic end time. */
     public static BarSeries toSeries(List<OhlcBar> bars) {
         BarSeries series = new BaseBarSeriesBuilder()
                 .withNumFactory(DecimalNumFactory.getInstance())
                 .withName("agora")
                 .build();
-        for (OhlcBar b : bars) {
+        for (OhlcBar b : dedupAndSort(bars)) {
             series.barBuilder()
                     .endTime(b.date().atStartOfDay(ZoneOffset.UTC).toInstant())
                     .timePeriod(ONE_DAY)
@@ -38,6 +44,16 @@ public final class Ta4jBars {
                     .add();
         }
         return series;
+    }
+
+    /** Keeps the last row per date (LinkedHashMap#put overwrites on collision), then sorts
+     *  ascending by date — order-independent, so unsorted input is handled the same way. */
+    private static List<OhlcBar> dedupAndSort(List<OhlcBar> bars) {
+        Map<java.time.LocalDate, OhlcBar> byDate = new LinkedHashMap<>();
+        for (OhlcBar b : bars) byDate.put(b.date(), b);
+        List<OhlcBar> out = new ArrayList<>(byDate.values());
+        out.sort(Comparator.comparing(OhlcBar::date));
+        return out;
     }
 
     /** Value of an indicator at the last bar. */

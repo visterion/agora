@@ -82,9 +82,12 @@ class BuiltinIndicatorsParityTest {
     @Test
     void minBarsMatchOldAvailabilityRules() {
         // old: atrAvailable iff (n-1) >= period  →  minBars = period + 1
+        // 'atr' itself is unchanged (SMA of TR, still exact). 'chandelier_stop' now uses
+        // Wilder-smoothed (recursive) ATR (research low (h)) so it needs the H3 convergence-safe
+        // minBars (1 + 4*period), not the old exact period+1 — see BuiltinIndicatorsTest.
         assertThat(find("atr").minBars().applyAsInt(p(Map.of("period", "3")))).isEqualTo(4);
         assertThat(find("chandelier_stop").minBars()
-                .applyAsInt(p(Map.of("period", "3", "multiple", "3.0")))).isEqualTo(4);
+                .applyAsInt(p(Map.of("period", "3", "multiple", "3.0")))).isEqualTo(1 + 4 * 3);
         // old: maSlowAvailable iff n >= maSlow
         assertThat(find("ma_cross").minBars().applyAsInt(p(Map.of("fast", "2", "slow", "4")))).isEqualTo(4);
         // old: window52wAvailable iff n >= minBarsFor52w

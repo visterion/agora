@@ -106,7 +106,16 @@ public class IndicatorExpressionResolver {
 
         String label = explicitLabel != null ? explicitLabel
                 : subLabel == null ? name : name + "(" + subLabel + ")";
-        int minBars = Math.max(def.minBars().applyAsInt(params), subMinBars);
+        // research low (c): composition must be additive, not max. The outer indicator needs
+        // a full window of *stable* inner values, not just the inner's first stable point — so
+        // outer(inner) requires innerMin + outerWindow - 1 bars in total. Every minBars formula
+        // in this catalog follows the "1 + rawWindow" convention (rawWindow = the param(s) that
+        // actually drive convergence, e.g. period, possibly x4 for recursive filters), so
+        // ownMinBars - 1 recovers rawWindow, and subMinBars + (ownMinBars - 1) - 1 is the total —
+        // i.e. subMinBars + ownMinBars - 2. subMinBars is 0 for a plain price-source input
+        // ('of' omitted or a price source string), which keeps the old (non-additive) behavior.
+        int ownMinBars = def.minBars().applyAsInt(params);
+        int minBars = subMinBars > 0 ? Math.max(1, subMinBars + ownMinBars - 2) : ownMinBars;
         return new Resolved(label, def, outputs, minBars);
     }
 

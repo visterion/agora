@@ -46,10 +46,52 @@ class BuiltinIndicatorsTest {
     }
 
     @Test
-    void catalogHasNineEntries() {
+    void catalogHasTenEntries() {
         assertThat(BuiltinIndicators.defs()).extracting(IndicatorDef::name)
                 .containsExactlyInAnyOrder("atr", "chandelier_stop", "ma_cross", "52w_range",
-                        "macd", "bollinger", "stochastic", "aroon", "ichimoku");
+                        "macd", "bollinger", "stochastic", "aroon", "ichimoku", "dpo");
+    }
+
+    @Test
+    void dpoTrueFullWindowMinBars() {
+        // research low (b): ta4j's DPOIndicator is unstable for period + period/2 bars
+        // (SMA(period) shifted back period/2+1), not period+1.
+        var def = find("dpo");
+        assertThat(def.minBars().applyAsInt(ResolvedParams.defaults(def.params())))
+                .isEqualTo(20 + 20 / 2 + 1);
+
+        var series = Ta4jBars.toSeries(rising(31));
+        var outs = def.factory().create(series, in(new ClosePriceIndicator(series)),
+                ResolvedParams.defaults(def.params()));
+        assertThat(outs.get("value").getValue(series.getEndIndex()).isNaN()).isFalse();
+    }
+
+    @Test
+    void chandelierUsesWilderSmoothedAtrNotSma() {
+        // research low (h): chandelier must use Wilder-smoothed (MMA) ATR, not SMA-ATR.
+        var series = Ta4jBars.toSeries(rising(100));
+        var def = find("chandelier_stop");
+        var outs = def.factory().create(series, none(), ResolvedParams.defaults(def.params()));
+        var expectedHH = new org.ta4j.core.indicators.helpers.HighestValueIndicator(
+                new org.ta4j.core.indicators.helpers.HighPriceIndicator(series), 22);
+        var expectedAtr = new org.ta4j.core.indicators.ATRIndicator(series, 22);
+        int end = series.getEndIndex();
+        var expected = Ta4jBars.toBd(
+                expectedHH.getValue(end).minus(expectedAtr.getValue(end).multipliedBy(
+                        series.numFactory().numOf(new BigDecimal("3.0")))), 4);
+        assertThat(at(outs, "value", series)).isEqualByComparingTo(expected);
+
+        // convergence-safe minBars for the now-recursive Wilder ATR (H3-style, period=22)
+        assertThat(def.minBars().applyAsInt(ResolvedParams.defaults(def.params())))
+                .isEqualTo(1 + 4 * 22);
+    }
+
+    @Test
+    void ichimokuMinBarsCoversSenkouSpanB() {
+        // research low (b): senkou span B (52-period highest/lowest, shifted 26 forward) is
+        // the limiting output; old minBars=52 reported it "available" while still a partial window.
+        var def = find("ichimoku");
+        assertThat(def.minBars().applyAsInt(ResolvedParams.defaults(def.params()))).isEqualTo(77);
     }
 
     @Test
@@ -128,6 +170,20 @@ class BuiltinIndicatorsTest {
         // -> close(93) = 94
         assertThat(at(outs, "chikou", series)).isEqualByComparingTo("94");
         assertThat(def.outputs()).containsExactly("tenkan", "kijun", "senkou_a", "senkou_b", "chikou");
+    }
+
+    @Test
+    void fiftyTwoWeekRangeWindowsToLast252BarsNotFullHistory() {
+        // research low (a): 400 rising bars — full-history high/low would be 401/399 (last bar).
+        // Windowed to 252, high/low come from the last 252 bars only: close 149..400 (0-based i=148..399).
+        var series = Ta4jBars.toSeries(rising(400));
+        var def = find("52w_range");
+        var outs = def.factory().create(series, none(),
+                ResolvedParams.defaults(def.params()));
+        // rising(400): close(i) = i+1, high = close+1, low = close-1. Last 252 bars: i=148..399
+        // -> closes 149..400 -> highs 150..401, lows 148..399
+        assertThat(at(outs, "high", series)).isEqualByComparingTo("401");
+        assertThat(at(outs, "low", series)).isEqualByComparingTo("148");
     }
 
     @Test

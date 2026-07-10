@@ -14,6 +14,7 @@ import org.ta4j.core.num.Num;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -81,13 +82,24 @@ public class IndicatorCatalogConfig {
         }
     }
 
+    /** research low (j): a strictly-monotonic fixture can't exercise real recursive computation
+     *  (e.g. RSI trivially pins at 100 on rising bars, hiding divide-by-zero/seeding bugs that
+     *  only show up once the series actually reverses direction). Drifts gently upward (keeps
+     *  prices positive) while oscillating, so the boot check exercises genuine up- and down-moves. */
     private static BarSeries syntheticSeries(int n) {
         List<OhlcBar> bars = new ArrayList<>(n);
         for (int i = 0; i < n; i++) {
-            BigDecimal c = new BigDecimal(100 + i);
+            double value = 100 + i * 0.1 + 5 * Math.sin(i * 0.3);
+            BigDecimal c = BigDecimal.valueOf(value).setScale(4, RoundingMode.HALF_UP);
             bars.add(new OhlcBar(LocalDate.of(2020, 1, 1).plusDays(i),
                     c, c.add(BigDecimal.ONE), c.subtract(BigDecimal.ONE), c, 1000L));
         }
         return Ta4jBars.toSeries(bars);
+    }
+
+    /** Test-only accessor so IndicatorCatalogConfigTest can assert the fixture is genuinely
+     *  non-monotonic without duplicating the generation logic. */
+    static BarSeries syntheticSeriesForTest(int n) {
+        return syntheticSeries(n);
     }
 }

@@ -34,6 +34,7 @@ public class GetIndicatorsTool implements AgoraTool {
 
     private static final int MAX_SPECS = 20;
     private static final int MAX_SERIES = 250;
+    private static final int MAX_FETCH_DAYS = 1825;
 
     private final MarketDataService service;
     private final IndicatorRegistry registry;
@@ -106,6 +107,8 @@ public class GetIndicatorsTool implements AgoraTool {
             return ToolResult.unavailable("invalid fetchDays");
         }
         if (days <= 0) return ToolResult.unavailable("invalid fetchDays");
+        // M-X4: silently clamp — mirrors b5b32a7's days<=1825 clamp on the other tools.
+        days = Math.clamp(days, 1, MAX_FETCH_DAYS);
 
         JsonNode indicatorsNode;
         if (args.has("indicators") && !args.get("indicators").isNull()) {
@@ -138,6 +141,7 @@ public class GetIndicatorsTool implements AgoraTool {
         out.put("asOf", bars.getLast().date().toString());
         ArrayNode values = out.putArray("values");
         Set<String> usedLabels = new HashSet<>();
+        boolean anySpecAvailable = false;
 
         for (JsonNode specNode : indicatorsNode) {
             ObjectNode entry = values.addObject();
@@ -148,31 +152,40 @@ public class GetIndicatorsTool implements AgoraTool {
                             + "' — set an explicit label");
                 }
                 entry.put("label", r.label());
-                writeValues(entry, r, series, seriesN);
+                anySpecAvailable |= writeValues(entry, r, series, seriesN, resolver, specNode);
             } catch (SpecException e) {
                 entry.put("available", false);
                 entry.put("error", e.getMessage());
             }
         }
-        out.put("available", true);
+        // research low (g): only true if at least one spec actually produced a value.
+        out.put("available", anySpecAvailable);
         return ToolResult.ok(out);
     }
 
-    private static void writeValues(ObjectNode entry, Resolved r, BarSeries series, int seriesN) {
+    /** @return true iff a value was written (entry's own "available" is true). */
+    private static boolean writeValues(ObjectNode entry, Resolved r, BarSeries series, int seriesN,
+                                        IndicatorExpressionResolver resolver, JsonNode specNode) {
         if (series.getBarCount() < r.minBars()) {
             markInsufficient(entry, r);
-            return;
+            return false;
         }
         int end = series.getEndIndex();
         if (r.def().singleOutput()) {
-            Indicator<Num> ind = r.outputs().values().iterator().next();
+            String outputKey = r.outputs().keySet().iterator().next();
+            Indicator<Num> ind = r.outputs().get(outputKey);
             Num v = ind.getValue(end);
             if (v.isNaN()) {
-                markInsufficient(entry, r);
-                return;
+                // bar count already satisfied minBars — this is a math-domain failure
+                // (e.g. division by zero on a flat window), not insufficient history.
+                markMathDomainError(entry, r);
+                return false;
             }
             entry.put("value", Ta4jBars.toBd(v, 4));
-            if (seriesN > 0) writeSeries(entry.putArray("series"), ind, series, seriesN);
+            if (seriesN > 0) {
+                writeSeries(entry.putArray("series"), resolver, specNode, series, seriesN,
+                        r.minBars(), outputKey);
+            }
         } else {
             ObjectNode value = entry.putObject("value");
             boolean any = false;
@@ -187,17 +200,19 @@ public class GetIndicatorsTool implements AgoraTool {
             }
             if (!any) {
                 entry.remove("value");
-                markInsufficient(entry, r);
-                return;
+                markMathDomainError(entry, r);
+                return false;
             }
             if (seriesN > 0) {
                 ObjectNode seriesObj = entry.putObject("series");
-                for (Map.Entry<String, Indicator<Num>> o : r.outputs().entrySet()) {
-                    writeSeries(seriesObj.putArray(o.getKey()), o.getValue(), series, seriesN);
+                for (String outputKey : r.outputs().keySet()) {
+                    writeSeries(seriesObj.putArray(outputKey), resolver, specNode, series, seriesN,
+                            r.minBars(), outputKey);
                 }
             }
         }
         entry.put("available", true);
+        return true;
     }
 
     private static void markInsufficient(ObjectNode entry, Resolved r) {
@@ -205,11 +220,23 @@ public class GetIndicatorsTool implements AgoraTool {
         entry.put("error", "insufficient history for " + r.def().name());
     }
 
-    private static void writeSeries(ArrayNode arr, Indicator<Num> ind, BarSeries series, int n) {
+    private static void markMathDomainError(ObjectNode entry, Resolved r) {
+        entry.put("available", false);
+        entry.put("error", "math domain error for " + r.def().name());
+    }
+
+    /** H4: ta4j's SMAIndicator (and similar) use a stateful running-total fast path — once a
+     *  warm-up NaN enters that running sum, subsequent sequential reads never recover. Re-resolve
+     *  the spec fresh for every point (correctness over micro-perf, bounded by MAX_SERIES) so no
+     *  indicator instance is ever queried out of the order it was built for. Also starts the
+     *  series at the spec's first stable index — no warm-up/partial-window points are emitted. */
+    private static void writeSeries(ArrayNode arr, IndicatorExpressionResolver resolver, JsonNode specNode,
+                                     BarSeries series, int n, int minBars, String outputKey) {
         int end = series.getEndIndex();
-        int from = Math.max(series.getBeginIndex(), end - n + 1);
+        int from = Math.max(Math.max(series.getBeginIndex(), end - n + 1), minBars - 1);
         for (int i = from; i <= end; i++) {
-            Num v = ind.getValue(i);
+            Indicator<Num> fresh = resolver.resolve(specNode, series).outputs().get(outputKey);
+            Num v = fresh.getValue(i);
             if (v.isNaN()) arr.addNull();
             else arr.add(Ta4jBars.toBd(v, 4));
         }
