@@ -64,7 +64,7 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
                     "Alpaca snapshot returned HTTP " + e.getStatusCode(), e);
         } catch (Exception e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "Alpaca snapshot unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("alpaca", e), e);
         }
         if (snap == null) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
@@ -129,7 +129,7 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
                     "Alpaca bars returned HTTP " + e.getStatusCode(), e);
         } catch (Exception e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "Alpaca bars unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("alpaca", e), e);
         }
         if (root == null) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,

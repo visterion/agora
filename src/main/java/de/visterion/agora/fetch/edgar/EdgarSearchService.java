@@ -53,6 +53,9 @@ public class EdgarSearchService {
     private static javax.xml.parsers.DocumentBuilder newDocumentBuilder() {
         var dbf = javax.xml.parsers.DocumentBuilderFactory.newInstance();
         try {
+            // Secure processing caps entity-expansion (billion-laughs) via the JAXP limits — defence
+            // in depth now that DOCTYPE is allowed below.
+            dbf.setFeature(javax.xml.XMLConstants.FEATURE_SECURE_PROCESSING, true);
             // DOCTYPE declarations are benign on their own (many real Form 4s carry one) — allow
             // them, but keep the external-entity/expansion protections that actually prevent XXE.
             dbf.setFeature("http://apache.org/xml/features/disallow-doctype-decl", false);

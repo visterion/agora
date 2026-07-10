@@ -18,7 +18,7 @@ import java.util.function.LongSupplier;
  * Resolves ticker -> zero-padded 10-digit CIK from SEC company_tickers.json.
  *
  * <p>The ticker->CIK map is cached with a 24h TTL (M-F7): SEC lists newly-listed tickers
- * (spinoffs — the core Agora use case) within that window, so a JVM-lifetime cache would
+ * within that window, so a JVM-lifetime cache would
  * make them permanently unresolvable until restart. On a refresh failure the previous
  * (stale) map keeps serving indefinitely; if there was never any real data at all, an empty
  * result is cached briefly (60s, M-F8) so a cold-start outage doesn't force every waiting
