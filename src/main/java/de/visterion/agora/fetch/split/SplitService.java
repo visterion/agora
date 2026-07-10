@@ -2,6 +2,8 @@ package de.visterion.agora.fetch.split;
 
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.TtlCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -15,6 +17,8 @@ import java.util.function.LongSupplier;
  *  throws instead of returning empty, so the failure is not cached and gets retried. */
 @Component
 public class SplitService {
+
+    private static final Logger log = LoggerFactory.getLogger(SplitService.class);
 
     private final List<SplitProvider> providers;
     private final TtlCache<String, List<SplitEvent>> cache;
@@ -43,6 +47,9 @@ public class SplitService {
                 if (r != null && !r.isEmpty()) return r;   // first non-empty wins
             } catch (MarketDataException e) {
                 // provider unconfigured/unreachable → skip to next
+            } catch (RuntimeException e) {
+                log.warn("split provider {} failed for {}: {}", p.name(), symbol, e.toString());
+                // treat as unreachable → skip to next
             }
         }
         if (!anyAnswered)
