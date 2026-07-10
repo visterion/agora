@@ -70,9 +70,15 @@ public class NewsService {
                     headline,
                     n.path("summary").asString(""),
                     n.path("source").asString(""),
-                    Instant.ofEpochSecond(n.path("datetime").asLong(0)),
+                    epochSeconds(n.path("datetime")),
                     n.path("url").asString("")));
         }
         return out;
+    }
+
+    /** Missing/null datetime yields null, not the fabricated epoch-0 (1970-01-01) timestamp. */
+    private static Instant epochSeconds(JsonNode n) {
+        if (n.isMissingNode() || n.isNull()) return null;
+        return Instant.ofEpochSecond(n.asLong(0));
     }
 }

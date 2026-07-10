@@ -38,6 +38,17 @@ class EarningsEstimatesServiceTest {
         assertThat(e.get(1).actual()).isEqualByComparingTo("2.1");
     }
 
+    @Test void missingNumericsYieldNullNotZero() {
+        wm.stubFor(get(urlPathEqualTo("/stock/earnings"))
+            .willReturn(okJson("[{\"period\":\"2026-03-31\"}]")));
+        List<EarningsEstimate> e = svc("k").earnings("AAPL");
+        assertThat(e).hasSize(1);
+        assertThat(e.get(0).actual()).isNull();
+        assertThat(e.get(0).estimate()).isNull();
+        assertThat(e.get(0).surprise()).isNull();
+        assertThat(e.get(0).surprisePercent()).isNull();
+    }
+
     @Test void blankKeyThrows() {
         assertThatThrownBy(() -> svc("").earnings("AAPL")).isInstanceOf(MarketDataException.class);
     }

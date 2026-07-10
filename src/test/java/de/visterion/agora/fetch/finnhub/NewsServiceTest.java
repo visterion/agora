@@ -49,6 +49,16 @@ class NewsServiceTest {
                 .isInstanceOf(MarketDataException.class);
     }
 
+    @Test void missingDatetimeYieldsNullNotEpochZero() {
+        wm.stubFor(get(urlPathEqualTo("/company-news"))
+                .willReturn(okJson("""
+                    [{"headline":"Apple beats","summary":"s","source":"Reuters","url":"http://x/1"}]
+                    """)));
+        List<NewsItem> news = svc("k").companyNews("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-01-08"));
+        assertThat(news).hasSize(1);
+        assertThat(news.get(0).datetime()).isNull();
+    }
+
     @Test void cachesSuccess() {
         wm.stubFor(get(urlPathEqualTo("/company-news"))
                 .willReturn(okJson("[{\"headline\":\"h\",\"datetime\":1,\"url\":\"u\",\"source\":\"s\",\"summary\":\"x\"}]")));
