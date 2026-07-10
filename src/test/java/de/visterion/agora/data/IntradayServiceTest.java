@@ -14,7 +14,7 @@ class IntradayServiceTest {
     @BeforeEach void reset() { wm.resetAll(); }
 
     private IntradayService svc() {
-        return new IntradayService(wm.baseUrl(), "TestAgent/1.0", "5m", "1d", 120L, System::currentTimeMillis);
+        return new IntradayService(wm.baseUrl(), "TestAgent/1.0", "5m", "1d", 120L, 4_000L, System::currentTimeMillis);
     }
 
     @Test void parsesBarsSkippingNullCloses() {

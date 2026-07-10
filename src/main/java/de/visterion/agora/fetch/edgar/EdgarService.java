@@ -4,6 +4,7 @@ import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.TtlCache;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -11,6 +12,7 @@ import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -55,9 +57,19 @@ public class EdgarService {
     @Autowired
     public EdgarService(@Value("${agora.data.edgar.user-agent}") String userAgent,
                         EdgarCikResolver cikResolver,
-                        @Value("${agora.data.cache.ttl.filings-seconds:3600}") long ttlSeconds) {
-        this(RestClient.builder().baseUrl("https://data.sec.gov").defaultHeader("User-Agent", userAgent).build(),
-                cikResolver, ttlSeconds, System::currentTimeMillis);
+                        @Value("${agora.data.cache.ttl.filings-seconds:3600}") long ttlSeconds,
+                        @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
+        this(buildHttp(userAgent, timeoutMs), cikResolver, ttlSeconds, System::currentTimeMillis);
+    }
+
+    private static RestClient buildHttp(String userAgent, long timeoutMs) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        return RestClient.builder()
+                .requestFactory(rf)
+                .baseUrl("https://data.sec.gov")
+                .defaultHeader("User-Agent", userAgent)
+                .build();
     }
 
     // protected (not package-private) so a cross-package @Primary stub subclass in an
