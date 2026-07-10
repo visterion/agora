@@ -1,5 +1,6 @@
 package de.visterion.agora.fetch.edgar;
 
+import de.visterion.agora.data.DataHttp;
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.TtlCache;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -12,7 +13,6 @@ import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
-import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -64,8 +64,7 @@ public class EdgarService {
     }
 
     private static RestClient buildHttp(String userAgent, long timeoutMs) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         return RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl("https://data.sec.gov")

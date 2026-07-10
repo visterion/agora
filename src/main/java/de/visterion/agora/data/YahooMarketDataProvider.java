@@ -12,7 +12,6 @@ import org.springframework.web.client.RestClientResponseException;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.math.RoundingMode;
-import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -50,8 +49,7 @@ public class YahooMarketDataProvider implements MarketDataProvider {
             @Value("${agora.data.yahoo.user-agent}") String userAgent,
             @Value("${agora.data.yahoo.retry-base-ms:500}") long retryBaseMs,
             @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         this.client = RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl(baseUrl)

@@ -20,6 +20,14 @@ public final class TradingHttp {
 
     private static final Timeout CONNECT_TIMEOUT = Timeout.ofSeconds(3);
 
+    /**
+     * Pool-checkout timeout (M-T9): how long a request waits for a free connection from the
+     * pool before failing. Apache's default is 3 MINUTES — with a bounded pool, a 6th
+     * concurrent call to the same broker would otherwise queue silently for up to 180s
+     * instead of failing fast.
+     */
+    private static final Timeout CONNECTION_REQUEST_TIMEOUT = Timeout.ofSeconds(3);
+
     private TradingHttp() {}
 
     public static ClientHttpRequestFactory requestFactory(long responseTimeoutMs) {
@@ -37,6 +45,7 @@ public final class TradingHttp {
                 .setConnectionManager(connectionManager)
                 .setDefaultRequestConfig(RequestConfig.custom()
                         .setResponseTimeout(responseTimeout)
+                        .setConnectionRequestTimeout(CONNECTION_REQUEST_TIMEOUT)
                         .build())
                 .build());
     }

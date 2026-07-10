@@ -9,7 +9,6 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,8 +35,7 @@ public class IntradayService {
 
     IntradayService(String baseUrl, String userAgent, String interval, String range,
                     long ttlSeconds, long timeoutMs, LongSupplier now) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         this.client = RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl(baseUrl)

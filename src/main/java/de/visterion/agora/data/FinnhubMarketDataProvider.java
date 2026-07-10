@@ -13,7 +13,6 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 import java.util.List;
 
 /**
@@ -41,8 +40,7 @@ public class FinnhubMarketDataProvider implements MarketDataProvider {
             @Value("${agora.data.finnhub.base-url}") String baseUrl,
             @Value("${agora.data.finnhub.key}") String key,
             @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         this.client = RestClient.builder()
                 .baseUrl(baseUrl)
                 .requestFactory(rf)

@@ -12,7 +12,6 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,8 +41,7 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
             @Value("${agora.data.twelvedata.base-url}") String baseUrl,
             @Value("${agora.data.twelvedata.key}") String key,
             @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         this.client = RestClient.builder()
                 .baseUrl(baseUrl)
                 .requestFactory(rf)

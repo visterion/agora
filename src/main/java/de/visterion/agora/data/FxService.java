@@ -9,7 +9,6 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 import java.util.function.LongSupplier;
 
 /** On-demand FX rates via Yahoo (PAIR=X), cached per-family. No amount conversion (that is a consumer concern). */
@@ -28,8 +27,7 @@ public class FxService {
     }
 
     FxService(String baseUrl, String userAgent, long ttlSeconds, long timeoutMs, LongSupplier now) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         this.client = RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl(baseUrl)

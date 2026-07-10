@@ -12,6 +12,14 @@ spring:
           mcp-endpoint: /mcp
         annotation-scanner:
           enabled: true
+  task:
+    scheduling:
+      pool:
+        # FxWarmer and the Saxo token refresher share the @Scheduled thread pool; a single
+        # thread (default) lets a slow FX warm starve the session-critical Saxo refresh window.
+        size: 2
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
 
 agora:
   auth:
@@ -57,8 +65,9 @@ agora:
           redirect-uri: ${AGORA_TRADING_SAXO_LIVE_REDIRECT_URI:}
   fetch:
     # per-request read timeout for reference/fundamentals fetch clients; generous because
-    # EDGAR company-facts / filing-text responses are multi-MB and the JDK HttpClient
-    # request timeout runs until the full body has arrived
+    # EDGAR company-facts / filing-text responses are multi-MB. The JDK HttpClient request
+    # timeout bounds time-to-headers (and time between subsequent reads), NOT the total time
+    # to receive the full body — a slow-but-steady multi-MB body can still take much longer.
     timeout-ms: ${AGORA_FETCH_TIMEOUT_MS:15000}
   data:
     # per-request read timeout for all market-data HTTP providers (fail fast into the next provider)
@@ -124,3 +133,4 @@ management:
         include: health
 server:
   port: 8080
+  shutdown: graceful

@@ -1,5 +1,6 @@
 package de.visterion.agora.fetch.edgar;
 
+import de.visterion.agora.data.DataHttp;
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.TtlCache;
 import org.slf4j.Logger;
@@ -15,7 +16,6 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -97,8 +97,7 @@ public class EdgarSearchService {
     }
 
     private static RestClient buildHttp(String baseUrl, String userAgent, long timeoutMs) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         return RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl(baseUrl)
