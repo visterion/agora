@@ -595,4 +595,20 @@ class AlpacaBrokerProviderTest {
         assertThatThrownBy(() -> provider.probe())
                 .isInstanceOf(BrokerException.class);
     }
+
+    @Test
+    void slowBrokerResponseFailsFastAsUnavailable() {
+        wm.stubFor(post(urlEqualTo("/orders"))
+                .willReturn(okJson("{\"id\":\"oid-1\",\"status\":\"accepted\"}").withFixedDelay(3_000)));
+        var fastTimeoutProvider = new AlpacaBrokerProvider(wm.baseUrl(), "k", "s", 250L);
+        var req = new BracketOrderRequest(
+                "AAPL", "buy", new BigDecimal("10"), "limit", "gtc",
+                new BigDecimal("190"), new BigDecimal("185"), null,
+                new BigDecimal("200"), "ref-1");
+        long t0 = System.nanoTime();
+        assertThatThrownBy(() -> fastTimeoutProvider.submitBracket(req))
+                .isInstanceOfSatisfying(BrokerException.class,
+                        e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE));
+        assertThat((System.nanoTime() - t0) / 1_000_000L).isLessThan(2_500L);
+    }
 }

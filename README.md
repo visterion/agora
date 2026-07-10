@@ -306,6 +306,7 @@ for the full list and defaults). Key ones:
 | `AGORA_TRADING_SAXO_LIVE_APP_KEY` / `_APP_SECRET` / `_BASE_URL` / `_REDIRECT_URI` | Saxo LIVE developer-app credentials + OAuth redirect (`saxo-live`) |
 | `AGORA_TRADING_SAXO_TOKEN_DIR` | Directory for persisted Saxo OAuth tokens (default `/data/saxo`) |
 | `AGORA_TRADING_SAXO_REFRESH_CHECK_MS` | Saxo token auto-refresh check interval in ms (default `30000`) |
+| `AGORA_TRADING_PROVIDER_TIMEOUT_MS` | Response timeout for broker/OAuth HTTP calls in ms (default `10000`; connect timeout is fixed at 3 s) |
 | `AGORA_DATA_ALPACA_KEY_ID` / `_SECRET` / `_BASE_URL` | Alpaca Market Data credentials (broker-first quote/OHLC + splits; IEX feed). Blank = provider self-skips |
 | `AGORA_DATA_FINNHUB_KEY` | Finnhub API key |
 | `AGORA_DATA_TWELVEDATA_KEY` | TwelveData API key |

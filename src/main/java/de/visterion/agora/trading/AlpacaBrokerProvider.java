@@ -3,8 +3,6 @@ package de.visterion.agora.trading;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
-import org.apache.hc.client5.http.impl.classic.HttpClients;
-import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
@@ -24,14 +22,18 @@ public class AlpacaBrokerProvider implements BrokerProvider {
     private final RestClient client;
 
     /** Instances are built by AlpacaBrokerProviderFactory, one per active connection. */
-    AlpacaBrokerProvider(String baseUrl, String keyId, String secret) {
+    AlpacaBrokerProvider(String baseUrl, String keyId, String secret, long timeoutMs) {
         this.client = RestClient.builder()
-                .requestFactory(new HttpComponentsClientHttpRequestFactory(
-                        HttpClients.custom().disableAutomaticRetries().build()))
+                .requestFactory(TradingHttp.requestFactory(timeoutMs))
                 .baseUrl(baseUrl)
                 .defaultHeader("APCA-API-KEY-ID", keyId)
                 .defaultHeader("APCA-API-SECRET-KEY", secret)
                 .build();
+    }
+
+    /** Default-timeout convenience ctor (tests). */
+    AlpacaBrokerProvider(String baseUrl, String keyId, String secret) {
+        this(baseUrl, keyId, secret, 10_000L);
     }
 
     @Override

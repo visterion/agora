@@ -23,7 +23,7 @@ class SaxoBrokerProviderFactoryTest {
 
     @Test
     void providerKeyIsSaxo() {
-        assertThat(new SaxoBrokerProviderFactory(new SaxoTokenStores(dir, () -> 0L)).provider())
+        assertThat(new SaxoBrokerProviderFactory(new SaxoTokenStores(dir, () -> 0L), 10_000L).provider())
                 .isEqualTo("saxo");
     }
 
@@ -37,7 +37,7 @@ class SaxoBrokerProviderFactoryTest {
 
     @Test
     void createBuildsSaxoProvider() {
-        var p = new SaxoBrokerProviderFactory(new SaxoTokenStores(dir, () -> 0L))
+        var p = new SaxoBrokerProviderFactory(new SaxoTokenStores(dir, () -> 0L), 10_000L)
                 .create(cfg(ConnectionConfig.Environment.PAPER));
         assertThat(p).isInstanceOf(SaxoBrokerProvider.class);
         assertThat(p.name()).isEqualTo("saxo");

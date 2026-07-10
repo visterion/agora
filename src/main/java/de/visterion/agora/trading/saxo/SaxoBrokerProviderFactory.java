@@ -3,8 +3,8 @@ package de.visterion.agora.trading.saxo;
 import de.visterion.agora.trading.BrokerProvider;
 import de.visterion.agora.trading.BrokerProviderFactory;
 import de.visterion.agora.trading.ConnectionConfig;
-import org.apache.hc.client5.http.impl.classic.HttpClients;
-import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
+import de.visterion.agora.trading.TradingHttp;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
@@ -18,8 +18,13 @@ import org.springframework.web.client.RestClient;
 public class SaxoBrokerProviderFactory implements BrokerProviderFactory {
 
     private final SaxoTokenStores stores;
+    private final long timeoutMs;
 
-    public SaxoBrokerProviderFactory(SaxoTokenStores stores) { this.stores = stores; }
+    public SaxoBrokerProviderFactory(SaxoTokenStores stores,
+            @Value("${agora.trading.provider-timeout-ms:10000}") long timeoutMs) {
+        this.stores = stores;
+        this.timeoutMs = timeoutMs;
+    }
 
     @Override
     public String provider() { return "saxo"; }
@@ -31,8 +36,7 @@ public class SaxoBrokerProviderFactory implements BrokerProviderFactory {
     @Override
     public BrokerProvider create(ConnectionConfig cfg) {
         RestClient client = RestClient.builder()
-                .requestFactory(new HttpComponentsClientHttpRequestFactory(
-                        HttpClients.custom().disableAutomaticRetries().build()))
+                .requestFactory(TradingHttp.requestFactory(timeoutMs))
                 .baseUrl(cfg.getBaseUrl())
                 .build();
         SaxoTokenStore store = stores.forConnection(storeKey(cfg));
