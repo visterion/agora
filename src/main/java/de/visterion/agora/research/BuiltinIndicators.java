@@ -2,6 +2,8 @@ package de.visterion.agora.research;
 
 import org.ta4j.core.BarSeries;
 import org.ta4j.core.Indicator;
+import org.ta4j.core.indicators.ATRIndicator;
+import org.ta4j.core.indicators.DPOIndicator;
 import org.ta4j.core.indicators.MACDIndicator;
 import org.ta4j.core.indicators.StochasticOscillatorKIndicator;
 import org.ta4j.core.indicators.aroon.AroonDownIndicator;
@@ -37,12 +39,17 @@ public final class BuiltinIndicators {
 
     private BuiltinIndicators() {}
 
+    /** 52w_range windows to the last 252 trading days (research low (a)) — not the entire
+     *  fetched history, which used to grow the "52-week" window unboundedly with fetchDays. */
+    private static final int FIFTY_TWO_WEEK_WINDOW = 252;
+
     public static List<IndicatorDef> defs() {
         return List.of(atr(), chandelierStop(), maCross(), fiftyTwoWeekRange(),
-                macd(), bollinger(), stochastic(), aroon(), ichimoku());
+                macd(), bollinger(), stochastic(), aroon(), ichimoku(), dpo());
     }
 
-    /** SMA of True Range — the slice-3 formula, NOT Wilder's ATRIndicator. */
+    /** SMA of True Range — the slice-3 formula, NOT Wilder's ATRIndicator. Used only by the
+     *  standalone 'atr' entry; chandelier_stop uses Wilder-smoothed ATR (see chandelierStop()). */
     private static SMAIndicator smaOfTr(BarSeries series, int period) {
         return new SMAIndicator(new TRIndicator(series), period);
     }
@@ -57,19 +64,33 @@ public final class BuiltinIndicators {
 
     private static IndicatorDef chandelierStop() {
         return new IndicatorDef("chandelier_stop",
-                "Chandelier stop: highest high(period) minus multiple * ATR(period)",
+                "Chandelier stop (long-only): highest high(period) minus multiple * "
+                        + "Wilder-smoothed ATR(period) (MMA, not the SMA-ATR the 'atr' entry uses)",
                 List.of(ParamDef.intParam("period", 22, 1, 500),
                         ParamDef.decimalParam("multiple", "3.0", "0.1", "100")),
                 0, List.of("value"),
-                p -> p.getInt("period") + 1,
+                // H3-style: Wilder MMA is a recursive filter, seeded with the raw first TR value —
+                // convergence-safe minBars, not period+1.
+                p -> 1 + 4 * p.getInt("period"),
                 (series, inputs, p) -> {
                     int period = p.getInt("period");
                     Num mult = Ta4jBars.num(series, p.getDecimal("multiple"));
                     var hh = new HighestValueIndicator(new HighPriceIndicator(series), period);
-                    var atr = smaOfTr(series, period);
+                    var atr = new ATRIndicator(series, period);
                     return Map.of("value",
                             new CombineIndicator(hh, atr, (h, a) -> h.minus(a.multipliedBy(mult))));
                 });
+    }
+
+    private static IndicatorDef dpo() {
+        // research low (b): ta4j's DPOIndicator (Price[t-(period/2+1)] - SMA(period)[t]) is
+        // unstable for period + period/2 bars, not period+1 like the generic YAML formula assumes —
+        // that nonlinearity is why dpo lives here instead of indicators-catalog.yaml.
+        return new IndicatorDef("dpo", "Detrended Price Oscillator",
+                List.of(ParamDef.intParam("period", 20, 1, 500)),
+                1, List.of("value"),
+                p -> p.getInt("period") + p.getInt("period") / 2 + 1,
+                (series, inputs, p) -> Map.of("value", new DPOIndicator(inputs[0], p.getInt("period"))));
     }
 
     private static IndicatorDef maCross() {
@@ -97,7 +118,7 @@ public final class BuiltinIndicators {
                 0, List.of("high", "low"),
                 p -> p.getInt("minBars"),
                 (series, inputs, p) -> {
-                    int window = Math.max(1, series.getBarCount());
+                    int window = Math.max(1, Math.min(FIFTY_TWO_WEEK_WINDOW, series.getBarCount()));
                     var outs = new LinkedHashMap<String, Indicator<Num>>();
                     outs.put("high", new HighestValueIndicator(new HighPriceIndicator(series), window));
                     outs.put("low", new LowestValueIndicator(new LowPriceIndicator(series), window));
@@ -180,7 +201,9 @@ public final class BuiltinIndicators {
                 "Ichimoku cloud lines (standard 9/26/52 settings)",
                 List.of(),
                 0, List.of("tenkan", "kijun", "senkou_a", "senkou_b", "chikou"),
-                p -> 52,
+                // research low (b): senkou span B (52-period highest/lowest) is the true
+                // limiting output — ta4j reports it unstable for 76 bars (not the old, too-low 52).
+                p -> 77,
                 (series, inputs, p) -> {
                     var outs = new LinkedHashMap<String, Indicator<Num>>();
                     outs.put("tenkan", new IchimokuTenkanSenIndicator(series));

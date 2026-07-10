@@ -56,7 +56,7 @@ class IndicatorExpressionResolverTest {
         var r = resolver.resolve(json("\"rsi\""), series);
         assertThat(r.label()).isEqualTo("rsi");
         assertThat(r.def().name()).isEqualTo("rsi");
-        assertThat(r.minBars()).isEqualTo(15);
+        assertThat(r.minBars()).isEqualTo(1 + 4 * 14); // H3: recursive -> convergence-safe minBars
         assertThat(Ta4jBars.toBd(r.outputs().get("value").getValue(series.getEndIndex()), 4))
                 .isEqualByComparingTo("100");
     }
@@ -181,10 +181,30 @@ class IndicatorExpressionResolverTest {
     }
 
     @Test
-    void minBarsPropagatesThroughChain() {
-        var series = Ta4jBars.toSeries(rising(30));
+    void minBarsPropagatesThroughChainAdditively() {
+        // research low (c): composed minBars must be additive (inner + outerWindow - 1), not max —
+        // the outer indicator needs its own full window of *stable* inner values, not just one.
+        var series = Ta4jBars.toSeries(rising(90));
         var r = resolver.resolve(json("{\"name\":\"sma\",\"params\":{\"period\":2},\"of\":\"rsi\"}"), series);
-        // max(own 3, sub 15) = 15
-        assertThat(r.minBars()).isEqualTo(15);
+        // rsi(14) is now warmup:recursive -> minBars = 1+4*14 = 57. sma(period=2) alone -> 1+2 = 3.
+        // additive: subMinBars + ownMinBars - 2 = 57 + 3 - 2 = 58
+        int rsiMinBars = 1 + 4 * 14;
+        assertThat(r.minBars()).isEqualTo(rsiMinBars + 3 - 2);
+    }
+
+    @Test
+    void composedMinBarsMatchesBriefWorkedExample() {
+        // sma(10) of rsi(14) -> minBars == rsiStable + 10 - 1 (rsiStable=57, sma(10) alone minBars=11)
+        var series = Ta4jBars.toSeries(rising(90));
+        var r = resolver.resolve(json("{\"name\":\"sma\",\"params\":{\"period\":10},\"of\":\"rsi\"}"), series);
+        int rsiMinBars = 1 + 4 * 14;
+        assertThat(r.minBars()).isEqualTo(rsiMinBars + 10 - 1);
+    }
+
+    @Test
+    void nonComposedMinBarsUnchanged() {
+        var series = Ta4jBars.toSeries(rising(30));
+        var r = resolver.resolve(json("\"sma\""), series);
+        assertThat(r.minBars()).isEqualTo(21); // 1 + period(20), unaffected (no 'of' composition)
     }
 }

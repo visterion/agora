@@ -2,13 +2,19 @@
 #   class:  FQCN under org.ta4j.core.indicators.* (whitelisted)
 #   inputs: 1 = constructor takes (Indicator, int...); 0 = (BarSeries, int...)
 #   params: int params in constructor order (name, default, min, max)
+#   warmup: 'recursive' (default 'exact') — ta4j seeds EMA/Wilder recursions with the raw
+#           price at the first stable index, not an SMA seed (H3); the value only converges
+#           after several periods. 'recursive' raises minBars from 1+maxPeriod to
+#           1+4*maxPeriod. Non-recursive (SMA/ROC/window-math) entries omit this field.
 # Operators can extend/override via AGORA_RESEARCH_INDICATORS_FILE (same format).
-# Composite/multi-output indicators live in BuiltinIndicators.java instead.
+# Composite/multi-output indicators, and any indicator whose true minBars is not a simple
+# 1(+4)*maxPeriod function of its params (e.g. dpo), live in BuiltinIndicators.java instead.
 indicators:
   rsi:
     class: org.ta4j.core.indicators.RSIIndicator
     description: "Relative Strength Index"
     inputs: 1
+    warmup: recursive
     params:
       - { name: period, default: 14, min: 1, max: 500 }
   sma:
@@ -21,6 +27,7 @@ indicators:
     class: org.ta4j.core.indicators.averages.EMAIndicator
     description: "Exponential Moving Average"
     inputs: 1
+    warmup: recursive
     params:
       - { name: period, default: 20, min: 1, max: 1000 }
   wma:
@@ -33,6 +40,7 @@ indicators:
     class: org.ta4j.core.indicators.averages.KAMAIndicator
     description: "Kaufman Adaptive Moving Average"
     inputs: 1
+    warmup: recursive
     params:
       - { name: barCount, default: 10, min: 1, max: 500 }
       - { name: fastBarCount, default: 2, min: 1, max: 500 }
@@ -47,15 +55,10 @@ indicators:
     class: org.ta4j.core.indicators.PPOIndicator
     description: "Percentage Price Oscillator"
     inputs: 1
+    warmup: recursive
     params:
       - { name: fast, default: 12, min: 1, max: 500 }
       - { name: slow, default: 26, min: 2, max: 1000 }
-  dpo:
-    class: org.ta4j.core.indicators.DPOIndicator
-    description: "Detrended Price Oscillator"
-    inputs: 1
-    params:
-      - { name: period, default: 20, min: 1, max: 500 }
   stddev:
     class: org.ta4j.core.indicators.statistics.StandardDeviationIndicator
     description: "Standard deviation over a window"
@@ -90,6 +93,7 @@ indicators:
     class: org.ta4j.core.indicators.adx.ADXIndicator
     description: "Average Directional Index"
     inputs: 0
+    warmup: recursive
     params:
       - { name: period, default: 14, min: 1, max: 500 }
   williams_r:

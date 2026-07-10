@@ -71,7 +71,7 @@ public class IndicatorService {
                     null, false,
                     null, false,
                     null, false,
-                    "NEUTRAL",
+                    "NEUTRAL", null,
                     null, null, false);
         }
 
@@ -120,12 +120,17 @@ public class IndicatorService {
 
         // --- MA cross state ---
         String maCrossState = "NEUTRAL";
+        Integer crossedWithinBars = null;
         if (maFastAvailable && maSlowAvailable) {
             if (maFast.compareTo(maSlow) < 0) {
                 maCrossState = "DEATH_CROSS";
             } else {
                 maCrossState = "BULLISH";
             }
+            // research low (i): maCrossState is a level, not a cross event by itself — also
+            // report how many bars ago fast/slow last flipped sign (null if no flip is visible
+            // within the bars where both averages are available).
+            crossedWithinBars = barsSinceLastSignFlip(close, params, end);
         }
 
         // --- 52-week high/low (computed from all available bars; flag reflects threshold) ---
@@ -141,8 +146,28 @@ public class IndicatorService {
                 chandelierStop, chandelierBreached,
                 maFast, maFastAvailable,
                 maSlow, maSlowAvailable,
-                maCrossState,
+                maCrossState, crossedWithinBars,
                 high52w, low52w, window52wAvailable);
+    }
+
+    /** Bars since fast/slow last changed sign, scanning back from {@code end} through the
+     *  bars where both SMAs are defined (i.e. down to index {@code maSlow-1}). Null if the
+     *  sign never flips within that window (e.g. a clean, uninterrupted trend). */
+    private static Integer barsSinceLastSignFlip(ClosePriceIndicator close, Params params, int end) {
+        SMAIndicator fastInd = new SMAIndicator(close, params.maFast());
+        SMAIndicator slowInd = new SMAIndicator(close, params.maSlow());
+        int firstBothAvailable = params.maSlow() - 1;
+        if (end <= firstBothAvailable) return null;
+        int currentSign = sign(fastInd, slowInd, end);
+        for (int idx = end - 1; idx >= firstBothAvailable; idx--) {
+            if (sign(fastInd, slowInd, idx) != currentSign) return end - idx;
+        }
+        return null;
+    }
+
+    private static int sign(SMAIndicator fast, SMAIndicator slow, int idx) {
+        return fast.getValue(idx).minus(slow.getValue(idx)).bigDecimalValue()
+                .compareTo(BigDecimal.ZERO) < 0 ? -1 : 1;
     }
 
     /**

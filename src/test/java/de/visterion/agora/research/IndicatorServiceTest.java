@@ -159,6 +159,34 @@ class IndicatorServiceTest {
         assertThat(ind.maFastAvailable()).isTrue();
         assertThat(ind.maSlowAvailable()).isFalse();
         assertThat(ind.maCrossState()).isEqualTo("NEUTRAL");
+        assertThat(ind.crossedWithinBars()).isNull();
+    }
+
+    // -------------------------------------------------------------------------
+    // crossedWithinBars: bars since the fast/slow sign last flipped (research low (i))
+    // -------------------------------------------------------------------------
+
+    @Test
+    void crossedWithinBarsNullWhenNoSignChangeInWindow() {
+        // Strictly rising the whole way: fast > slow always -> no sign flip ever recorded.
+        var ind = svc.compute(rising(10), SMALL_PARAMS);
+        assertThat(ind.maCrossState()).isEqualTo("BULLISH");
+        assertThat(ind.crossedWithinBars()).isNull();
+    }
+
+    @Test
+    void crossedWithinBarsCountsBarsSinceTheFlip() {
+        // Declining then rising: fast/slow sign flips partway through -> crossedWithinBars > 0.
+        var bars = new ArrayList<OhlcBar>();
+        // 6 declining bars (close 10..5), then 6 rising bars (close 6..11):
+        // fast(2)/slow(4) starts DEATH_CROSS, ends BULLISH -> a sign flip must be within the window.
+        for (int i = 0; i < 6; i++) bars.add(flat(i, 10 - i));
+        for (int i = 0; i < 6; i++) bars.add(flat(6 + i, 5 + i));
+        var params = new IndicatorService.Params(3, new BigDecimal("3.0"), 2, 4, 5);
+        var ind = svc.compute(bars, params);
+        assertThat(ind.maCrossState()).isEqualTo("BULLISH");
+        assertThat(ind.crossedWithinBars()).isNotNull();
+        assertThat(ind.crossedWithinBars()).isGreaterThan(0);
     }
 
     // -------------------------------------------------------------------------
@@ -205,6 +233,7 @@ class IndicatorServiceTest {
         assertThat(ind.chandelierBreached()).isFalse();
         assertThat(ind.maCrossState()).isEqualTo("NEUTRAL");
         assertThat(ind.currentClose()).isNull();
+        assertThat(ind.crossedWithinBars()).isNull();
     }
 
     @Test

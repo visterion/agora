@@ -10,4 +10,5 @@ public record Indicators(
         BigDecimal maFast, boolean maFastAvailable,
         BigDecimal maSlow, boolean maSlowAvailable,
         String maCrossState,                 // "DEATH_CROSS" | "BULLISH" | "NEUTRAL"
+        Integer crossedWithinBars,            // bars since fast/slow last flipped sign; null if none in window
         BigDecimal high52w, BigDecimal low52w, boolean window52wAvailable) {}
