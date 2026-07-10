@@ -124,7 +124,17 @@ class BuiltinIndicatorsTest {
         // senkou spans exist and are numeric at end (projection semantics vary; NaN allowed for chikou)
         assertThat(outs.get("senkou_a").getValue(end)).isNotNull();
         assertThat(outs.get("senkou_b").getValue(end)).isNotNull();
-        assertThat(outs).containsKey("chikou");
+        // chikou = close lagged 26 bars: rising(120) has close(i) = i+1, end index 119
+        // -> close(93) = 94
+        assertThat(at(outs, "chikou", series)).isEqualByComparingTo("94");
         assertThat(def.outputs()).containsExactly("tenkan", "kijun", "senkou_a", "senkou_b", "chikou");
+    }
+
+    @Test
+    void ichimokuChikouIsNaNOnShortHistory() {
+        var series = Ta4jBars.toSeries(rising(20));   // fewer than 27 bars
+        var def = find("ichimoku");
+        var outs = def.factory().create(series, none(), ResolvedParams.defaults(def.params()));
+        assertThat(outs.get("chikou").getValue(series.getEndIndex()).isNaN()).isTrue();
     }
 }
