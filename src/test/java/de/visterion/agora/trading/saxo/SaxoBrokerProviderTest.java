@@ -268,6 +268,28 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void submitBracketMarketEntryDefaultsToDayOrder() {
+        // 🔶 Saxo semantics: a Market entry with no explicit timeInForce defaults to
+        // DayOrder, not GoodTillCancel — see class-level flatten() javadoc / H6 discussion.
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
+            """)));
+
+        var req = new de.visterion.agora.trading.BracketOrderRequest(
+                "AAPL", "buy", new java.math.BigDecimal("1"), "market", null, null,
+                new java.math.BigDecimal("90"), null,
+                new java.math.BigDecimal("110"), "ref-market-1");
+
+        var r = provider.submitBracket(req);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
+                .withRequestBody(matchingJsonPath("$.OrderDuration.DurationType", equalTo("DayOrder"))));
+    }
+
+    @Test
     void submitBracketStopLossLimitEmitsStopLimitLeg() {
         stubInstrument();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
@@ -570,6 +592,185 @@ class SaxoBrokerProviderTest {
                         e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE));
     }
 
+    @Test
+    void flattenInvalidFractionIsRejectedWithoutAnyCall() {
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("1.5"), null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("INVALID_FRACTION");
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/port/v1/netpositions")));
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void flattenZeroFractionIsRejected() {
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0"), null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("INVALID_FRACTION");
+    }
+
+    // ---- H6: flatten cancels detached protective legs ----
+
+    @Test
+    void flattenCancelsRelatedOpenOcoLegsBeforeClosing() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        // Two detached post-fill Oco legs (Stop + Limit) sharing the position's Uic — no
+        // parent survives post-fill, so they're top-level orders (see modifyBySymbolFallback).
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-sl","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell","Amount":10.0},
+              {"OrderId":"leg-tp","Uic":211,"OpenOrderType":"Limit","BuySell":"Sell","Amount":10.0}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-sl")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-tp")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        var r = provider.flatten("AAPL", null, null);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/leg-sl")));
+        wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/leg-tp")));
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void flattenLegLookupFailureStillClosesWithWarning() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(aResponse().withStatus(503)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        var r = provider.flatten("AAPL", null, null);
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.status()).containsIgnoringCase("warning");
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    // ---- M-T6: idempotent flatten ----
+
+    @Test
+    void flattenRejectsWhenOppositeMarketCloseAlreadyWorking() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        // A prior flatten's Market Sell order is still Working (e.g. the earlier HTTP
+        // response was lost to the caller, but the broker accepted it) — a retry must not
+        // stack a second close.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[{"OrderId":"prior-close","Uic":211,"OpenOrderType":"Market","BuySell":"Sell","Amount":10.0}]}
+            """)));
+
+        var r = provider.flatten("AAPL", null, null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("CLOSE_ALREADY_PENDING");
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void flattenProceedsWhenPendingOppositeMarketIsSmallerThanRequestedClose() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[{"OrderId":"prior-partial-close","Uic":211,"OpenOrderType":"Market","BuySell":"Sell","Amount":3.0}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        var r = provider.flatten("AAPL", null, null);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void flattenNotBlockedByDetachedProtectiveLegsOnPendingCheck() {
+        // Protective (Stop/Limit) legs are opposite-side by construction — they must NOT be
+        // mistaken for a pending "close already working" (that would make every flatten with
+        // a live bracket permanently un-closeable). Only Market-type opposite-side orders
+        // count toward the pending-close check.
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-sl","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell","Amount":10.0},
+              {"OrderId":"leg-tp","Uic":211,"OpenOrderType":"Limit","BuySell":"Sell","Amount":10.0}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-sl")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-tp")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        var r = provider.flatten("AAPL", null, null);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    // ---- pagination ----
+
+    @Test
+    void ordersFollowsNextPaginationLink() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).withQueryParam("FieldGroups", equalTo("DisplayAndFormat"))
+                .willReturn(okJson("""
+                    {"Data":[{"OrderId":"1","OpenOrderType":"Limit","Status":"Working","BuySell":"Buy","Amount":1.0,
+                              "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}],
+                     "__next":"%s/port/v1/orders/me?$skip=1"}
+                    """.formatted(wm.baseUrl()))));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).withQueryParam("$skip", equalTo("1"))
+                .willReturn(okJson("""
+                    {"Data":[{"OrderId":"2","OpenOrderType":"Limit","Status":"Working","BuySell":"Buy","Amount":1.0,
+                              "DisplayAndFormat":{"Symbol":"MSFT:xnas"}}]}
+                    """)));
+
+        var all = provider.orders(null);
+
+        assertThat(all).hasSize(2);
+        assertThat(all).extracting("brokerOrderId").containsExactlyInAnyOrder("1", "2");
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/port/v1/orders/me")).withQueryParam("FieldGroups", equalTo("DisplayAndFormat")));
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/port/v1/orders/me")).withQueryParam("$skip", equalTo("1")));
+    }
+
+    @Test
+    void positionsFollowsNextPaginationLink() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).withQueryParam("ClientKey", equalTo("Cli+Key/1=="))
+                .willReturn(okJson("""
+                    {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                              "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                              "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}],
+                     "__next":"%s/port/v1/netpositions?$skip=1"}
+                    """.formatted(wm.baseUrl()))));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).withQueryParam("$skip", equalTo("1"))
+                .willReturn(okJson("""
+                    {"Data":[{"NetPositionBase":{"Amount":5.0,"Uic":212,"AssetType":"Stock"},
+                              "NetPositionView":{"AverageOpenPrice":50.0,"ExposureCurrency":"USD"},
+                              "DisplayAndFormat":{"Symbol":"MSFT:xnas"}}]}
+                    """)));
+
+        var ps = provider.positions();
+
+        assertThat(ps).hasSize(2);
+        assertThat(ps).extracting("symbol").containsExactlyInAnyOrder("AAPL", "MSFT");
+    }
+
     // ---- modifyBracket ----
 
     private void stubBracketChildren() {
@@ -717,6 +918,51 @@ class SaxoBrokerProviderTest {
         assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
         assertThat(r.rejectReason()).containsIgnoringCase("no stop-loss leg");
         wm.verify(0, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void modifyBracketPatchPreservesLegAssetTypeFromLookup() {
+        // Leg carries its own AssetType (e.g. an options/futures bracket, not a plain
+        // Stock) — patchLeg must send that, not a hardcoded "Stock".
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"9001","OpenOrderType":"Limit","Status":"Working","Uic":211,"AssetType":"Stock",
+               "BuySell":"Buy","Amount":1.0,"OrderRelation":"IfDoneMaster","Price":100.0,
+               "DisplayAndFormat":{"Symbol":"AAPL:xnas"},
+               "RelatedOpenOrders":[
+                 {"OrderId":"9003","OpenOrderType":"StopIfTraded","OrderPrice":90.0,"Status":"NotWorking",
+                  "Amount":1.0,"AssetType":"StockIndexOption","Duration":{"DurationType":"GoodTillCancel"}}]}
+            ]}
+            """)));
+        wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9003\"}")));
+
+        var r = provider.modifyBracket("9001", "AAPL", new java.math.BigDecimal("85"), null);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(patchRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.AssetType", equalTo("StockIndexOption"))));
+    }
+
+    @Test
+    void modifyBracketPatchPreservesGtdExpiry() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"9001","OpenOrderType":"Limit","Status":"Working","Uic":211,"AssetType":"Stock",
+               "BuySell":"Buy","Amount":1.0,"OrderRelation":"IfDoneMaster","Price":100.0,
+               "DisplayAndFormat":{"Symbol":"AAPL:xnas"},
+               "RelatedOpenOrders":[
+                 {"OrderId":"9003","OpenOrderType":"StopIfTraded","OrderPrice":90.0,"Status":"NotWorking",
+                  "Amount":1.0,"Duration":{"DurationType":"GoodTillDate","ExpirationDateTime":"2026-08-01T00:00:00Z"}}]}
+            ]}
+            """)));
+        wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9003\"}")));
+
+        var r = provider.modifyBracket("9001", "AAPL", new java.math.BigDecimal("85"), null);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(patchRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderDuration.DurationType", equalTo("GoodTillDate")))
+                .withRequestBody(matchingJsonPath("$.OrderDuration.ExpirationDateTime", equalTo("2026-08-01T00:00:00Z"))));
     }
 
     @Test

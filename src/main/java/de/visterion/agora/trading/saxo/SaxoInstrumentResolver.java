@@ -3,10 +3,12 @@ package de.visterion.agora.trading.saxo;
 import de.visterion.agora.data.TtlCache;
 import de.visterion.agora.trading.BrokerException;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -14,7 +16,9 @@ import java.util.function.Supplier;
  * Resolves a plain ticker (AAPL) to Saxo's (Uic, AssetType). Saxo keyword search is
  * fuzzy, so candidates are filtered to an exact base-symbol match; zero or multiple
  * survivors are order-level failures (rejected), not outages. Successful lookups are
- * cached (default 24h) — instrument identity is effectively static intraday.
+ * cached (default 24h) — instrument identity is effectively static intraday. Failed
+ * (unknown/ambiguous) lookups are also cached, briefly (60s) — a hot retry loop on a
+ * typo'd/unsupported symbol must not hammer the Saxo search endpoint every call.
  */
 public class SaxoInstrumentResolver {
 
@@ -24,10 +28,17 @@ public class SaxoInstrumentResolver {
         public SymbolResolutionException(String message) { super(message); }
     }
 
+    /** Negative-lookup cache TTL — deliberately much shorter than the positive {@code cache}
+     * TTL: an unknown symbol today might be listed tomorrow, and 60s is enough to absorb a
+     * hot retry burst without masking a fix for a full trading day. */
+    private static final long NEGATIVE_CACHE_TTL_MILLIS = 60_000L;
+
     private final RestClient client;
     private final Supplier<String> bearer;
     private final String exchangeId;
     private final TtlCache<String, ResolvedInstrument> cache;
+    private final LongSupplier nowMillis;
+    private final ConcurrentHashMap<String, Long> negativeExpiresAt = new ConcurrentHashMap<>();
 
     public SaxoInstrumentResolver(RestClient client, Supplier<String> bearer,
                                   String exchangeId, long ttlMillis, LongSupplier nowMillis) {
@@ -35,10 +46,25 @@ public class SaxoInstrumentResolver {
         this.bearer = bearer;
         this.exchangeId = (exchangeId == null || exchangeId.isBlank()) ? null : exchangeId;
         this.cache = new TtlCache<>(ttlMillis, nowMillis);
+        this.nowMillis = nowMillis;
     }
 
     public ResolvedInstrument resolve(String symbol) {
-        return cache.get(symbol.toUpperCase(java.util.Locale.ROOT), () -> lookup(symbol));
+        String key = symbol.toUpperCase(java.util.Locale.ROOT);
+        return cache.get(key, () -> lookupWithNegativeCache(key, symbol));
+    }
+
+    private ResolvedInstrument lookupWithNegativeCache(String key, String symbol) {
+        Long expiresAt = negativeExpiresAt.get(key);
+        if (expiresAt != null && expiresAt > nowMillis.getAsLong()) {
+            throw new SymbolResolutionException("unknown symbol: " + symbol);
+        }
+        try {
+            return lookup(symbol);
+        } catch (SymbolResolutionException e) {
+            negativeExpiresAt.put(key, nowMillis.getAsLong() + NEGATIVE_CACHE_TTL_MILLIS);
+            throw e;
+        }
     }
 
     private ResolvedInstrument lookup(String symbol) {
@@ -64,6 +90,10 @@ public class SaxoInstrumentResolver {
                     .retrieve().body(JsonNode.class);
         } catch (BrokerException e) {
             throw e;
+        } catch (RestClientResponseException e) {
+            // Distinguishes a 429 (NOT_READY/retryable) from a hard outage (UNAVAILABLE),
+            // and maps 401/403/404 consistently with the rest of the Saxo integration.
+            throw SaxoBrokerProvider.readError(e);
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "saxo instrument lookup failed: " + e.getMessage(), e);

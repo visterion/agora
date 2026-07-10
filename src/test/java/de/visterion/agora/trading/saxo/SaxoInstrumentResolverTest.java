@@ -78,6 +78,41 @@ class SaxoInstrumentResolverTest {
     }
 
     @Test
+    void negativeLookupIsCachedBriefly() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .willReturn(okJson("{\"Data\":[]}")));
+        var r = resolver(null);
+
+        assertThatThrownBy(() -> r.resolve("NOPE"))
+                .isInstanceOf(SaxoInstrumentResolver.SymbolResolutionException.class);
+        assertThatThrownBy(() -> r.resolve("NOPE"))
+                .isInstanceOf(SaxoInstrumentResolver.SymbolResolutionException.class);
+
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));
+    }
+
+    @Test
+    void negativeLookupExpiresAfterTtl() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .willReturn(okJson("{\"Data\":[]}")));
+        var r = resolver(null);
+
+        assertThatThrownBy(() -> r.resolve("NOPE")).isInstanceOf(SaxoInstrumentResolver.SymbolResolutionException.class);
+        now.addAndGet(61_000L);   // past the 60s negative-cache TTL
+        assertThatThrownBy(() -> r.resolve("NOPE")).isInstanceOf(SaxoInstrumentResolver.SymbolResolutionException.class);
+
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));
+    }
+
+    @Test
+    void rateLimitedLookupThrowsNotReadyNotUnavailable() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(aResponse().withStatus(429)));
+        assertThatThrownBy(() -> resolver(null).resolve("AAPL"))
+                .isInstanceOfSatisfying(de.visterion.agora.trading.BrokerException.class,
+                        e -> assertThat(e.kind()).isEqualTo(de.visterion.agora.trading.BrokerException.Kind.NOT_READY));
+    }
+
+    @Test
     void secondResolveIsCached() {
         wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("""
             {"Data":[{"Identifier":211,"AssetType":"Stock","Symbol":"AAPL:xnas"}]}
