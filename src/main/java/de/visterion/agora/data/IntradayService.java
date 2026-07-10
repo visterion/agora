@@ -85,6 +85,12 @@ public class IntradayService {
                         vols.path(i).asLong(0)));
             }
         }
+        // Never cache an empty result as success: an all-null/empty candle set means
+        // "nothing to serve" (unknown symbol variant, dead session) — signal NOT_FOUND.
+        if (out.isEmpty()) {
+            throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
+                    "no intraday bars for " + symbol, null);
+        }
         return out;
     }
 

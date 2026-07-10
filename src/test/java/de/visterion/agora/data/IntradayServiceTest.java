@@ -75,4 +75,15 @@ class IntradayServiceTest {
         s.intraday("AAPL", null, null);
         wm.verify(1, getRequestedFor(urlPathEqualTo("/v8/finance/chart/AAPL")));
     }
+
+    @Test void emptyBarsThrowNotFoundInsteadOfCachingEmptySuccess() {
+        wm.stubFor(get(urlPathEqualTo("/v8/finance/chart/AAPL"))
+                .willReturn(okJson("""
+                    {"chart":{"result":[{"timestamp":[],
+                      "indicators":{"quote":[{"open":[],"high":[],"low":[],"close":[],"volume":[]}]}}],"error":null}}
+                    """)));
+        assertThatThrownBy(() -> svc().intraday("AAPL", null, null))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
+    }
 }

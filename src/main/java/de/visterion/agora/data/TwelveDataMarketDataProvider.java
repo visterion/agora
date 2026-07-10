@@ -118,6 +118,10 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "TwelveData history returned empty body for " + symbol, null);
         }
+        if ("error".equals(ts.path("status").asString(""))) {
+            throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
+                    "Symbol " + symbol + " not found at TwelveData", null);
+        }
         List<OhlcBar> out = new ArrayList<>();
         JsonNode values = ts.path("values");
         if (values.isArray()) {
@@ -132,6 +136,12 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
                 out.add(new OhlcBar(date, o, h, l, c, v.path("volume").asLong(0)));
             }
             Collections.reverse(out);                         // -> oldest-first
+        }
+        // Empty history means "not served here" (e.g. plan-restricted exchange): throw
+        // NOT_FOUND so MarketDataService falls through instead of caching an empty success.
+        if (out.isEmpty()) {
+            throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
+                    "Symbol " + symbol + " has no bars at TwelveData", null);
         }
         return out;
     }
