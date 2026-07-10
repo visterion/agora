@@ -18,6 +18,7 @@ import java.util.List;
 @Component
 public class GetFilingsTool implements AgoraTool {
 
+    private static final int MAX_LIMIT = 100;
     private final EdgarService service;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -37,7 +38,7 @@ public class GetFilingsTool implements AgoraTool {
         props.putObject("formType").put("type", "string").put("description", "filter by form type, e.g. 8-K, 10-Q");
         props.putObject("from").put("type", "string").put("description", "earliest filing date ISO (YYYY-MM-DD)");
         props.putObject("to").put("type", "string").put("description", "latest filing date ISO (YYYY-MM-DD)");
-        props.putObject("limit").put("type", "integer").put("description", "max filings to return; default 40");
+        props.putObject("limit").put("type", "integer").put("description", "max filings to return; default 40, max " + MAX_LIMIT);
         return schema;
     }
 
@@ -57,7 +58,7 @@ public class GetFilingsTool implements AgoraTool {
         } catch (DateTimeParseException e) {
             return ToolResult.unavailable("invalid date");
         }
-        int limit = args.path("limit").asInt(40);
+        int limit = Math.clamp(args.path("limit").asInt(40), 1, MAX_LIMIT);
         try {
             String resolvedCik = service.resolveCik(symbol, cik);
             List<FilingRef> filings = service.filings(symbol, cik, formType, from, to, limit);
