@@ -33,7 +33,7 @@ public class AlpacaBrokerProvider implements BrokerProvider {
 
     /** Default-timeout convenience ctor (tests). */
     AlpacaBrokerProvider(String baseUrl, String keyId, String secret) {
-        this(baseUrl, keyId, secret, 10_000L);
+        this(baseUrl, keyId, secret, TradingHttp.DEFAULT_TIMEOUT_MS);
     }
 
     @Override
