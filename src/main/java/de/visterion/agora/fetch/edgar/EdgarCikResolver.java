@@ -1,5 +1,6 @@
 package de.visterion.agora.fetch.edgar;
 
+import de.visterion.agora.data.DataHttp;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
@@ -54,8 +55,7 @@ public class EdgarCikResolver {
     }
 
     private static RestClient buildHttpClient(String userAgent, long timeoutMs) {
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         return RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl("https://www.sec.gov")
