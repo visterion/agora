@@ -91,6 +91,19 @@ class EarningsServiceTest {
         assertThat(svc.earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"))).hasSize(1);
     }
 
+    @Test void nonMarketDataExceptionFromOneProviderDoesNotAbortChain() {
+        // M-D1: a provider throwing a plain RuntimeException (e.g. NPE) must not abort the
+        // fallback chain — the next provider should still be consulted.
+        var ev = List.of(new EarningsEvent("AAPL", LocalDate.parse("2025-05-01"),
+                null, null, null, null, null));
+        EarningsProvider broken = new EarningsProvider() {
+            public String name() { return "broken"; }
+            public List<EarningsEvent> earnings(String s, LocalDate f, LocalDate t) { throw new NullPointerException("boom"); }
+        };
+        var svc = new EarningsService(List.of(broken, fixed("yahoo", ev, false)), 120L, System::currentTimeMillis);
+        assertThat(svc.earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"))).hasSize(1);
+    }
+
     @Test void allEmptyThrowsAndIsNotCached() {
         int[] count = {0};
         EarningsProvider countingEmpty = new EarningsProvider() {

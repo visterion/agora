@@ -56,6 +56,14 @@ class SplitServiceTest {
         assertThat(bCalls.get()).isEqualTo(2);
     }
 
+    @Test void nonMarketDataExceptionFromOneProviderDoesNotAbortChain() {
+        // M-D1: a provider throwing a plain RuntimeException (e.g. NPE) must not abort the
+        // fallback chain — the next provider should still be consulted.
+        SplitProvider broken = stub("broken", () -> { throw new NullPointerException("boom"); });
+        SplitProvider finnhub = stub("finnhub", () -> List.of(ev()));
+        assertThat(svc(List.of(broken, finnhub)).splits("NVDA")).hasSize(1);
+    }
+
     @Test void oneAnsweredEmpty_oneThrew_returnsEmptyNotThrow() {
         SplitProvider a = stub("a", () -> { throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "a down", null); });
         SplitProvider b = stub("b", List::of);

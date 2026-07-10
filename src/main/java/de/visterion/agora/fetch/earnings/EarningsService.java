@@ -2,6 +2,8 @@ package de.visterion.agora.fetch.earnings;
 
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.TtlCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -22,6 +24,8 @@ import java.util.function.LongSupplier;
  */
 @Component
 public class EarningsService {
+
+    private static final Logger log = LoggerFactory.getLogger(EarningsService.class);
 
     private final List<EarningsProvider> providers;
     private final TtlCache<String, List<EarningsEvent>> cache;
@@ -56,6 +60,10 @@ public class EarningsService {
                 // Empty is "no answer", not success — try the next provider.
             } catch (MarketDataException e) {
                 last = e;
+            } catch (RuntimeException e) {
+                log.warn("earnings provider {} failed for {}: {}", p.name(), symbol, e.toString());
+                last = new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                        p.name() + " failed: " + e.getMessage(), e);
             }
         }
         if (last != null) {

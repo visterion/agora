@@ -62,6 +62,13 @@ public class TtlCache<K, V> {
         return map.containsKey(key);
     }
 
+    /** True if {@code key} holds a value that has not yet expired (unlike {@link #containsKey},
+     *  which does not check the TTL). Use this for read-before-load short-circuits. */
+    public boolean isFresh(K key) {
+        Entry<V> e = map.get(key);
+        return e != null && e.expiresAtMillis() > nowMillis.getAsLong();
+    }
+
     private void evictToMakeRoom(long now) {
         map.values().removeIf(e -> e.expiresAtMillis() <= now);
         if (map.size() >= maxSize) {
