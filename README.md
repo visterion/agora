@@ -72,23 +72,7 @@ Dracul, it proves the API is genuinely neutral.
 Agora runs as one Spring Boot application. A single tool registry is served through two
 front-doors, the MCP endpoint and an HTTP webhook, and both expose the same set of tools.
 
-```
-                       ┌──────────────────────────────────────────┐
-                       │                 Agora                     │
-   MCP client ───────▶ │  /mcp   (Streamable HTTP, MCP protocol)   │
-   (Claude, agents)    │      └────┐                               │
-                       │           ▼                               │
-   Vistierie agent ──▶ │  /tools/{name} (POST)  ──▶ ToolRegistry ──┼──▶ provider plugins
-   (webhook)           │  /tools        (GET, catalog)   │         │    (Yahoo, Finnhub,
-                       │                                 ▼         │     TwelveData, EDGAR,
-   ops / k8s ────────▶ │  /actuator/health (public)   AgoraTool   │     Wikipedia)
-                       │                              beans        │
-                       │                                 │         │
-                       │                                 ▼         │
-                       │                          broker plugins   │
-                       │                          (Alpaca, Saxo)   │
-                       └──────────────────────────────────────────┘
-```
+<img width="1513" height="939" alt="image" src="https://github.com/user-attachments/assets/a9c24702-7453-4ff8-9832-fd6cee1cb025" />
 
 **Every tool is a Spring `@Component` implementing the `AgoraTool` interface:**
 
