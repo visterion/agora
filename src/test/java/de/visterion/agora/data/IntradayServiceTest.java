@@ -86,4 +86,33 @@ class IntradayServiceTest {
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
     }
+
+    // --- H2: a bar with a null O/H/L (but non-null close) must be dropped, not zeroed ---
+
+    @Test void skipsBarWithNullLowButNonNullClose() {
+        wm.stubFor(get(urlPathEqualTo("/v8/finance/chart/AAPL"))
+                .willReturn(okJson("""
+                    {"chart":{"result":[{
+                      "timestamp":[1749600000,1749600300,1749600600],
+                      "indicators":{"quote":[{
+                        "open":[10.0,10.1,10.4],"high":[10.2,10.3,10.6],
+                        "low":[9.9,null,10.3],"close":[10.1,10.2,10.5],"volume":[100,200,300]
+                      }]}
+                    }],"error":null}}
+                    """)));
+        var bars = svc().intraday("AAPL", null, null);
+        assertThat(bars).hasSize(2);
+        assertThat(bars).noneMatch(b -> b.low().compareTo(java.math.BigDecimal.ZERO) == 0);
+        assertThat(bars.get(0).close()).isEqualByComparingTo("10.1");
+        assertThat(bars.get(1).close()).isEqualByComparingTo("10.5");
+    }
+
+    // --- Lows: 404 must throw NOT_FOUND, not UNAVAILABLE ---
+
+    @Test void yahoo404ThrowsNotFound() {
+        wm.stubFor(get(urlPathEqualTo("/v8/finance/chart/ZZZZ")).willReturn(aResponse().withStatus(404)));
+        assertThatThrownBy(() -> svc().intraday("ZZZZ", null, null))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
+    }
 }
