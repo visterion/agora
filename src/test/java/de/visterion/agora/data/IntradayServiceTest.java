@@ -14,7 +14,7 @@ class IntradayServiceTest {
     @BeforeEach void reset() { wm.resetAll(); }
 
     private IntradayService svc() {
-        return new IntradayService(wm.baseUrl(), "TestAgent/1.0", "5m", "1d", 120L, System::currentTimeMillis);
+        return new IntradayService(wm.baseUrl(), "TestAgent/1.0", "5m", "1d", 120L, 4_000L, System::currentTimeMillis);
     }
 
     @Test void parsesBarsSkippingNullCloses() {
@@ -74,5 +74,16 @@ class IntradayServiceTest {
         s.intraday("AAPL", null, null);
         s.intraday("AAPL", null, null);
         wm.verify(1, getRequestedFor(urlPathEqualTo("/v8/finance/chart/AAPL")));
+    }
+
+    @Test void emptyBarsThrowNotFoundInsteadOfCachingEmptySuccess() {
+        wm.stubFor(get(urlPathEqualTo("/v8/finance/chart/AAPL"))
+                .willReturn(okJson("""
+                    {"chart":{"result":[{"timestamp":[],
+                      "indicators":{"quote":[{"open":[],"high":[],"low":[],"close":[],"volume":[]}]}}],"error":null}}
+                    """)));
+        assertThatThrownBy(() -> svc().intraday("AAPL", null, null))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
     }
 }

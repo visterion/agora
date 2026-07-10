@@ -4,6 +4,7 @@ import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.TtlCache;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
@@ -11,6 +12,7 @@ import tools.jackson.databind.JsonNode;
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -51,10 +53,21 @@ public class EdgarSearchService {
             @Value("${agora.data.edgar.user-agent}") String userAgent,
             @Value("${agora.data.edgar.efts-base-url:https://efts.sec.gov}") String eftsBase,
             @Value("${agora.data.edgar.archive-base:https://www.sec.gov}") String archiveBase,
-            @Value("${agora.data.cache.ttl.filings-seconds:3600}") long ttlSeconds) {
-        this(RestClient.builder().baseUrl(eftsBase).defaultHeader("User-Agent", userAgent).build(),
-                RestClient.builder().baseUrl(archiveBase).defaultHeader("User-Agent", userAgent).build(),
+            @Value("${agora.data.cache.ttl.filings-seconds:3600}") long ttlSeconds,
+            @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
+        this(buildHttp(eftsBase, userAgent, timeoutMs),
+                buildHttp(archiveBase, userAgent, timeoutMs),
                 archiveBase, ttlSeconds, System::currentTimeMillis);
+    }
+
+    private static RestClient buildHttp(String baseUrl, String userAgent, long timeoutMs) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        return RestClient.builder()
+                .requestFactory(rf)
+                .baseUrl(baseUrl)
+                .defaultHeader("User-Agent", userAgent)
+                .build();
     }
 
     // Test constructor: pre-built efts RestClient (User-Agent already set) + archive base.

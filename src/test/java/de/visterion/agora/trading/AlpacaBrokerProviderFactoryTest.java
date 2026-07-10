@@ -8,7 +8,7 @@ class AlpacaBrokerProviderFactoryTest {
 
     @Test
     void providerKeyIsAlpaca() {
-        assertThat(new AlpacaBrokerProviderFactory().provider()).isEqualTo("alpaca");
+        assertThat(new AlpacaBrokerProviderFactory(10_000L).provider()).isEqualTo("alpaca");
     }
 
     @Test
@@ -20,7 +20,7 @@ class AlpacaBrokerProviderFactoryTest {
         cfg.setKeyId("k");
         cfg.setSecret("s");
 
-        BrokerProvider p = new AlpacaBrokerProviderFactory().create(cfg);
+        BrokerProvider p = new AlpacaBrokerProviderFactory(10_000L).create(cfg);
 
         assertThat(p).isInstanceOf(AlpacaBrokerProvider.class);
         assertThat(p.name()).isEqualTo("alpaca");

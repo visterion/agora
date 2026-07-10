@@ -537,6 +537,39 @@ class SaxoBrokerProviderTest {
                 .isEqualTo(BrokerException.Kind.NOT_FOUND);
     }
 
+    @Test
+    void flattenSendsXRequestIdHeader() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        provider.flatten("AAPL", null, null);
+
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withHeader("X-Request-ID", matching(".+")));
+    }
+
+    @Test
+    void flatten409IsUnavailableReplayHint() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .willReturn(aResponse().withStatus(409)));
+
+        assertThatThrownBy(() -> provider.flatten("AAPL", null, null))
+                .isInstanceOfSatisfying(BrokerException.class,
+                        e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE));
+    }
+
     // ---- modifyBracket ----
 
     private void stubBracketChildren() {

@@ -74,4 +74,44 @@ class GetOhlcToolTest {
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("bars")).hasSize(1);
     }
+
+    @Test
+    void oversizedDaysIsClampedTo1825() {
+        int[] seen = new int[1];
+        MarketDataProvider capturing = new MarketDataProvider() {
+            public String name() { return "stub"; }
+            public Quote quote(String s) { throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "n/a", null); }
+            public List<OhlcBar> ohlc(String s, int d) {
+                seen[0] = d;
+                return List.of(new OhlcBar(LocalDate.of(2024, 1, 2),
+                        BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, 1L));
+            }
+        };
+        var tool = new GetOhlcTool(svcWith(capturing));
+        ObjectNode args = mapper.createObjectNode();
+        args.put("symbol", "AAPL");
+        args.put("days", 1_000_000);
+        assertThat(tool.call(args).available()).isTrue();
+        assertThat(seen[0]).isEqualTo(1825);
+    }
+
+    @Test
+    void nonPositiveDaysIsClampedTo1() {
+        int[] seen = new int[1];
+        MarketDataProvider capturing = new MarketDataProvider() {
+            public String name() { return "stub"; }
+            public Quote quote(String s) { throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "n/a", null); }
+            public List<OhlcBar> ohlc(String s, int d) {
+                seen[0] = d;
+                return List.of(new OhlcBar(LocalDate.of(2024, 1, 2),
+                        BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, 1L));
+            }
+        };
+        var tool = new GetOhlcTool(svcWith(capturing));
+        ObjectNode args = mapper.createObjectNode();
+        args.put("symbol", "AAPL");
+        args.put("days", -5);
+        assertThat(tool.call(args).available()).isTrue();
+        assertThat(seen[0]).isEqualTo(1);
+    }
 }

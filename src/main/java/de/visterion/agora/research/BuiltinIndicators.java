@@ -12,12 +12,13 @@ import org.ta4j.core.indicators.averages.SMAIndicator;
 import org.ta4j.core.indicators.bollinger.BollingerBandsLowerIndicator;
 import org.ta4j.core.indicators.bollinger.BollingerBandsMiddleIndicator;
 import org.ta4j.core.indicators.bollinger.BollingerBandsUpperIndicator;
+import org.ta4j.core.indicators.helpers.ClosePriceIndicator;
 import org.ta4j.core.indicators.helpers.HighPriceIndicator;
 import org.ta4j.core.indicators.helpers.HighestValueIndicator;
 import org.ta4j.core.indicators.helpers.LowPriceIndicator;
 import org.ta4j.core.indicators.helpers.LowestValueIndicator;
+import org.ta4j.core.indicators.helpers.PreviousValueIndicator;
 import org.ta4j.core.indicators.helpers.TRIndicator;
-import org.ta4j.core.indicators.ichimoku.IchimokuChikouSpanIndicator;
 import org.ta4j.core.indicators.ichimoku.IchimokuKijunSenIndicator;
 import org.ta4j.core.indicators.ichimoku.IchimokuSenkouSpanAIndicator;
 import org.ta4j.core.indicators.ichimoku.IchimokuSenkouSpanBIndicator;
@@ -186,7 +187,10 @@ public final class BuiltinIndicators {
                     outs.put("kijun", new IchimokuKijunSenIndicator(series));
                     outs.put("senkou_a", new IchimokuSenkouSpanAIndicator(series));
                     outs.put("senkou_b", new IchimokuSenkouSpanBIndicator(series));
-                    outs.put("chikou", new IchimokuChikouSpanIndicator(series));
+                    // ta4j's IchimokuChikouSpanIndicator plots close 26 bars FORWARD, so it is
+                    // NaN at the newest bar by construction. Consumers want the line's latest
+                    // defined point instead: close from 26 bars ago (what chart platforms show).
+                    outs.put("chikou", new PreviousValueIndicator(new ClosePriceIndicator(series), 26));
                     return outs;
                 });
     }

@@ -2,10 +2,12 @@ package de.visterion.agora.fetch.edgar;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
@@ -18,8 +20,12 @@ public class EdgarCikResolver {
     private volatile Map<String, String> cache;
 
     @Autowired
-    public EdgarCikResolver(@Value("${agora.data.edgar.user-agent}") String userAgent) {
+    public EdgarCikResolver(@Value("${agora.data.edgar.user-agent}") String userAgent,
+                            @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
         this.http = RestClient.builder()
+                .requestFactory(rf)
                 .baseUrl("https://www.sec.gov")
                 .defaultHeader("User-Agent", userAgent)
                 .build();

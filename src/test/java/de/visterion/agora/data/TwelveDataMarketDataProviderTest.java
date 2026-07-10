@@ -83,4 +83,22 @@ class TwelveDataMarketDataProviderTest {
         assertThat(bars.get(0).close()).isEqualByComparingTo("10.5");
         assertThat(bars.get(1).close()).isEqualByComparingTo("11.2");
     }
+
+    @Test void ohlcErrorStatusThrowsNotFound() {
+        wm.stubFor(get(urlPathEqualTo("/time_series")).willReturn(okJson("""
+            {"code":404,"message":"symbol not found","status":"error"}
+            """)));
+        assertThatThrownBy(() -> withKey("k").ohlc("ZZZZ", 30))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
+    }
+
+    @Test void ohlcEmptyValuesThrowsNotFound() {
+        wm.stubFor(get(urlPathEqualTo("/time_series")).willReturn(okJson("""
+            {"values":[],"status":"ok"}
+            """)));
+        assertThatThrownBy(() -> withKey("k").ohlc("SAP.DE", 30))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
+    }
 }
