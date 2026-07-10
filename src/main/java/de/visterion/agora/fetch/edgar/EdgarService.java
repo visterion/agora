@@ -147,6 +147,11 @@ public class EdgarService {
                 if (archiveBody != null) appendFilings(out, archiveBody, formType, from, to, limit, cikNum);
             }
         }
+        // `recent` and each archive page are appended in isolation and are not guaranteed to be
+        // mutually monotonic (archive pages list oldest-first) — sort the combined result so a
+        // date-windowed caller sees a single newest-first list. Nulls last defensively even
+        // though appendFilings never emits a FilingRef with a null filedDate.
+        out.sort(Comparator.comparing(FilingRef::filedDate, Comparator.nullsLast(Comparator.reverseOrder())));
         return out;
     }
 
