@@ -273,12 +273,13 @@ class AlpacaBrokerProviderTest {
     }
 
     @Test
-    void modifyBracket_parentGone_fallsBackToSymbol_excludesEntryWithOwnLegs_ambiguousTarget() {
+    void modifyBracket_parentGone_fallsBackToSymbol_excludesEntryWithOwnLegs_zeroTpCandidatesLegNotFound() {
         // C5: two open orders for the symbol — bracket-B's still-unfilled entry (type limit,
         // carries its own non-empty legs[] => never a protective leg) and a detached stop
         // belonging to gone bracket A. The stop is unambiguous and gets patched; the target
-        // modify has no unambiguous take-profit candidate (bracket-B's entry is excluded) and
-        // must be refused — bracket-B's entry limit price must never be touched.
+        // modify has ZERO take-profit candidates (bracket-B's entry is excluded, not "multiple")
+        // — this must reject as LEG_NOT_FOUND, not AMBIGUOUS_LEGS (zero candidates is not the
+        // same condition as more-than-one). Bracket-B's entry limit price must never be touched.
         wm.stubFor(get(urlPathEqualTo("/orders/par-a")).willReturn(aResponse().withStatus(404)));
         wm.stubFor(get(urlPathEqualTo("/orders"))
                 .withQueryParam("symbols", equalTo("AAPL"))
@@ -292,11 +293,35 @@ class AlpacaBrokerProviderTest {
         var r = provider.modifyBracket("par-a", "AAPL", new BigDecimal("180"), new BigDecimal("210"));
 
         assertThat(r.accepted()).isFalse();
-        assertThat(r.rejectCode()).isEqualTo("AMBIGUOUS_LEGS");
+        assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
         assertThat(r.rejectReason()).contains("stop-loss was already moved");
         wm.verify(patchRequestedFor(urlEqualTo("/orders/sl-a"))
                 .withRequestBody(matchingJsonPath("$.stop_price", equalTo("180"))));
         wm.verify(0, patchRequestedFor(urlEqualTo("/orders/entry-b")));
+    }
+
+    @Test
+    void modifyBracket_parentGone_fallsBackToSymbol_oneStopOneTp_bothPatchSuccessfully() {
+        // Happy-path fallback: exactly one detached stop candidate and exactly one detached
+        // take-profit (limit) candidate for the symbol — both legs resolve unambiguously and
+        // both patches succeed.
+        wm.stubFor(get(urlPathEqualTo("/orders/par-y")).willReturn(aResponse().withStatus(404)));
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .withQueryParam("symbols", equalTo("AAPL"))
+                .withQueryParam("nested", equalTo("true"))
+                .willReturn(okJson("""
+                    [{"id":"sl-y","type":"stop","order_class":"bracket","symbol":"AAPL","status":"held"},
+                     {"id":"tp-y","type":"limit","order_class":"bracket","symbol":"AAPL","status":"held"}]""")));
+        wm.stubFor(patch(urlEqualTo("/orders/sl-y")).willReturn(okJson("{\"id\":\"sl-y\",\"status\":\"replaced\"}")));
+        wm.stubFor(patch(urlEqualTo("/orders/tp-y")).willReturn(okJson("{\"id\":\"tp-y\",\"status\":\"replaced\"}")));
+
+        var r = provider.modifyBracket("par-y", "AAPL", new BigDecimal("180"), new BigDecimal("210"));
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(patchRequestedFor(urlEqualTo("/orders/sl-y"))
+                .withRequestBody(matchingJsonPath("$.stop_price", equalTo("180"))));
+        wm.verify(patchRequestedFor(urlEqualTo("/orders/tp-y"))
+                .withRequestBody(matchingJsonPath("$.limit_price", equalTo("210"))));
     }
 
     @Test
