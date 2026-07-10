@@ -54,10 +54,10 @@ public class GetForm4TransactionsTool implements AgoraTool {
         int limit = Math.clamp(args == null ? 100 : args.path("limit").asInt(100), 1, MAX_LIMIT);
 
         try {
-            List<Form4Transaction> txns = service.form4Transactions(from, to, limit);
+            EdgarSearchService.Form4Result result = service.form4Transactions(from, to, limit);
             ObjectNode out = mapper.createObjectNode();
             ArrayNode arr = out.putArray("transactions");
-            for (Form4Transaction t : txns) {
+            for (Form4Transaction t : result.transactions()) {
                 ObjectNode o = arr.addObject();
                 o.put("ticker", t.ticker());
                 o.put("filerName", t.filerName());
@@ -66,7 +66,10 @@ public class GetForm4TransactionsTool implements AgoraTool {
                 o.put("shares", t.shares());
                 o.put("dollarValue", t.dollarValue());
                 o.put("code", t.code());
+                o.put("acquiredDisposedCode", t.acquiredDisposedCode());
+                o.put("form", t.form());
             }
+            out.put("truncated", result.truncated());
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
             return ToolResult.unavailable(e.getMessage());
