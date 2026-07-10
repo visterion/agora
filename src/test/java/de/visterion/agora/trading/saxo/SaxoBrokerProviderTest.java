@@ -638,6 +638,38 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void flattenCancelsOnlyOppositeSideProtectiveLegsNotSameSideOrders() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        // The long (Amount 10.0 > 0) position's protective legs are Sell (opposite). A
+        // same-side resting Buy Limit (e.g. "add to position") and a same-side Buy
+        // StopIfTraded (e.g. a stop-entry for a new position) on the same Uic are unrelated
+        // orders and must survive the flatten untouched.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-sl","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell","Amount":10.0},
+              {"OrderId":"leg-tp","Uic":211,"OpenOrderType":"Limit","BuySell":"Sell","Amount":10.0},
+              {"OrderId":"same-side-limit","Uic":211,"OpenOrderType":"Limit","BuySell":"Buy","Amount":5.0},
+              {"OrderId":"same-side-stop","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Buy","Amount":5.0}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-sl")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-tp")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        var r = provider.flatten("AAPL", null, null);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/leg-sl")));
+        wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/leg-tp")));
+        wm.verify(0, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/same-side-limit")));
+        wm.verify(0, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/same-side-stop")));
+    }
+
+    @Test
     void flattenLegLookupFailureStillClosesWithWarning() {
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
@@ -687,6 +719,10 @@ class SaxoBrokerProviderTest {
                       "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
                       "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
             """)));
+        // 3 of the 10-share position already have a Market Sell working. Requesting a full
+        // flatten (target: close all 10) must place a NEW order for only the remaining 7 —
+        // not a full 10, which would stack to 13 units of sell interest against a 10-share
+        // position (oversell / unintended short once both fill).
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
             {"Data":[{"OrderId":"prior-partial-close","Uic":211,"OpenOrderType":"Market","BuySell":"Sell","Amount":3.0}]}
             """)));
@@ -695,7 +731,9 @@ class SaxoBrokerProviderTest {
         var r = provider.flatten("AAPL", null, null);
 
         assertThat(r.accepted()).isTrue();
-        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        assertThat(r.closedQty()).isEqualByComparingTo("7.0");
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("7.0"))));
     }
 
     @Test
