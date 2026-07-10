@@ -510,6 +510,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
         try {
             JsonNode resp2 = client.post().uri("/trade/v2/orders")
                     .header("Authorization", bearer())
+                    .header("X-Request-ID", UUID.randomUUID().toString())
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve().body(JsonNode.class);
