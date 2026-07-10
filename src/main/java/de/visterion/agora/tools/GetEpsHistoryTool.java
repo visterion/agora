@@ -86,6 +86,7 @@ public class GetEpsHistoryTool implements AgoraTool {
                 o.put("fiscalPeriod", p.fiscalPeriod());
                 o.put("form", p.form());
                 o.put("filed", p.filed() == null ? null : p.filed().toString());
+                if (p.derived()) o.put("derived", true);
             }
             return ToolResult.ok(out);
         } catch (MarketDataException e) {

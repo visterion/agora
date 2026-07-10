@@ -25,28 +25,36 @@ public class AlpacaSplitProvider implements SplitProvider {
     public List<SplitEvent> splits(String symbol) {
         if (!client.configured())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "alpaca: no api key", null);
-        JsonNode root;
-        try {
-            root = client.http().get()
-                    .uri(uri -> uri.path("/v1beta1/corporate-actions")
-                            .queryParam("symbols", symbol)
-                            .queryParam("types", "forward_split,reverse_split")
-                            .queryParam("start", "1990-01-01")
-                            .queryParam("end", LocalDate.now().toString())
-                            .queryParam("limit", "1000")
-                            .build())
-                    .retrieve()
-                    .body(JsonNode.class);
-        } catch (Exception e) {
-            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "alpaca corporate-actions unreachable: " + e.getMessage(), e);
-        }
         List<SplitEvent> out = new ArrayList<>();
-        if (root != null) {
+        String pageToken = null;
+        do {
+            JsonNode root;
+            String currentToken = pageToken;
+            try {
+                root = client.http().get()
+                        .uri(uri -> {
+                            var builder = uri.path("/v1beta1/corporate-actions")
+                                    .queryParam("symbols", symbol)
+                                    .queryParam("types", "forward_split,reverse_split")
+                                    .queryParam("start", "1990-01-01")
+                                    .queryParam("end", LocalDate.now().toString())
+                                    .queryParam("limit", "1000");
+                            if (currentToken != null) builder.queryParam("page_token", currentToken);
+                            return builder.build();
+                        })
+                        .retrieve()
+                        .body(JsonNode.class);
+            } catch (Exception e) {
+                throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                        "alpaca corporate-actions unreachable: " + e.getMessage(), e);
+            }
+            if (root == null) break;
             JsonNode ca = root.path("corporate_actions");
             addSplits(out, ca.path("forward_splits"));
             addSplits(out, ca.path("reverse_splits"));
-        }
+            JsonNode next = root.path("next_page_token");
+            pageToken = (next.isMissingNode() || next.isNull()) ? null : next.asString(null);
+        } while (pageToken != null);
         return out;
     }
 

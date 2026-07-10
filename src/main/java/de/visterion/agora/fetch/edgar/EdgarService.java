@@ -15,6 +15,7 @@ import tools.jackson.databind.json.JsonMapper;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -115,28 +116,69 @@ public class EdgarService {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR unreachable: " + e.getMessage(), e);
         }
         if (body == null) throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "empty EDGAR body", null);
-        JsonNode r = body.path("filings").path("recent");
-        JsonNode acc = r.path("accessionNumber"), forms = r.path("form"), filed = r.path("filingDate"),
-                 report = r.path("reportDate"), docs = r.path("primaryDocument");
         long cikNum = Long.parseLong(padded);
+        JsonNode filings = body.path("filings");
         List<FilingRef> out = new ArrayList<>();
-        if (acc.isArray()) {
-            for (int i = 0; i < acc.size() && out.size() < limit; i++) {
-                String form = forms.path(i).asString("");
-                if (formType != null && !formType.isBlank() && !formType.equalsIgnoreCase(form)) continue;
-                LocalDate filedDate = parseDate(filed.path(i).asString(""));
-                if (filedDate == null) continue;
-                if (from != null && filedDate.isBefore(from)) continue;
-                if (to != null && filedDate.isAfter(to)) continue;
-                String accession = acc.path(i).asString("");
-                String noDash = accession.replace("-", "");
-                String doc = docs.path(i).asString("");
-                LocalDate reportDate = parseDate(report.path(i).asString(""));
-                String url = "https://www.sec.gov/Archives/edgar/data/" + cikNum + "/" + noDash + "/" + doc;
-                out.add(new FilingRef(accession, form, filedDate, reportDate, doc, url));
+        appendFilings(out, filings.path("recent"), formType, from, to, limit, cikNum);
+
+        // filings.recent covers only the most recent ~1000 filings; older filings live in
+        // archive pages referenced by filings.files. Only bother fetching them when the
+        // window (or limit) isn't already satisfied by `recent`.
+        if (out.size() < limit && filings.path("files").isArray()) {
+            List<JsonNode> archives = new ArrayList<>();
+            filings.path("files").forEach(archives::add);
+            archives.sort(Comparator.comparing(f -> parseDateOrMin(f.path("filingFrom").asString(""))));
+            for (JsonNode archive : archives) {
+                if (out.size() >= limit) break;
+                LocalDate filingFrom = parseDate(archive.path("filingFrom").asString(""));
+                LocalDate filingTo = parseDate(archive.path("filingTo").asString(""));
+                if (to != null && filingFrom != null && filingFrom.isAfter(to)) continue;
+                if (from != null && filingTo != null && filingTo.isBefore(from)) continue;
+                String name = archive.path("name").asString("");
+                if (name.isBlank()) continue;
+                JsonNode archiveBody;
+                try {
+                    archiveBody = http.get().uri("/submissions/{name}", name).retrieve().body(JsonNode.class);
+                } catch (RestClientResponseException e) {
+                    throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR HTTP " + e.getStatusCode(), e);
+                } catch (Exception e) {
+                    throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR unreachable: " + e.getMessage(), e);
+                }
+                if (archiveBody != null) appendFilings(out, archiveBody, formType, from, to, limit, cikNum);
             }
         }
         return out;
+    }
+
+    /** Parses one submissions-shaped node (either filings.recent or an archive page) and appends
+     *  matching FilingRefs to out, subject to formType/from/to/limit. */
+    private static void appendFilings(List<FilingRef> out, JsonNode r, String formType, LocalDate from,
+                                       LocalDate to, int limit, long cikNum) {
+        JsonNode acc = r.path("accessionNumber"), forms = r.path("form"), filed = r.path("filingDate"),
+                 report = r.path("reportDate"), docs = r.path("primaryDocument");
+        if (!acc.isArray()) return;
+        for (int i = 0; i < acc.size() && out.size() < limit; i++) {
+            String form = forms.path(i).asString("");
+            if (formType != null && !formType.isBlank() && !formType.equalsIgnoreCase(form)) continue;
+            LocalDate filedDate = parseDate(filed.path(i).asString(""));
+            if (filedDate == null) continue;
+            if (from != null && filedDate.isBefore(from)) continue;
+            if (to != null && filedDate.isAfter(to)) continue;
+            String accession = acc.path(i).asString("");
+            String noDash = accession.replace("-", "");
+            String doc = docs.path(i).asString("");
+            LocalDate reportDate = parseDate(report.path(i).asString(""));
+            // An empty primaryDocument means EDGAR has no single-document link for this
+            // filing; skip building a (misleading, doc-less) directory-index URL.
+            String url = doc.isBlank() ? null
+                    : "https://www.sec.gov/Archives/edgar/data/" + cikNum + "/" + noDash + "/" + doc;
+            out.add(new FilingRef(accession, form, filedDate, reportDate, doc, url));
+        }
+    }
+
+    private static LocalDate parseDateOrMin(String s) {
+        LocalDate d = parseDate(s);
+        return d != null ? d : LocalDate.MIN;
     }
 
     public List<EpsPoint> epsHistory(String symbol, String cik) {
@@ -190,35 +232,109 @@ public class EdgarService {
         }
         if (body == null) return List.of();
 
+        JsonNode units = body.path("units");
+        String unit = selectPreferredUnit(units);
+        if (unit == null) return List.of();
+
         Map<LocalDate, EpsPoint> byEnd = new LinkedHashMap<>();
-        for (JsonNode unit : body.path("units")) {        // iterate unit arrays (e.g. "USD/shares")
-            for (JsonNode row : unit) {
-                try {
-                    String start = row.path("start").asString("");
-                    String end = row.path("end").asString("");
-                    if (end.isEmpty() || row.path("val").isMissingNode()) continue;
-                    LocalDate periodEnd = LocalDate.parse(end);
-                    LocalDate periodStart = start.isEmpty() ? null : LocalDate.parse(start);
-                    Integer fy = row.path("fy").isMissingNode() || row.path("fy").isNull()
-                            ? null : row.path("fy").asInt();
-                    String fp = row.path("fp").asString(null);
-                    String form = row.path("form").asString(null);
-                    LocalDate filed = parseDate(row.path("filed").asString(""));
-                    EpsPoint candidate = new EpsPoint(periodEnd, periodStart,
-                            row.path("val").decimalValue(), fy, fp, form, filed);
-                    // EDGAR may emit multiple facts sharing a period-end (e.g. a 3-month
-                    // quarterly fact and a 6-/9-month YTD fact). Prefer the SHORTEST
-                    // duration so the quarterly fact always wins regardless of emission order.
-                    EpsPoint existing = byEnd.get(periodEnd);
-                    if (existing == null || durationDays(candidate) < durationDays(existing)) {
+        for (JsonNode row : units.path(unit)) {           // iterate the ONE selected unit's array only — never merge units
+            try {
+                String start = row.path("start").asString("");
+                String end = row.path("end").asString("");
+                if (end.isEmpty() || row.path("val").isMissingNode()) continue;
+                LocalDate periodEnd = LocalDate.parse(end);
+                LocalDate periodStart = start.isEmpty() ? null : LocalDate.parse(start);
+                Integer fy = row.path("fy").isMissingNode() || row.path("fy").isNull()
+                        ? null : row.path("fy").asInt();
+                String fp = row.path("fp").asString(null);
+                String form = row.path("form").asString(null);
+                LocalDate filed = parseDate(row.path("filed").asString(""));
+                EpsPoint candidate = new EpsPoint(periodEnd, periodStart,
+                        row.path("val").decimalValue(), fy, fp, form, filed);
+                // EDGAR may emit multiple facts sharing a period-end (e.g. a 3-month
+                // quarterly fact and a 6-/9-month YTD fact, or an original vs. a
+                // restated/amended fact for the identical period). Prefer the SHORTEST
+                // duration so the quarterly fact always wins regardless of emission order;
+                // when durations tie (e.g. a restatement of the same period), prefer the
+                // LATEST filed date so restated/amended values win over the original.
+                EpsPoint existing = byEnd.get(periodEnd);
+                if (existing == null) {
+                    byEnd.put(periodEnd, candidate);
+                } else {
+                    long candidateDays = durationDays(candidate), existingDays = durationDays(existing);
+                    if (candidateDays < existingDays) {
+                        byEnd.put(periodEnd, candidate);
+                    } else if (candidateDays == existingDays
+                            && candidate.filed() != null
+                            && (existing.filed() == null || candidate.filed().isAfter(existing.filed()))) {
                         byEnd.put(periodEnd, candidate);
                     }
-                } catch (Exception rowError) {
-                    // skip malformed row, keep the rest
                 }
+            } catch (Exception rowError) {
+                // skip malformed row, keep the rest
             }
         }
-        List<EpsPoint> out = new ArrayList<>(byEnd.values());
+        return deriveQuarterlySeries(byEnd.values());
+    }
+
+    /** Selects ONE unit key from a companyconcept/companyfacts "units" object — never merges
+     *  multiple units (which would silently mix currencies, e.g. USD and EUR EPS values).
+     *  Prefers USD or USD/shares when present; otherwise the unit with the most datapoints. */
+    private static String selectPreferredUnit(JsonNode units) {
+        if (units.has("USD")) return "USD";
+        if (units.has("USD/shares")) return "USD/shares";
+        String best = null;
+        int bestSize = -1;
+        var names = units.propertyNames().iterator();
+        while (names.hasNext()) {
+            String candidate = names.next();
+            int size = units.path(candidate).size();
+            if (size > bestSize) {
+                bestSize = size;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    /** True if the datapoint spans a fiscal-year-length duration (~350-380 days) or is
+     *  explicitly tagged fp="FY" — these are annual facts, not quarterly ones. */
+    private static boolean isAnnual(EpsPoint p) {
+        if ("FY".equals(p.fiscalPeriod())) return true;
+        if (p.periodStart() == null) return false;
+        long days = java.time.temporal.ChronoUnit.DAYS.between(p.periodStart(), p.periodEnd());
+        return days >= 350 && days <= 380;
+    }
+
+    /** Builds the quarterly EPS series from deduped datapoints: FY frames are excluded from
+     *  the quarterly output; when a fiscal year has Q1+Q2+Q3 but no reported Q4, Q4 is derived
+     *  as FY - (Q1+Q2+Q3) and flagged {@code derived=true}; a fiscal year with an FY fact but
+     *  no quarterly facts at all is omitted entirely (nothing to derive from). */
+    private static List<EpsPoint> deriveQuarterlySeries(Collection<EpsPoint> points) {
+        Map<Integer, EpsPoint> fyByYear = new LinkedHashMap<>();
+        Map<Integer, Map<String, EpsPoint>> quartersByYear = new LinkedHashMap<>();
+        List<EpsPoint> out = new ArrayList<>();
+        for (EpsPoint p : points) {
+            if (isAnnual(p)) {
+                if (p.fiscalYear() != null) fyByYear.put(p.fiscalYear(), p);
+                continue;                                  // FY frames never appear in the quarterly series
+            }
+            out.add(p);
+            if (p.fiscalYear() != null && p.fiscalPeriod() != null) {
+                quartersByYear.computeIfAbsent(p.fiscalYear(), k -> new LinkedHashMap<>()).put(p.fiscalPeriod(), p);
+            }
+        }
+        for (Map.Entry<Integer, EpsPoint> entry : fyByYear.entrySet()) {
+            Integer fy = entry.getKey();
+            EpsPoint fyPoint = entry.getValue();
+            Map<String, EpsPoint> quarters = quartersByYear.get(fy);
+            if (quarters == null || quarters.containsKey("Q4")) continue;
+            EpsPoint q1 = quarters.get("Q1"), q2 = quarters.get("Q2"), q3 = quarters.get("Q3");
+            if (q1 == null || q2 == null || q3 == null) continue;
+            if (q1.value() == null || q2.value() == null || q3.value() == null || fyPoint.value() == null) continue;
+            java.math.BigDecimal q4Value = fyPoint.value().subtract(q1.value()).subtract(q2.value()).subtract(q3.value());
+            out.add(new EpsPoint(fyPoint.periodEnd(), null, q4Value, fy, "Q4", fyPoint.form(), fyPoint.filed(), true));
+        }
         out.sort(Comparator.comparing(EpsPoint::periodEnd).reversed());
         return out;
     }
@@ -248,13 +364,11 @@ public class EdgarService {
         }
         if (body == null) return new ConceptSeries(null, List.of());
 
-        String unit = null;
         List<ConceptDatapoint> out = new ArrayList<>();
         JsonNode units = body.path("units");
-        var fields = units.propertyNames().iterator();
-        if (fields.hasNext()) {
-            unit = fields.next();                          // take the FIRST unit field name
-            for (JsonNode row : units.path(unit)) {
+        String unit = selectPreferredUnit(units);
+        if (unit != null) {
+            for (JsonNode row : units.path(unit)) {         // the ONE selected unit only — never merge units
                 try {
                     out.add(parseDatapoint(row));
                 } catch (Exception rowError) {
@@ -296,12 +410,10 @@ public class EdgarService {
         while (tagNames.hasNext()) {
             String tag = tagNames.next();
             JsonNode units = usGaap.path(tag).path("units");
-            String unit = null;
             List<ConceptDatapoint> out = new ArrayList<>();
-            var unitNames = units.propertyNames().iterator();
-            if (unitNames.hasNext()) {
-                unit = unitNames.next();                    // take the FIRST unit field name
-                for (JsonNode row : units.path(unit)) {
+            String unit = selectPreferredUnit(units);
+            if (unit != null) {
+                for (JsonNode row : units.path(unit)) {     // the ONE selected unit only — never merge units
                     try {
                         out.add(parseDatapoint(row));
                     } catch (Exception rowError) {

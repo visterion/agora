@@ -90,6 +90,71 @@ class EdgarServiceFilingsTest {
         assertThat(filtered.get(0).filedDate()).isEqualTo(java.time.LocalDate.parse("2024-12-01"));
     }
 
+    @Test void oldWindowFollowsArchiveFile() {
+        wm.stubFor(get(urlPathEqualTo("/submissions/CIK0000320193.json"))
+                .willReturn(okJson("""
+                    {"filings":{
+                      "recent":{
+                        "accessionNumber":["a-new"],
+                        "form":["8-K"],
+                        "filingDate":["2025-05-02"],
+                        "reportDate":[""],
+                        "primaryDocument":["d1.htm"]
+                      },
+                      "files":[
+                        {"name":"CIK0000320193-submissions-001.json","filingFrom":"2010-01-01","filingTo":"2015-12-31"}
+                      ]
+                    }}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/submissions/CIK0000320193-submissions-001.json"))
+                .willReturn(okJson("""
+                    {
+                      "accessionNumber":["a-old"],
+                      "form":["10-K"],
+                      "filingDate":["2011-03-01"],
+                      "reportDate":["2010-12-31"],
+                      "primaryDocument":["aapl-10k.htm"]
+                    }
+                    """)));
+        var filtered = svc().filings("AAPL", null, null,
+                java.time.LocalDate.parse("2010-01-01"), java.time.LocalDate.parse("2011-12-31"), 40);
+        assertThat(filtered).hasSize(1);
+        assertThat(filtered.get(0).accession()).isEqualTo("a-old");
+        assertThat(filtered.get(0).filedDate()).isEqualTo(java.time.LocalDate.parse("2011-03-01"));
+    }
+
+    @Test void amendmentFormIncludedWithSlashAReflected() {
+        wm.stubFor(get(urlPathEqualTo("/submissions/CIK0000320193.json"))
+                .willReturn(okJson("""
+                    {"filings":{"recent":{
+                      "accessionNumber":["a-amend"],
+                      "form":["10-K/A"],
+                      "filingDate":["2025-05-02"],
+                      "reportDate":["2025-01-01"],
+                      "primaryDocument":["aapl-10ka.htm"]
+                    }}}
+                    """)));
+        var all = svc().filings("AAPL", null, null, null, null, 40);
+        assertThat(all).hasSize(1);
+        assertThat(all.get(0).form()).isEqualTo("10-K/A");
+    }
+
+    @Test void emptyPrimaryDocumentYieldsNoUrl() {
+        wm.stubFor(get(urlPathEqualTo("/submissions/CIK0000320193.json"))
+                .willReturn(okJson("""
+                    {"filings":{"recent":{
+                      "accessionNumber":["a-nodoc"],
+                      "form":["8-K"],
+                      "filingDate":["2025-05-02"],
+                      "reportDate":[""],
+                      "primaryDocument":[""]
+                    }}}
+                    """)));
+        var all = svc().filings("AAPL", null, null, null, null, 40);
+        assertThat(all).hasSize(1);
+        assertThat(all.get(0).url()).isNull();
+    }
+
     @Test void nonNumericCikThrowsNotFound() {
         assertThatThrownBy(() -> svc().filings("X", "notanumber", null, null, null, 40))
                 .isInstanceOfSatisfying(MarketDataException.class,
