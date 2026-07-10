@@ -26,7 +26,7 @@ class EarningsEstimatesServiceTest {
     @Test void parsesEarnings() {
         wm.stubFor(get(urlPathEqualTo("/stock/earnings"))
             .withQueryParam("symbol", equalTo("AAPL"))
-            .withQueryParam("token", equalTo("k"))
+            .withHeader("X-Finnhub-Token", equalTo("k"))
             .willReturn(okJson("""
                 [{"period":"2026-03-31","actual":1.5,"estimate":1.4,"surprise":0.1,"surprisePercent":7.14},
                  {"period":"2025-12-31","actual":2.1,"estimate":2.2,"surprise":-0.1,"surprisePercent":-4.5}]
@@ -36,6 +36,17 @@ class EarningsEstimatesServiceTest {
         assertThat(e.get(0).period()).isEqualTo("2026-03-31");
         assertThat(e.get(0).surprise()).isEqualByComparingTo("0.1");
         assertThat(e.get(1).actual()).isEqualByComparingTo("2.1");
+    }
+
+    @Test void missingNumericsYieldNullNotZero() {
+        wm.stubFor(get(urlPathEqualTo("/stock/earnings"))
+            .willReturn(okJson("[{\"period\":\"2026-03-31\"}]")));
+        List<EarningsEstimate> e = svc("k").earnings("AAPL");
+        assertThat(e).hasSize(1);
+        assertThat(e.get(0).actual()).isNull();
+        assertThat(e.get(0).estimate()).isNull();
+        assertThat(e.get(0).surprise()).isNull();
+        assertThat(e.get(0).surprisePercent()).isNull();
     }
 
     @Test void blankKeyThrows() {

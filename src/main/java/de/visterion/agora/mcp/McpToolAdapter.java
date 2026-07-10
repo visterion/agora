@@ -5,6 +5,8 @@ import de.visterion.agora.tool.ToolRegistry;
 import de.visterion.agora.tool.ToolResult;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
 import io.modelcontextprotocol.spec.McpSchema;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import tools.jackson.core.type.TypeReference;
@@ -27,6 +29,8 @@ import java.util.Map;
  */
 @Configuration
 public class McpToolAdapter {
+
+    private static final Logger log = LoggerFactory.getLogger(McpToolAdapter.class);
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
@@ -65,7 +69,18 @@ public class McpToolAdapter {
         Object payload = result.available()
                 ? result.output()
                 : Map.of("available", false, "error", result.error());
-        String json = mapper.writeValueAsString(payload);
+        String json;
+        try {
+            json = mapper.writeValueAsString(payload);
+        } catch (RuntimeException e) {
+            // Serialization must never throw out of the MCP call handler (the SDK has no
+            // generic catch-and-map here); degrade to an error result instead.
+            log.error("failed to serialize result of tool '{}'", toolName, e);
+            return McpSchema.CallToolResult.builder()
+                    .addTextContent("{\"available\":false,\"error\":\"internal error in tool '" + toolName + "'\"}")
+                    .isError(true)
+                    .build();
+        }
 
         return McpSchema.CallToolResult.builder()
                 .addTextContent(json)

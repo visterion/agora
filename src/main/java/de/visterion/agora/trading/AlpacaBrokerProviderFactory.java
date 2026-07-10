@@ -18,7 +18,7 @@ public class AlpacaBrokerProviderFactory implements BrokerProviderFactory {
     public String provider() { return "alpaca"; }
 
     @Override
-    public BrokerProvider create(ConnectionConfig cfg) {
+    public BrokerProvider create(String connectionId, ConnectionConfig cfg) {
         return new AlpacaBrokerProvider(cfg.getBaseUrl(), cfg.getKeyId(), cfg.getSecret(), timeoutMs);
     }
 }

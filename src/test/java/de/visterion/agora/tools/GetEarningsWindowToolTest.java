@@ -57,4 +57,47 @@ class GetEarningsWindowToolTest {
                 .thenThrow(new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "down", null));
         assertThat(new GetEarningsWindowTool(svc).call(mapper.createObjectNode()).available()).isFalse();
     }
+
+    @Test void fromAfterToUnavailable() {
+        var r = new GetEarningsWindowTool(Mockito.mock(EarningsService.class))
+                .call(mapper.createObjectNode().put("from", "2025-05-10").put("to", "2025-05-01"));
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test void windowOver366DaysUnavailable() {
+        var r = new GetEarningsWindowTool(Mockito.mock(EarningsService.class))
+                .call(mapper.createObjectNode().put("from", "2024-01-01").put("to", "2025-06-01"));
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test void limitClampedTo100() {
+        EarningsService svc = Mockito.mock(EarningsService.class);
+        List<EarningsEvent> many = new java.util.ArrayList<>();
+        for (int i = 0; i < 150; i++)
+            many.add(new EarningsEvent("S" + i, LocalDate.parse("2025-05-01"), null, null, null, null, null));
+        when(svc.earningsWindow(any(), any())).thenReturn(many);
+        var args = mapper.createObjectNode().put("from", "2025-05-01").put("to", "2025-05-03").put("limit", 100_000);
+        var r = new GetEarningsWindowTool(svc).call(args);
+        assertThat(r.output().get("earnings")).hasSize(100);
+        assertThat(r.output().get("truncated").asBoolean()).isTrue();
+    }
+
+    @Test void nonIntegralLimitUnavailable() {
+        EarningsService svc = Mockito.mock(EarningsService.class);
+        when(svc.earningsWindow(any(), any())).thenReturn(List.of());
+        var args = mapper.createObjectNode().put("from", "2025-05-01").put("to", "2025-05-03").put("limit", 2.5);
+        var r = new GetEarningsWindowTool(svc).call(args);
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test void notFoundQuietWindowReturnsAvailableEmpty() {
+        EarningsService svc = Mockito.mock(EarningsService.class);
+        when(svc.earningsWindow(any(), any()))
+                .thenThrow(new MarketDataException(MarketDataException.Kind.NOT_FOUND, "no earnings", null));
+        var r = new GetEarningsWindowTool(svc).call(mapper.createObjectNode());
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("earnings")).isNotNull();
+        assertThat(r.output().get("earnings")).isEmpty();
+        assertThat(r.output().get("note")).isNotNull();
+    }
 }

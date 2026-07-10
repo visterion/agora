@@ -65,6 +65,13 @@ public class GetEarningsCalendarTool implements AgoraTool {
             }
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
+            if (e.kind() == MarketDataException.Kind.NOT_FOUND) {
+                ObjectNode out = mapper.createObjectNode();
+                out.put("symbol", symbol);
+                out.putArray("earnings");
+                out.put("note", "no earnings in the requested window");
+                return ToolResult.ok(out);
+            }
             return ToolResult.unavailable(e.getMessage());
         }
     }

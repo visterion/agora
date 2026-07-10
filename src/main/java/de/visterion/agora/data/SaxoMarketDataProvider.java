@@ -135,6 +135,18 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
             throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
                     "Symbol " + symbol + " has no bars at Saxo", null);
         }
+        // M-D7: Saxo's chart endpoint caps Count at 1200. If more bars were requested than
+        // that cap and Saxo returned a full cap's worth, we cannot tell whether that's
+        // "exactly 1200 bars of history exist" or "there's more, but Saxo truncated it" —
+        // treat it as NOT_FOUND (not a silently-truncated success) so MarketDataService's
+        // fallback chain gets a chance to serve the fuller history from another provider.
+        // A genuinely short history (out.size() < count) is real data, not truncation, and
+        // is returned normally.
+        if (days > count && out.size() >= count) {
+            throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
+                    "Saxo ohlc capped at " + count + " bars for " + symbol + " (" + days
+                            + " requested) — falling through to a fuller provider", null);
+        }
         if (out.size() > days) {
             out = new ArrayList<>(out.subList(out.size() - days, out.size()));
         }

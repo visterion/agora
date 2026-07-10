@@ -1,6 +1,8 @@
 package de.visterion.agora.tool;
 
 import tools.jackson.databind.JsonNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -11,6 +13,8 @@ import java.util.stream.Collectors;
 
 @Component
 public class ToolRegistry {
+
+    private static final Logger log = LoggerFactory.getLogger(ToolRegistry.class);
 
     private final Map<String, AgoraTool> byName;
 
@@ -35,8 +39,19 @@ public class ToolRegistry {
         AgoraTool tool = get(name);              // throws ToolNotFoundException → 404 (unchanged)
         try {
             return tool.call(args);
+        } catch (ToolParams.InvalidArgumentException | IllegalArgumentException e) {
+            // caller-supplied-argument problem: safe to echo back (never null, no internals leaked).
+            return ToolResult.unavailable("invalid argument: " + safeMessage(e));
         } catch (RuntimeException e) {
-            return ToolResult.unavailable("tool '" + name + "' failed: " + e.getMessage());
+            // M-X7: everything else is an internal bug or an upstream we don't want to fingerprint
+            // to the client. Log the full exception server-side; never surface e.getMessage().
+            log.error("tool '{}' failed", name, e);
+            return ToolResult.unavailable("internal error in tool '" + name + "'");
         }
+    }
+
+    private static String safeMessage(RuntimeException e) {
+        String message = e.getMessage();
+        return (message == null || message.isBlank()) ? e.getClass().getSimpleName() : message;
     }
 }

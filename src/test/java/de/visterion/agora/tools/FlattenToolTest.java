@@ -6,6 +6,7 @@ import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.*;
 
 class FlattenToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
@@ -155,6 +156,43 @@ class FlattenToolTest {
         var r = tool(accepting()).call(mapper.createObjectNode().put("symbol","AAPL"));
         assertThat(r.available()).isFalse();
         assertThat(r.error()).contains("connection");
+    }
+
+    @Test void blankSymbolIsUnavailableAndBrokerNeverCalled() {
+        BrokerProvider broker = mock(BrokerProvider.class);
+        var r = tool(broker).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol", ""));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("symbol");
+        verify(broker, never()).flatten(any(), any(), any());
+    }
+
+    @Test void whitespaceOnlySymbolIsUnavailableAndBrokerNeverCalled() {
+        BrokerProvider broker = mock(BrokerProvider.class);
+        var r = tool(broker).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol", "   "));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("symbol");
+        verify(broker, never()).flatten(any(), any(), any());
+    }
+
+    @Test void qtyAsNumericStringParsesToBigDecimal() {
+        var captured = new BigDecimal[1];
+        var stub = new StubBroker() {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
+                captured[0] = qty;
+                return OrderResult.accepted("oid", null, "accepted");
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("qty", "5"));
+        assertThat(r.available()).isTrue();
+        assertThat(captured[0]).isEqualByComparingTo(new BigDecimal("5"));
+    }
+
+    @Test void qtyAsUnparsableStringIsUnavailableAndBrokerNeverCalled() {
+        BrokerProvider broker = mock(BrokerProvider.class);
+        var r = tool(broker).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("qty", "abc"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("invalid numeric argument: qty");
+        verify(broker, never()).flatten(any(), any(), any());
     }
 
     static class StubBroker implements BrokerProvider {

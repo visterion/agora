@@ -10,9 +10,11 @@ import org.springframework.web.client.RestClient;
 
 /**
  * Builds one SaxoBrokerProvider per active saxo connection.
- * INVARIANT: the token-store key equals the yaml connection id — saxo-sim (PAPER) /
- * saxo-live (LIVE). v1 supports exactly one saxo connection per environment; the auth
- * endpoints (/auth/saxo/login?connection=saxo-sim) write to the same keys.
+ * INVARIANT (M-T7): the token-store key equals the yaml connection id — whatever key the
+ * connection is registered under in {@code agora.trading.connections} (conventionally
+ * saxo-sim / saxo-live, but not required to be). This MUST match the key used by the
+ * refresher, the data provider, and the auth endpoints (/auth/saxo/login?connection=<id>),
+ * all of which key by connection id — not by a value derived from the environment.
  */
 @Component
 public class SaxoBrokerProviderFactory implements BrokerProviderFactory {
@@ -29,17 +31,13 @@ public class SaxoBrokerProviderFactory implements BrokerProviderFactory {
     @Override
     public String provider() { return "saxo"; }
 
-    static String storeKey(ConnectionConfig cfg) {
-        return cfg.getEnvironment() == ConnectionConfig.Environment.LIVE ? "saxo-live" : "saxo-sim";
-    }
-
     @Override
-    public BrokerProvider create(ConnectionConfig cfg) {
+    public BrokerProvider create(String connectionId, ConnectionConfig cfg) {
         RestClient client = RestClient.builder()
                 .requestFactory(TradingHttp.requestFactory(timeoutMs))
                 .baseUrl(cfg.getBaseUrl())
                 .build();
-        SaxoTokenStore store = stores.forConnection(storeKey(cfg));
+        SaxoTokenStore store = stores.forConnection(connectionId);
         SaxoInstrumentResolver resolver = new SaxoInstrumentResolver(client,
                 store::authorizationHeaderValue,
                 cfg.getExtra() == null ? null : cfg.getExtra().get("exchange-id"),

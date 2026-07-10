@@ -84,11 +84,16 @@ class IndicatorServiceTest {
      *
      * Mirrors Dracul's chandelierBreachWhenCloseBelowStop.
      *
-     * Math with atrPeriod=4, atrMultiple=3.0 (custom params to avoid stop==close degeneracy):
-     *   bars: flat(100)×4 + crash(close=50, high=100, low=50)
-     *   TR[1]=TR[2]=TR[3]=0, TR[4]: hl=50, hpc=0, lpc=50 → TR=50
-     *   ATR(period=4) = (0+0+0+50)/4 = 12.5
-     *   highestHigh(last 4 bars: indices 1..4) = 100
+     * Math with atrPeriod=4, atrMultiple=3.0 (custom params to avoid stop==close degeneracy).
+     * chandelierStop now uses Wilder-smoothed (MMA) ATR (research low (h)), not SMA-of-TR — see
+     * IndicatorService.compute(). 8 leading flat bars (rather than the old 4) give the Wilder
+     * recursion enough history that it isn't still returning the raw, unconverged seed value at
+     * the point of the crash bar; TR is 0 for every flat bar, so the Wilder-smoothed ATR over the
+     * last 4 TR values here happens to coincide with the plain average (0+0+0+50)/4 = 12.5:
+     *   bars: flat(100)×8 + crash(close=50, high=100, low=50)
+     *   TR[1..7]=0, TR[8]: hl=50, hpc=0, lpc=50 → TR=50
+     *   Wilder-ATR(period=4) at end = 12.5 (verified against ta4j's ATRIndicator directly)
+     *   highestHigh(last 4 bars) = 100
      *   chandelierStop = 100 − 3×12.5 = 62.5
      *   currentClose=50 < 62.5 → chandelierBreached=true
      */
@@ -96,8 +101,8 @@ class IndicatorServiceTest {
     void chandelierBreachWhenCloseBelowStop() {
         var params = new IndicatorService.Params(4, new BigDecimal("3.0"), 2, 5, 5);
         var bars = new ArrayList<OhlcBar>();
-        for (int i = 0; i < 4; i++) bars.add(flat(i, 100));
-        bars.add(new OhlcBar(LocalDate.of(2025, 1, 1).plusDays(4),
+        for (int i = 0; i < 8; i++) bars.add(flat(i, 100));
+        bars.add(new OhlcBar(LocalDate.of(2025, 1, 1).plusDays(8),
                 new BigDecimal("50"), new BigDecimal("100"), new BigDecimal("50"),
                 new BigDecimal("50"), 1000));
         var ind = svc.compute(bars, params);
@@ -159,6 +164,34 @@ class IndicatorServiceTest {
         assertThat(ind.maFastAvailable()).isTrue();
         assertThat(ind.maSlowAvailable()).isFalse();
         assertThat(ind.maCrossState()).isEqualTo("NEUTRAL");
+        assertThat(ind.crossedWithinBars()).isNull();
+    }
+
+    // -------------------------------------------------------------------------
+    // crossedWithinBars: bars since the fast/slow sign last flipped (research low (i))
+    // -------------------------------------------------------------------------
+
+    @Test
+    void crossedWithinBarsNullWhenNoSignChangeInWindow() {
+        // Strictly rising the whole way: fast > slow always -> no sign flip ever recorded.
+        var ind = svc.compute(rising(10), SMALL_PARAMS);
+        assertThat(ind.maCrossState()).isEqualTo("BULLISH");
+        assertThat(ind.crossedWithinBars()).isNull();
+    }
+
+    @Test
+    void crossedWithinBarsCountsBarsSinceTheFlip() {
+        // Declining then rising: fast/slow sign flips partway through -> crossedWithinBars > 0.
+        var bars = new ArrayList<OhlcBar>();
+        // 6 declining bars (close 10..5), then 6 rising bars (close 6..11):
+        // fast(2)/slow(4) starts DEATH_CROSS, ends BULLISH -> a sign flip must be within the window.
+        for (int i = 0; i < 6; i++) bars.add(flat(i, 10 - i));
+        for (int i = 0; i < 6; i++) bars.add(flat(6 + i, 5 + i));
+        var params = new IndicatorService.Params(3, new BigDecimal("3.0"), 2, 4, 5);
+        var ind = svc.compute(bars, params);
+        assertThat(ind.maCrossState()).isEqualTo("BULLISH");
+        assertThat(ind.crossedWithinBars()).isNotNull();
+        assertThat(ind.crossedWithinBars()).isGreaterThan(0);
     }
 
     // -------------------------------------------------------------------------
@@ -205,6 +238,7 @@ class IndicatorServiceTest {
         assertThat(ind.chandelierBreached()).isFalse();
         assertThat(ind.maCrossState()).isEqualTo("NEUTRAL");
         assertThat(ind.currentClose()).isNull();
+        assertThat(ind.crossedWithinBars()).isNull();
     }
 
     @Test

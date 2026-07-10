@@ -37,10 +37,11 @@ class GetIndicatorsWebhookIT {
                 public String name() { return "indicators-stub"; }
                 public Quote quote(String s) { return new Quote(s, new BigDecimal("42.00"), BigDecimal.ZERO, "USD"); }
                 public List<OhlcBar> ohlc(String s, int d) {
-                    // 30 strictly rising closes → RSI = 100 (deterministic)
-                    List<OhlcBar> bars = new ArrayList<>(30);
+                    // 60 strictly rising closes → RSI = 100 (deterministic). rsi(14) is
+                    // warmup:recursive (H3) -> minBars = 1+4*14 = 57, so 30 bars is no longer enough.
+                    List<OhlcBar> bars = new ArrayList<>(60);
                     LocalDate base = LocalDate.of(2025, 1, 2);
-                    for (int i = 0; i < 30; i++) {
+                    for (int i = 0; i < 60; i++) {
                         BigDecimal c = new BigDecimal(100 + i);
                         bars.add(new OhlcBar(base.plusDays(i), c, c.add(BigDecimal.ONE),
                                 c.subtract(BigDecimal.ONE), c, 1000L));

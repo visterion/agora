@@ -89,6 +89,17 @@ class SaxoDataSymbolResolverTest {
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
     }
 
+    @Test void uicResolutionFailureIsNegativelyCachedForSixtySeconds() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("{\"Data\":[]}")));
+        SaxoDataSymbolResolver r = resolver(true);
+        assertThatThrownBy(() -> r.resolve("SAP.DE")).isInstanceOf(MarketDataException.class);
+        assertThatThrownBy(() -> r.resolve("SAP.DE")).isInstanceOf(MarketDataException.class);
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));   // second call served from negative cache
+        clock.set(60_001L);   // past negative-cache TTL → re-lookup
+        assertThatThrownBy(() -> r.resolve("SAP.DE")).isInstanceOf(MarketDataException.class);
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));
+    }
+
     @Test void uicIsCachedFor24Hours() {
         wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson(SAP_SEARCH)));
         SaxoDataSymbolResolver r = resolver(true);

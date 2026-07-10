@@ -1,12 +1,11 @@
 package de.visterion.agora.fetch.alpaca;
 
+import de.visterion.agora.data.DataHttp;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
-
-import java.time.Duration;
 
 /** Shared Alpaca market-data REST access (data.alpaca.markets), header-authed.
  *  Reusable base for Alpaca-backed agora-data services (splits now; quotes/bars later).
@@ -24,8 +23,7 @@ public class AlpacaDataClient {
             @Value("${agora.data.alpaca.secret:}") String secret,
             @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
         this.configured = keyId != null && !keyId.isBlank() && secret != null && !secret.isBlank();
-        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
-        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
         this.http = RestClient.builder()
                 .requestFactory(rf)
                 .baseUrl(baseUrl)

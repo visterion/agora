@@ -62,7 +62,7 @@ class LiveConnectionGateWebhookIT {
                 @Override public String provider() { return "stub"; }
 
                 @Override
-                public BrokerProvider create(de.visterion.agora.trading.ConnectionConfig cfg) {
+                public BrokerProvider create(String connectionId, de.visterion.agora.trading.ConnectionConfig cfg) {
                     return new BrokerProvider() {
                         @Override public String name() { return "stub"; }
 
@@ -111,7 +111,7 @@ class LiveConnectionGateWebhookIT {
 
     private static String bracketBody(String connection) {
         return """
-                {"connection":"%s","symbol":"AAPL","side":"buy","qty":1,"stopLossStop":95,"takeProfitLimit":110,"clientRef":"ref-1"}
+                {"connection":"%s","symbol":"AAPL","side":"buy","qty":1,"limitPrice":100,"stopLossStop":95,"takeProfitLimit":110,"clientRef":"ref-1"}
                 """.formatted(connection);
     }
 

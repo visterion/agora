@@ -50,14 +50,23 @@ public class SaxoAuthEndpoints {
         if (rc.isEmpty()) return ResponseEntity.status(404).body("unknown saxo connection");
 
         ConnectionConfig cfg = rc.get().config();
-        String state = states.issue(connection);
-        String url = UriComponentsBuilder
+        String state;
+        try {
+            state = states.issue(connection);
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(503).body("too many pending authorizations, try again later");
+        }
+
+        UriComponentsBuilder builder = UriComponentsBuilder
                 .fromUriString(SaxoOAuthClient.authBaseUrl(cfg) + "/authorize")
                 .queryParam("response_type", "code")
                 .queryParam("client_id", cfg.getKeyId())
-                .queryParam("state", state)
-                .queryParam("redirect_uri", cfg.getExtra().getOrDefault("redirect-uri", ""))
-                .build().toUriString();
+                .queryParam("state", state);
+        String redirect = cfg.getExtra().get("redirect-uri");
+        if (redirect != null && !redirect.isBlank()) {
+            builder.queryParam("redirect_uri", redirect);
+        }
+        String url = builder.build().encode().toUriString();
         return ResponseEntity.status(302).header("Location", url).body("");
     }
 

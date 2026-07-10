@@ -47,6 +47,19 @@ class SaxoOAuthClientTest {
     }
 
     @Test
+    void exchangeCodeOmitsRedirectUriWhenBlank() {
+        wm.stubFor(post(urlEqualTo("/token")).willReturn(okJson("""
+            {"access_token":"acc-1","expires_in":1200,"refresh_token":"ref-1"}
+            """)));
+        cfg.getExtra().put("redirect-uri", "   ");
+
+        client.exchangeCode(cfg, "the-code");
+
+        wm.verify(postRequestedFor(urlEqualTo("/token"))
+                .withRequestBody(notContaining("redirect_uri")));
+    }
+
+    @Test
     void refreshSendsRefreshGrant() {
         wm.stubFor(post(urlEqualTo("/token")).willReturn(okJson("""
             {"access_token":"acc-2","expires_in":1200,"refresh_token":"ref-2"}
@@ -65,6 +78,15 @@ class SaxoOAuthClientTest {
         wm.stubFor(post(urlEqualTo("/token")).willReturn(aResponse().withStatus(400)));
         assertThatThrownBy(() -> client.refresh(cfg, "ref-dead"))
                 .isInstanceOf(SaxoOAuthClient.InvalidGrantException.class);
+    }
+
+    @Test
+    void http401MeansAppCredentialsRejectedNotSessionDeath() {
+        wm.stubFor(post(urlEqualTo("/token")).willReturn(aResponse().withStatus(401)));
+        assertThatThrownBy(() -> client.refresh(cfg, "ref-1"))
+                .isInstanceOf(IllegalStateException.class)
+                .isNotInstanceOf(SaxoOAuthClient.InvalidGrantException.class)
+                .hasMessageContaining("saxo app credentials rejected (HTTP 401)");
     }
 
     @Test

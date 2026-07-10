@@ -27,6 +27,14 @@ class GetIndexConstituentsToolTest {
         assertThat(r.output().get("constituents").get(0).get("symbol").asString()).isEqualTo("AAPL");
     }
 
+    @Test void blankIndexDefaultsToSp500() {
+        WikipediaService svc = Mockito.mock(WikipediaService.class);
+        when(svc.constituents("sp500")).thenReturn(List.of());
+        var r = new GetIndexConstituentsTool(svc).call(mapper.createObjectNode().put("index", ""));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("index").asString()).isEqualTo("sp500");
+    }
+
     @Test void unknownIndexUnavailable() {
         WikipediaService svc = Mockito.mock(WikipediaService.class);
         when(svc.constituents(any())).thenThrow(new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "unknown index", null));

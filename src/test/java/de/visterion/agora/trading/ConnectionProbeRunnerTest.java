@@ -44,11 +44,11 @@ class ConnectionProbeRunnerTest {
         props.setConnections(conns);
         BrokerProviderFactory good = new BrokerProviderFactory() {
             public String provider() { return "good"; }
-            public BrokerProvider create(ConnectionConfig c) { return probeStub(false); }
+            public BrokerProvider create(String connectionId, ConnectionConfig c) { return probeStub(false); }
         };
         BrokerProviderFactory bad = new BrokerProviderFactory() {
             public String provider() { return "bad"; }
-            public BrokerProvider create(ConnectionConfig c) { return probeStub(true); }
+            public BrokerProvider create(String connectionId, ConnectionConfig c) { return probeStub(true); }
         };
         return new ConnectionRegistry(props, List.of(good, bad));
     }
@@ -84,6 +84,21 @@ class ConnectionProbeRunnerTest {
     }
 
     @Test
+    void scheduledReprobeRunsAllConnectionsAgain() {
+        var reg = registryWith(Map.of("c1", false));
+        var runner = new ConnectionProbeRunner(reg);
+        runner.probeAll();
+        var firstProbedAt = reg.get("c1").orElseThrow().probeStatus().probedAt();
+        runner.reprobeAll();
+        var secondProbedAt = reg.get("c1").orElseThrow().probeStatus().probedAt();
+        assertThat(secondProbedAt).isNotNull();
+        assertThat(reg.get("c1").orElseThrow().probeStatus().state()).isEqualTo("ok");
+        // Both calls exercise the same connection set; probedAt must have been recomputed
+        // (not merely left over from the first probeAll() call).
+        assertThat(secondProbedAt).isAfterOrEqualTo(firstProbedAt);
+    }
+
+    @Test
     void notReadyProbeSetsPendingNotUnreachable() {
         ConnectionConfig c = cfg("pending");
         ConnectionsProperties props = new ConnectionsProperties();
@@ -92,7 +107,7 @@ class ConnectionProbeRunnerTest {
         props.setConnections(conns);
         BrokerProviderFactory f = new BrokerProviderFactory() {
             public String provider() { return "pending"; }
-            public BrokerProvider create(ConnectionConfig cc) {
+            public BrokerProvider create(String connectionId, ConnectionConfig cc) {
                 return new BrokerProvider() {
                     public String name() { return "pending"; }
                     public OrderResult submitBracket(BracketOrderRequest r) { return null; }

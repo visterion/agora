@@ -64,6 +64,22 @@ class AnnualFactsTest {
         assertThat(a.prior()).isEqualByComparingTo("500");
     }
 
+    private static ConceptDatapoint durFiled(String start, String end, long v, String filed) {
+        return new ConceptDatapoint(LocalDate.parse(start), LocalDate.parse(end), BigDecimal.valueOf(v), null, "FY", "10-K", LocalDate.parse(filed));
+    }
+
+    @Test void dedupTieBreaksByLatestFiledForSamePeriodEnd() {
+        // Two facts sharing the same period-end (a restatement): the earlier-filed original
+        // is listed FIRST to prove the winner is chosen by latest `filed`, not by list order.
+        var s = new ConceptSeries("USD", List.of(
+            durFiled("2022-01-01", "2022-12-31", 100, "2023-02-01"),
+            durFiled("2023-01-01", "2023-12-31", 150, "2024-02-01"),
+            durFiled("2023-01-01", "2023-12-31", 155, "2024-06-01"))); // restated 2023, filed later, higher value
+        var a = AnnualFacts.of(s);
+        assertThat(a.current()).isEqualByComparingTo("155");
+        assertThat(a.prior()).isEqualByComparingTo("100");
+    }
+
     @Test void ofInstantWithoutFyTagsIsUnavailable() {
         var s = new ConceptSeries("USD", List.of(
             instQ("2023-03-31", 510, "Q1"),

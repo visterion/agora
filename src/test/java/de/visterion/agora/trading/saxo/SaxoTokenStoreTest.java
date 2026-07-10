@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -141,5 +142,93 @@ class SaxoTokenStoreTest {
                 .isInstanceOfSatisfying(BrokerException.class,
                         e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE))
                 .hasMessageContaining("re-authorization");
+    }
+
+    // --- C6: omitted refresh_token on refresh response must keep the existing one ---
+
+    @Test
+    void updateWithNullRefreshTokenKeepsExistingOne() throws Exception {
+        var s = store("saxo-sim");
+        s.update("acc-1", 1200, "R1");
+        s.update("acc-2", 1200, null);                     // Saxo omitted refresh_token
+        assertThat(s.refreshToken()).isEqualTo("R1");
+        assertThat(s.validAccessToken()).contains("acc-2"); // access token still rotates
+        assertThat(Files.readString(dir.resolve("saxo-sim.token"))).contains("R1");
+    }
+
+    @Test
+    void updateWithBlankRefreshTokenKeepsExistingOne() {
+        var s = store("saxo-sim");
+        s.update("acc-1", 1200, "R1");
+        s.update("acc-2", 1200, "   ");
+        assertThat(s.refreshToken()).isEqualTo("R1");
+    }
+
+    // --- M-T8: a persist failure must not prevent the in-memory swap ---
+
+    @Test
+    void persistFailureStillSwapsInMemoryState() throws Exception {
+        Path storeDir = dir.resolve("store");
+        var s = new SaxoTokenStore("saxo-sim", storeDir, now::get);
+        s.update("acc-1", 1200, "R1");                     // establishes the dir/file normally
+
+        // Remove write access to the token dir so persistRefreshToken's file creation fails
+        // (AccessDeniedException, an IOException) without blocking @TempDir cleanup of `dir`.
+        Files.setPosixFilePermissions(storeDir, PosixFilePermissions.fromString("r-x------"));
+        try {
+            s.update("acc-2", 1200, "R2");
+
+            assertThat(s.validAccessToken()).contains("acc-2");  // memory swapped despite persist failure
+            assertThat(s.refreshToken()).isEqualTo("R2");
+        } finally {
+            Files.setPosixFilePermissions(storeDir, PosixFilePermissions.fromString("rwx------"));
+        }
+    }
+
+    // --- H7: compare-and-set update/markDead against a captured refresh token ---
+
+    @Test
+    void updateIfCurrentAppliesWhenTokenMatches() {
+        var s = store("saxo-sim");
+        s.update("acc-0", 1200, "R1");
+        boolean applied = s.updateIfCurrent("R1", "acc-1", 1200, "R2");
+        assertThat(applied).isTrue();
+        assertThat(s.refreshToken()).isEqualTo("R2");
+        assertThat(s.validAccessToken()).contains("acc-1");
+    }
+
+    @Test
+    void updateIfCurrentIsNoOpWhenTokenIsStale() {
+        var s = store("saxo-sim");
+        s.update("acc-0", 1200, "R1");
+        s.update("acc-1", 1200, "R2");                     // a concurrent callback landed R2
+
+        boolean applied = s.updateIfCurrent("R1", "acc-stale", 1200, "R3");
+
+        assertThat(applied).isFalse();
+        assertThat(s.refreshToken()).isEqualTo("R2");
+        assertThat(s.validAccessToken()).contains("acc-1");
+    }
+
+    @Test
+    void markDeadIfCurrentAppliesWhenTokenMatches() {
+        var s = store("saxo-sim");
+        s.update("acc-0", 1200, "R1");
+        boolean applied = s.markDeadIfCurrent("R1", "refresh rejected");
+        assertThat(applied).isTrue();
+        assertThat(s.dead()).isTrue();
+        assertThat(s.deadReason()).isEqualTo("refresh rejected");
+    }
+
+    @Test
+    void markDeadIfCurrentIsNoOpWhenTokenIsStale() {
+        var s = store("saxo-sim");
+        s.update("acc-0", 1200, "R1");
+        s.update("acc-1", 1200, "R2");                     // a concurrent callback landed R2
+
+        boolean applied = s.markDeadIfCurrent("R1", "x");
+
+        assertThat(applied).isFalse();
+        assertThat(s.dead()).isFalse();
     }
 }

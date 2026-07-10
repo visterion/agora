@@ -53,6 +53,20 @@ class AlpacaMarketDataProviderTest {
         assertThat(q.dayChangePercent()).isEqualByComparingTo("1.2759");
     }
 
+    @Test void quotePrefersDailyBarWhenNewerThanLatestTrade() {
+        // latestTrade is stale (from the prior session); dailyBar was updated more recently.
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/AAPL/snapshot"))
+                .willReturn(okJson("""
+                    {
+                      "latestTrade": {"t":"2025-01-02T14:00:00Z","p":150.0,"s":100,"x":"V"},
+                      "dailyBar": {"t":"2025-01-03T20:59:00Z","o":188.5,"h":191.0,"l":188.0,"c":190.2,"v":1000000},
+                      "prevDailyBar": {"t":"2025-01-02T05:00:00Z","c":188.1}
+                    }
+                    """)));
+        Quote q = provider(true).quote("AAPL");
+        assertThat(q.price()).isEqualByComparingTo("190.2");
+    }
+
     @Test void quoteFallsBackToDailyBarCloseWhenNoTrade() {
         wm.stubFor(get(urlPathEqualTo("/v2/stocks/AAPL/snapshot"))
                 .willReturn(okJson("""
@@ -71,6 +85,18 @@ class AlpacaMarketDataProviderTest {
         assertThatThrownBy(() -> provider(true).quote("ZZZZ"))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
+    }
+
+    @Test void ohlcRequestsSplitAdjustedBars() {
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/AAPL/bars"))
+                .withQueryParam("adjustment", equalTo("split"))
+                .willReturn(okJson("""
+                    {"bars":[
+                      {"t":"2025-01-02T05:00:00Z","o":10.0,"h":11.0,"l":9.5,"c":10.5,"v":1000}
+                    ],"symbol":"AAPL","next_page_token":null}
+                    """)));
+        List<OhlcBar> bars = provider(true).ohlc("AAPL", 30);
+        assertThat(bars).hasSize(1);
     }
 
     @Test void ohlcParsesBarsOldestFirst() {

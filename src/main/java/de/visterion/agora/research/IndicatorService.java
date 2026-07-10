@@ -2,6 +2,7 @@ package de.visterion.agora.research;
 
 import de.visterion.agora.data.OhlcBar;
 import org.ta4j.core.BarSeries;
+import org.ta4j.core.indicators.ATRIndicator;
 import org.ta4j.core.indicators.averages.SMAIndicator;
 import org.ta4j.core.indicators.helpers.ClosePriceIndicator;
 import org.ta4j.core.indicators.helpers.HighPriceIndicator;
@@ -21,8 +22,11 @@ import java.util.List;
  * and 52-week high/low range. Backed by ta4j primitives (see {@code Ta4jBars}).
  * All coupling to order management, sizing, or time-in-trade is excluded by design.</p>
  *
- * <p>ATR = simple SMA of the last {@code atrPeriod} True Range values.
- * MA names are {@code maFast}/{@code maSlow} with configurable periods.</p>
+ * <p>ATR = simple SMA of the last {@code atrPeriod} True Range values. Chandelier stop uses a
+ * separately computed Wilder-smoothed (MMA) ATR via ta4j's {@code ATRIndicator} — NOT the
+ * SMA-based {@code atr} value above (research low (h); kept in sync with
+ * {@code BuiltinIndicators.chandelierStop()}). MA names are {@code maFast}/{@code maSlow}
+ * with configurable periods.</p>
  *
  * <p>This class is pure Java — no Spring, no database dependencies.</p>
  */
@@ -71,7 +75,7 @@ public class IndicatorService {
                     null, false,
                     null, false,
                     null, false,
-                    "NEUTRAL",
+                    "NEUTRAL", null,
                     null, null, false);
         }
 
@@ -94,14 +98,20 @@ public class IndicatorService {
             atr = atrIndicator.getValue(end).bigDecimalValue();
         }
 
-        // --- Chandelier stop = highestHigh(last atrPeriod bars) - atrMultiple * atr ---
+        // --- Chandelier stop = highestHigh(last atrPeriod bars) - atrMultiple * Wilder-ATR ---
+        // Uses Wilder-smoothed (MMA) ATR via ta4j's ATRIndicator, NOT the SMA-of-TR `atr` value
+        // above — same algorithm as BuiltinIndicators.chandelierStop() (research low (h)), kept
+        // in sync so the catalog entry and this consumer path agree (parity-guarded, see
+        // BuiltinIndicatorsParityTest).
         BigDecimal chandelierStop = null;
         boolean chandelierBreached = false;
         if (atrAvailable) {
             HighestValueIndicator highestHigh =
                     new HighestValueIndicator(new HighPriceIndicator(series), params.atrPeriod());
             BigDecimal hh = highestHigh.getValue(end).bigDecimalValue();
-            chandelierStop = hh.subtract(params.atrMultiple().multiply(atr, MC));
+            BigDecimal wilderAtr = new ATRIndicator(series, params.atrPeriod())
+                    .getValue(end).bigDecimalValue();
+            chandelierStop = hh.subtract(params.atrMultiple().multiply(wilderAtr, MC));
             chandelierBreached = currentClose.compareTo(chandelierStop) < 0;
         }
 
@@ -120,12 +130,17 @@ public class IndicatorService {
 
         // --- MA cross state ---
         String maCrossState = "NEUTRAL";
+        Integer crossedWithinBars = null;
         if (maFastAvailable && maSlowAvailable) {
             if (maFast.compareTo(maSlow) < 0) {
                 maCrossState = "DEATH_CROSS";
             } else {
                 maCrossState = "BULLISH";
             }
+            // research low (i): maCrossState is a level, not a cross event by itself — also
+            // report how many bars ago fast/slow last flipped sign (null if no flip is visible
+            // within the bars where both averages are available).
+            crossedWithinBars = barsSinceLastSignFlip(close, params, end);
         }
 
         // --- 52-week high/low (computed from all available bars; flag reflects threshold) ---
@@ -141,8 +156,28 @@ public class IndicatorService {
                 chandelierStop, chandelierBreached,
                 maFast, maFastAvailable,
                 maSlow, maSlowAvailable,
-                maCrossState,
+                maCrossState, crossedWithinBars,
                 high52w, low52w, window52wAvailable);
+    }
+
+    /** Bars since fast/slow last changed sign, scanning back from {@code end} through the
+     *  bars where both SMAs are defined (i.e. down to index {@code maSlow-1}). Null if the
+     *  sign never flips within that window (e.g. a clean, uninterrupted trend). */
+    private static Integer barsSinceLastSignFlip(ClosePriceIndicator close, Params params, int end) {
+        SMAIndicator fastInd = new SMAIndicator(close, params.maFast());
+        SMAIndicator slowInd = new SMAIndicator(close, params.maSlow());
+        int firstBothAvailable = params.maSlow() - 1;
+        if (end <= firstBothAvailable) return null;
+        int currentSign = sign(fastInd, slowInd, end);
+        for (int idx = end - 1; idx >= firstBothAvailable; idx--) {
+            if (sign(fastInd, slowInd, idx) != currentSign) return end - idx;
+        }
+        return null;
+    }
+
+    private static int sign(SMAIndicator fast, SMAIndicator slow, int idx) {
+        return fast.getValue(idx).minus(slow.getValue(idx)).bigDecimalValue()
+                .compareTo(BigDecimal.ZERO) < 0 ? -1 : 1;
     }
 
     /**

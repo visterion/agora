@@ -116,19 +116,100 @@ class YamlIndicatorCatalogTest {
     }
 
     @Test
+    void warmupRecursiveRaisesMinBarsToConvergenceSafeMultiple() {
+        // H3: recursive (EMA/Wilder-seeded) indicators need ~4x period to converge past the
+        // raw-price seed, not period+1. warmup: recursive selects 1 + 4*maxPeriod.
+        var defs = YamlIndicatorCatalog.load(yaml("""
+                indicators:
+                  rsi:
+                    class: org.ta4j.core.indicators.RSIIndicator
+                    inputs: 1
+                    warmup: recursive
+                    params:
+                      - { name: period, default: 14, min: 1, max: 500 }
+                """));
+        assertThat(defs).hasSize(1);
+        var def = defs.getFirst();
+        assertThat(def.minBars().applyAsInt(ResolvedParams.defaults(def.params())))
+                .isEqualTo(1 + 4 * 14);
+    }
+
+    @Test
+    void warmupDefaultsToExactWindow() {
+        var defs = YamlIndicatorCatalog.load(yaml("""
+                indicators:
+                  sma:
+                    class: org.ta4j.core.indicators.averages.SMAIndicator
+                    inputs: 1
+                    params:
+                      - { name: period, default: 20, min: 1, max: 1000 }
+                """));
+        assertThat(defs.getFirst().minBars().applyAsInt(ResolvedParams.defaults(defs.getFirst().params())))
+                .isEqualTo(21);
+    }
+
+    @Test
+    void unknownWarmupValueSkipsEntry() {
+        var defs = YamlIndicatorCatalog.load(yaml("""
+                indicators:
+                  rsi:
+                    class: org.ta4j.core.indicators.RSIIndicator
+                    inputs: 1
+                    warmup: bogus
+                    params:
+                      - { name: period, default: 14 }
+                """));
+        assertThat(defs).isEmpty();
+    }
+
+    @Test
+    void nonIntegerDefaultForIntParamFailsCatalogLoad() {
+        // Previously def.intValue() silently truncated 14.7 -> 14; must now be a hard failure.
+        var defs = YamlIndicatorCatalog.load(yaml("""
+                indicators:
+                  rsi:
+                    class: org.ta4j.core.indicators.RSIIndicator
+                    inputs: 1
+                    params:
+                      - { name: period, default: 14.7, min: 1, max: 500 }
+                """));
+        assertThat(defs).isEmpty();
+    }
+
+    @Test
     void emptyOrGarbageYamlYieldsEmptyList() {
         assertThat(YamlIndicatorCatalog.load(yaml(""))).isEmpty();
         assertThat(YamlIndicatorCatalog.load(yaml("not: relevant"))).isEmpty();
     }
 
     @Test
-    void builtinCatalogFileLoadsAllSeventeenEntries() {
+    void builtinCatalogFileLoadsAllSixteenEntries() {
+        // dpo moved to BuiltinIndicators.java (research low (b): its true minBars is a
+        // nonlinear function of period that the generic reflection-based YAML loader can't express).
         try (InputStream in = getClass().getResourceAsStream("/indicators-catalog.yaml")) {
             var defs = YamlIndicatorCatalog.load(in);
             assertThat(defs).extracting(IndicatorDef::name).containsExactlyInAnyOrder(
-                    "rsi", "sma", "ema", "wma", "kama", "roc", "ppo", "dpo",
+                    "rsi", "sma", "ema", "wma", "kama", "roc", "ppo",
                     "stddev", "mean_deviation", "highest", "lowest",
                     "cci", "adx", "williams_r", "obv", "parabolic_sar");
+        } catch (java.io.IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    @Test
+    void builtinCatalogRecursiveEntriesGetConvergenceSafeMinBars() {
+        try (InputStream in = getClass().getResourceAsStream("/indicators-catalog.yaml")) {
+            var defs = YamlIndicatorCatalog.load(in);
+            var rsi = defs.stream().filter(d -> d.name().equals("rsi")).findFirst().orElseThrow();
+            assertThat(rsi.minBars().applyAsInt(ResolvedParams.defaults(rsi.params())))
+                    .isEqualTo(1 + 4 * 14);
+            var ema = defs.stream().filter(d -> d.name().equals("ema")).findFirst().orElseThrow();
+            assertThat(ema.minBars().applyAsInt(ResolvedParams.defaults(ema.params())))
+                    .isEqualTo(1 + 4 * 20);
+            var adx = defs.stream().filter(d -> d.name().equals("adx")).findFirst().orElseThrow();
+            assertThat(adx.minBars().applyAsInt(ResolvedParams.defaults(adx.params())))
+                    .isEqualTo(1 + 4 * 14);
         } catch (java.io.IOException e) {
             throw new java.io.UncheckedIOException(e);
         }

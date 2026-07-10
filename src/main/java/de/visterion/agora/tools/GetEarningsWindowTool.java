@@ -4,6 +4,8 @@ import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.fetch.earnings.EarningsEvent;
 import de.visterion.agora.fetch.earnings.EarningsService;
 import de.visterion.agora.tool.AgoraTool;
+import de.visterion.agora.tool.ToolParams;
+import de.visterion.agora.tool.ToolParams.InvalidArgumentException;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -13,12 +15,15 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 @Component
 public class GetEarningsWindowTool implements AgoraTool {
 
-    private static final int DEFAULT_LIMIT = 200;
+    private static final int DEFAULT_LIMIT = 100;
+    private static final int MAX_LIMIT = 100;
+    private static final int MAX_WINDOW_DAYS = 366;
 
     private final EarningsService service;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -36,7 +41,7 @@ public class GetEarningsWindowTool implements AgoraTool {
         ObjectNode props = schema.putObject("properties");
         props.putObject("from").put("type", "string").put("description", "start date (YYYY-MM-DD), inclusive; default now-30d");
         props.putObject("to").put("type", "string").put("description", "end date (YYYY-MM-DD), inclusive; default now");
-        props.putObject("limit").put("type", "integer").put("description", "max rows (default 200)");
+        props.putObject("limit").put("type", "integer").put("description", "max rows (default " + DEFAULT_LIMIT + ", max " + MAX_LIMIT + ")");
         return schema;
     }
 
@@ -50,8 +55,18 @@ public class GetEarningsWindowTool implements AgoraTool {
         } catch (DateTimeParseException e) {
             return ToolResult.unavailable("invalid date");
         }
-        int limit = args != null && args.path("limit").isInt() && args.path("limit").asInt() > 0
-                ? args.path("limit").asInt() : DEFAULT_LIMIT;
+        if (from.isAfter(to)) return ToolResult.unavailable("from must not be after to");
+        if (ChronoUnit.DAYS.between(from, to) > MAX_WINDOW_DAYS)
+            return ToolResult.unavailable("date window must not exceed " + MAX_WINDOW_DAYS + " days");
+
+        int limit;
+        try {
+            Integer limitArg = ToolParams.optionalInt(args, "limit");
+            limit = limitArg == null ? DEFAULT_LIMIT : limitArg;
+        } catch (InvalidArgumentException e) {
+            return ToolResult.unavailable(e.getMessage());
+        }
+        limit = Math.clamp(limit, 1, MAX_LIMIT);
         try {
             List<EarningsEvent> events = service.earningsWindow(from, to);
             ObjectNode out = mapper.createObjectNode();
@@ -68,8 +83,15 @@ public class GetEarningsWindowTool implements AgoraTool {
                 if (e.revenueEstimate() != null) o.put("revenueEstimate", e.revenueEstimate());
                 if (e.revenueActual() != null) o.put("revenueActual", e.revenueActual());
             }
+            out.put("truncated", events.size() > limit);
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
+            if (e.kind() == MarketDataException.Kind.NOT_FOUND) {
+                ObjectNode out = mapper.createObjectNode();
+                out.putArray("earnings");
+                out.put("note", "no earnings in the requested window");
+                return ToolResult.ok(out);
+            }
             return ToolResult.unavailable(e.getMessage());
         }
     }

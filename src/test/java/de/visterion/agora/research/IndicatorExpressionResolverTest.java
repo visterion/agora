@@ -56,7 +56,7 @@ class IndicatorExpressionResolverTest {
         var r = resolver.resolve(json("\"rsi\""), series);
         assertThat(r.label()).isEqualTo("rsi");
         assertThat(r.def().name()).isEqualTo("rsi");
-        assertThat(r.minBars()).isEqualTo(15);
+        assertThat(r.minBars()).isEqualTo(1 + 4 * 14); // H3: recursive -> convergence-safe minBars
         assertThat(Ta4jBars.toBd(r.outputs().get("value").getValue(series.getEndIndex()), 4))
                 .isEqualByComparingTo("100");
     }
@@ -181,10 +181,66 @@ class IndicatorExpressionResolverTest {
     }
 
     @Test
-    void minBarsPropagatesThroughChain() {
-        var series = Ta4jBars.toSeries(rising(30));
+    void minBarsPropagatesThroughChainAdditively() {
+        // research low (c): composed minBars must be additive (inner + outerWindow - 1), not max —
+        // the outer indicator needs its own full window of *stable* inner values, not just one.
+        var series = Ta4jBars.toSeries(rising(90));
         var r = resolver.resolve(json("{\"name\":\"sma\",\"params\":{\"period\":2},\"of\":\"rsi\"}"), series);
-        // max(own 3, sub 15) = 15
-        assertThat(r.minBars()).isEqualTo(15);
+        // rsi(14) is now warmup:recursive -> minBars = 1+4*14 = 57. sma(period=2) alone -> 1+2 = 3.
+        // additive: subMinBars + ownMinBars - 2 = 57 + 3 - 2 = 58
+        int rsiMinBars = 1 + 4 * 14;
+        assertThat(r.minBars()).isEqualTo(rsiMinBars + 3 - 2);
+    }
+
+    @Test
+    void composedMinBarsMatchesBriefWorkedExample() {
+        // sma(10) of rsi(14) -> minBars == rsiStable + 10 - 1 (rsiStable=57, sma(10) alone minBars=11)
+        var series = Ta4jBars.toSeries(rising(90));
+        var r = resolver.resolve(json("{\"name\":\"sma\",\"params\":{\"period\":10},\"of\":\"rsi\"}"), series);
+        int rsiMinBars = 1 + 4 * 14;
+        assertThat(r.minBars()).isEqualTo(rsiMinBars + 10 - 1);
+    }
+
+    @Test
+    void nonComposedMinBarsUnchanged() {
+        var series = Ta4jBars.toSeries(rising(30));
+        var r = resolver.resolve(json("\"sma\""), series);
+        assertThat(r.minBars()).isEqualTo(21); // 1 + period(20), unaffected (no 'of' composition)
+    }
+
+    // -------------------------------------------------------------------------
+    // Task 8 review finding 2: additive composition must not under-count when the OUTER
+    // indicator's minBars does not follow the "1 + rawWindow" convention (bollinger, macd,
+    // ma_cross). Correct invariant: total = subMinBars - 1 + outerRawWindow.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void bollingerOfRsiComposedMinBarsIsExactNotUnderCounted() {
+        var series = Ta4jBars.toSeries(rising(120));
+        var r = resolver.resolve(json("{\"name\":\"bollinger\",\"of\":\"rsi\"}"), series);
+        int rsiMinBars = 1 + 4 * 14;   // subMinBars
+        int bollingerRawWindow = 20;   // default period; bollinger's minBars IS the raw window
+        int expected = rsiMinBars - 1 + bollingerRawWindow;
+        assertThat(r.minBars()).isEqualTo(expected).isGreaterThanOrEqualTo(expected);
+    }
+
+    @Test
+    void macdOfRsiComposedMinBarsIsExactNotUnderCounted() {
+        var series = Ta4jBars.toSeries(rising(250));
+        var r = resolver.resolve(json("{\"name\":\"macd\",\"of\":\"rsi\"}"), series);
+        int rsiMinBars = 1 + 4 * 14;                 // subMinBars
+        int macdRawWindow = 4 * (26 + 9);            // macd's own minBars is 1 + 4*(slow+signal)
+        int expected = rsiMinBars - 1 + macdRawWindow;
+        assertThat(r.minBars()).isEqualTo(expected).isGreaterThanOrEqualTo(expected);
+    }
+
+    @Test
+    void maCrossOfRsiComposedMinBarsIsExactNotUnderCounted() {
+        var series = Ta4jBars.toSeries(rising(300));
+        var r = resolver.resolve(json("{\"name\":\"ma_cross\",\"of\":\"rsi\"}"), series);
+        int rsiMinBars = 1 + 4 * 14;   // subMinBars
+        int maCrossRawWindow = 200;    // default slow; ma_cross's minBars IS the raw window
+        int expected = rsiMinBars - 1 + maCrossRawWindow;
+        assertThat(r.minBars()).isEqualTo(expected).isGreaterThanOrEqualTo(expected);
     }
 }

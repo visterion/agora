@@ -58,7 +58,7 @@ class PlaceBracketWebhookIT {
                 @Override public String provider() { return "stub"; }
 
                 @Override
-                public BrokerProvider create(de.visterion.agora.trading.ConnectionConfig cfg) {
+                public BrokerProvider create(String connectionId, de.visterion.agora.trading.ConnectionConfig cfg) {
                     return new BrokerProvider() {
                         @Override public String name() { return "stub"; }
 
@@ -106,7 +106,7 @@ class PlaceBracketWebhookIT {
     }
 
     private static final String VALID_BODY = """
-            {"connection":"test-conn","symbol":"AAPL","side":"buy","qty":1,"stopLossStop":95,"takeProfitLimit":110,"clientRef":"ref-1"}
+            {"connection":"test-conn","symbol":"AAPL","side":"buy","qty":1,"limitPrice":100,"stopLossStop":95,"takeProfitLimit":110,"clientRef":"ref-1"}
             """;
 
     @Test

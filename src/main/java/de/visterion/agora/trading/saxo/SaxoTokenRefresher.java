@@ -55,13 +55,27 @@ public class SaxoTokenRefresher {
             boolean noAccess = store.validAccessToken().isEmpty();
             boolean expiringSoon = !noAccess && store.accessRemainingMillis() < store.accessTtlMillis() / 3;
             if (!noAccess && !expiringSoon) continue;
+            // H7: capture the refresh token in hand BEFORE the network call (which can take
+            // up to the provider timeout) and only ever apply the result via the CAS
+            // variants below — a concurrent /auth/saxo/callback (human re-authorizing) may
+            // land fresh tokens while this refresh is in flight, and this stale result must
+            // not clobber or kill that fresh session.
+            String inHand = store.refreshToken();
             try {
-                SaxoOAuthClient.SaxoTokens t = oauth.refresh(c.config(), store.refreshToken());
-                store.update(t.accessToken(), t.expiresInSeconds(), t.refreshToken());
+                SaxoOAuthClient.SaxoTokens t = oauth.refresh(c.config(), inHand);
+                boolean applied = store.updateIfCurrent(inHand, t.accessToken(), t.expiresInSeconds(), t.refreshToken());
+                if (!applied) {
+                    log.info("Saxo connection '{}': stale refresh result discarded for '{}'", c.id(), inHand);
+                    continue;
+                }
                 c.setProbeStatus(ProbeStatus.ok(Instant.now()));
                 log.info("Saxo connection '{}' token refreshed", c.id());
             } catch (SaxoOAuthClient.InvalidGrantException e) {
-                store.markDead("refresh rejected");
+                boolean applied = store.markDeadIfCurrent(inHand, "refresh rejected");
+                if (!applied) {
+                    log.info("Saxo connection '{}': stale refresh result discarded for '{}'", c.id(), inHand);
+                    continue;
+                }
                 c.setProbeStatus(ProbeStatus.unreachable(Instant.now(),
                         "refresh rejected — re-authorize via /auth/saxo/login"));
                 log.warn("Saxo connection '{}' refresh rejected — re-authorize via /auth/saxo/login?connection={}",

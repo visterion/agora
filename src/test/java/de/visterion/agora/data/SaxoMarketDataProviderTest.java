@@ -165,6 +165,42 @@ class SaxoMarketDataProviderTest {
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
 
+    @Test void ohlcRequestBeyond1200CapThrowsNotFoundWhenCapHit() {
+        // M-D7: requesting more than Saxo's 1200-bar cap, and getting back a full
+        // cap's-worth (1200), must NOT be treated as a silently-truncated success — the
+        // caller can't tell that from "we asked for exactly 1200 and got 1200 back" if we
+        // return normally, so the fallback chain never gets a chance at a fuller provider.
+        stubSapSearch();
+        stubAccounts();
+        StringBuilder bars = new StringBuilder("{\"Data\":[");
+        for (int i = 0; i < 1200; i++) {
+            if (i > 0) bars.append(",");
+            bars.append("""
+                {"Close":100.0,"High":101.0,"Low":99.0,"Open":100.0,"Time":"2020-01-%02dT00:00:00Z","Volume":1000.0}
+                """.formatted(1 + (i % 28)));
+        }
+        bars.append("]}");
+        wm.stubFor(get(urlPathEqualTo("/chart/v3/charts")).withQueryParam("Count", equalTo("1200"))
+                .willReturn(okJson(bars.toString())));
+
+        assertThatThrownBy(() -> provider(true).ohlc("SAP.DE", 2000))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
+    }
+
+    @Test void ohlcRequestBeyond1200CapReturnsSuccessWhenGenuinelyShortHistory() {
+        // A brand-new/illiquid instrument genuinely has fewer bars than the cap even though
+        // >1200 days were requested — that's real data, not truncation, and must still
+        // succeed (distinguishing this from the truncation case above is the whole point).
+        stubSapSearch();
+        stubAccounts();
+        wm.stubFor(get(urlPathEqualTo("/chart/v3/charts")).withQueryParam("Count", equalTo("1200"))
+                .willReturn(okJson(CHART_BARS)));   // only 3 bars available
+
+        var bars = provider(true).ohlc("SAP.DE", 2000);
+        assertThat(bars).hasSize(3);
+    }
+
     @Test void ohlcHttpErrorIsUnavailable() {
         stubSapSearch();
         stubAccounts();

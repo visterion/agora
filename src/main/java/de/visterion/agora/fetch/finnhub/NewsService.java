@@ -1,7 +1,10 @@
 package de.visterion.agora.fetch.finnhub;
 
 import de.visterion.agora.data.MarketDataException;
+import de.visterion.agora.data.ProviderErrors;
 import de.visterion.agora.data.TtlCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -17,6 +20,8 @@ import java.util.function.LongSupplier;
 @Component
 public class NewsService {
 
+    private static final Logger log = LoggerFactory.getLogger(NewsService.class);
+
     private final FinnhubClient client;
     private final TtlCache<String, List<NewsItem>> cache;
 
@@ -28,7 +33,8 @@ public class NewsService {
 
     NewsService(FinnhubClient client, long ttlSeconds, LongSupplier now) {
         this.client = client;
-        this.cache = new TtlCache<>(ttlSeconds * 1000L, now);
+        // Keyed by symbol+date-range, so cardinality grows with distinct windows queried.
+        this.cache = new TtlCache<>(ttlSeconds * 1000L, 2048, now);
     }
 
     public List<NewsItem> companyNews(String symbol, LocalDate from, LocalDate to) {
@@ -45,13 +51,14 @@ public class NewsService {
                             .queryParam("symbol", symbol)
                             .queryParam("from", from.toString())
                             .queryParam("to", to.toString())
-                            .queryParam("token", client.token())
                             .build())
+                    .header(FinnhubClient.TOKEN_HEADER, client.token())
                     .retrieve()
                     .body(JsonNode.class);
         } catch (Exception e) {
+            log.warn("finnhub company-news request failed for {}", symbol, e);
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "finnhub company-news unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("finnhub company-news", e), e);
         }
         if (arr == null || !arr.isArray())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "empty news body", null);
@@ -63,9 +70,15 @@ public class NewsService {
                     headline,
                     n.path("summary").asString(""),
                     n.path("source").asString(""),
-                    Instant.ofEpochSecond(n.path("datetime").asLong(0)),
+                    epochSeconds(n.path("datetime")),
                     n.path("url").asString("")));
         }
         return out;
+    }
+
+    /** Missing/null datetime yields null, not the fabricated epoch-0 (1970-01-01) timestamp. */
+    private static Instant epochSeconds(JsonNode n) {
+        if (n.isMissingNode() || n.isNull()) return null;
+        return Instant.ofEpochSecond(n.asLong(0));
     }
 }

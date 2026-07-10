@@ -49,4 +49,53 @@ class YahooEarningsProviderTest {
         var out = p().earnings(null, LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-03"));
         assertThat(out).extracting(EarningsEvent::symbol).containsExactly("AAPL", "MSFT");
     }
+
+    @Test void afterCloseEventDateUsesNewYorkTimeZoneNotUtc() {
+        // 2025-05-02T00:15:00Z is 2025-05-01 20:15 EDT (after-close report, still 05-01 in NY).
+        wm.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
+                .willReturn(okJson("""
+                    {"rows":[
+                      {"ticker":"AAPL","startdatetime":"2025-05-02T00:15:00Z","epsactual":"1.5","epsestimate":"1.4"}
+                    ]}
+                    """)));
+        List<EarningsEvent> ev = p().earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"));
+        assertThat(ev).hasSize(1);
+        assertThat(ev.get(0).date()).isEqualTo(LocalDate.parse("2025-05-01"));
+    }
+
+    @Test void paginatesUntilSymbolFoundOnLaterPage() {
+        StringBuilder page1 = new StringBuilder("{\"rows\":[");
+        for (int i = 0; i < 100; i++) {
+            if (i > 0) page1.append(",");
+            page1.append("{\"ticker\":\"SYM").append(i).append("\",\"startdatetime\":\"2025-05-01T20:00:00Z\"}");
+        }
+        page1.append("]}");
+        wm.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
+                .withQueryParam("offset", equalTo("0"))
+                .willReturn(okJson(page1.toString())));
+        wm.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
+                .withQueryParam("offset", equalTo("100"))
+                .willReturn(okJson("""
+                    {"rows":[
+                      {"ticker":"AAPL","startdatetime":"2025-05-03T20:00:00Z","epsactual":"1.5","epsestimate":"1.4"}
+                    ]}
+                    """)));
+        List<EarningsEvent> ev = p().earnings("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"));
+        assertThat(ev).hasSize(1);
+        assertThat(ev.get(0).symbol()).isEqualTo("AAPL");
+        wm.verify(getRequestedFor(urlPathEqualTo("/v1/finance/calendar/earnings")).withQueryParam("offset", equalTo("100")));
+    }
+
+    @Test void pagingStopsAtCapWhenSymbolNeverFound() {
+        StringBuilder fullPage = new StringBuilder("{\"rows\":[");
+        for (int i = 0; i < 100; i++) {
+            if (i > 0) fullPage.append(",");
+            fullPage.append("{\"ticker\":\"SYM").append(i).append("\",\"startdatetime\":\"2025-05-01T20:00:00Z\"}");
+        }
+        fullPage.append("]}");
+        wm.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings")).willReturn(okJson(fullPage.toString())));
+        List<EarningsEvent> ev = p().earnings("MISSING", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"));
+        assertThat(ev).isEmpty();
+        wm.verify(10, getRequestedFor(urlPathEqualTo("/v1/finance/calendar/earnings")));
+    }
 }

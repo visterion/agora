@@ -23,7 +23,7 @@ class PlaceBracketToolTest {
 
     @Test void acceptedShape() {
         ObjectNode a = mapper.createObjectNode();
-        a.put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110).put("clientRef","ref-1");
+        a.put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110).put("clientRef","ref-1");
         var r = tool(accepting()).call(a);
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("accepted").asBoolean()).isTrue();
@@ -32,7 +32,7 @@ class PlaceBracketToolTest {
 
     @Test void rejectedShape() {
         var r = tool(new StubBroker(){ public OrderResult submitBracket(BracketOrderRequest req){ return OrderResult.rejected("insufficient buying power","403"); }})
-                .call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
+                .call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("accepted").asBoolean()).isFalse();
         assertThat(r.output().get("rejectReason").asString()).contains("buying power");
@@ -40,7 +40,7 @@ class PlaceBracketToolTest {
 
     @Test void unavailableOnBrokerException() {
         var r = tool(new StubBroker(){ public OrderResult submitBracket(BracketOrderRequest req){ throw new BrokerException(BrokerException.Kind.UNAVAILABLE,"down",null); }})
-                .call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
+                .call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110));
         assertThat(r.available()).isFalse();
     }
 
@@ -71,16 +71,110 @@ class PlaceBracketToolTest {
 
     @Test void clientRefPassedThrough() {
         ObjectNode a = mapper.createObjectNode();
-        a.put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110).put("clientRef","my-ref");
+        a.put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110).put("clientRef","my-ref");
         var r = tool(accepting()).call(a);
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("clientRef").asString()).isEqualTo("my-ref");
     }
 
     @Test void missingConnectionUnavailable() {
-        var r = tool(accepting()).call(mapper.createObjectNode().put("symbol","AAPL").put("side","buy").put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
+        var r = tool(accepting()).call(mapper.createObjectNode().put("symbol","AAPL").put("side","buy").put("qty",1).put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110));
         assertThat(r.available()).isFalse();
         assertThat(r.error()).contains("connection");
+    }
+
+    // --- M-X1: side / sign / relational validation ---------------------------------------
+
+    @Test void invalidSideRejected() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","hold")
+                .put("qty",1).put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("side");
+    }
+
+    @Test void nonPositiveQtyRejected() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy")
+                .put("qty",0).put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("qty");
+    }
+
+    @Test void negativeLimitPriceRejected() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy")
+                .put("qty",1).put("limitPrice",-5).put("stopLossStop",95).put("takeProfitLimit",110));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("limitPrice");
+    }
+
+    @Test void buyWithStopLossAboveEntryRejectedNamingRelation() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy")
+                .put("qty",1).put("limitPrice",100).put("stopLossStop",105).put("takeProfitLimit",110));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("takeProfitLimit").contains("limitPrice").contains("stopLossStop");
+    }
+
+    @Test void buyMarketEntryOnlyChecksTakeProfitVsStopLoss() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("type","market")
+                .put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("accepted").asBoolean()).isTrue();
+    }
+
+    @Test void sellWithInvertedRelationRejected() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","sell")
+                .put("qty",1).put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110));
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test void validSellReachesBroker() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","sell")
+                .put("qty",1).put("limitPrice",100).put("stopLossStop",105).put("takeProfitLimit",90));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("accepted").asBoolean()).isTrue();
+    }
+
+    // --- M-X2: malformed optional numeric args --------------------------------------------
+
+    @Test void malformedStopLossLimitRejectedWithExplicitError() {
+        ObjectNode a = mapper.createObjectNode();
+        a.put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1)
+                .put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110).put("stopLossLimit","x");
+        var r = tool(accepting()).call(a);
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("stopLossLimit");
+    }
+
+    @Test void malformedLimitPriceRejectedWithExplicitError() {
+        ObjectNode a = mapper.createObjectNode();
+        a.put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1)
+                .put("limitPrice","not-a-number").put("stopLossStop",95).put("takeProfitLimit",110);
+        var r = tool(accepting()).call(a);
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("limitPrice");
+    }
+
+    // --- M-X3: default type "limit" requires limitPrice -----------------------------------
+
+    @Test void defaultLimitTypeWithoutLimitPriceRejected() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy")
+                .put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("limitPrice");
+    }
+
+    @Test void explicitMarketTypeWithoutLimitPriceAccepted() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("type","market")
+                .put("qty",1).put("stopLossStop",95).put("takeProfitLimit",110));
+        assertThat(r.available()).isTrue();
     }
 
     /** Stub with sensible defaults; tests override one method. */

@@ -118,6 +118,43 @@ class GetRFrameworkToolTest {
         assertThat(r.available()).isFalse();
     }
 
+    @Test void invalidDirectionUnavailable() {
+        var args = mapper.createObjectNode();
+        args.put("symbol", "X");
+        args.put("direction", "up");
+        var r = tool(flatClose(10, "100")).call(args);
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test void nonPositiveAtrMultipleUnavailable() {
+        var args = mapper.createObjectNode();
+        args.put("symbol", "X");
+        args.put("atrMultiple", 0);
+        var r = tool(flatClose(10, "100")).call(args);
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test void explicitEmptyRMultiplesUnavailable() {
+        var args = mapper.createObjectNode();
+        args.put("symbol", "X");
+        args.put("stopLevel", "90");
+        args.putArray("rMultiples");
+        var r = tool(flatClose(10, "100")).call(args);
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("non-empty");
+    }
+
+    @Test void nonPositiveRMultipleEntryUnavailable() {
+        var args = mapper.createObjectNode();
+        args.put("symbol", "X");
+        args.put("stopLevel", "90");
+        var rm = args.putArray("rMultiples");
+        rm.add(1);
+        rm.add(0);
+        var r = tool(flatClose(10, "100")).call(args);
+        assertThat(r.available()).isFalse();
+    }
+
     @Test void long_withoutDirection_unchanged() {
         // price=100, atr=10, atrMultiple=3 → stop=70, targets 130,160,190
         var bars = flatCloseWithAtr(10, "100", "5");

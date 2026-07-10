@@ -53,6 +53,27 @@ class IndicatorCatalogConfigTest {
     }
 
     @Test
+    void bootValidationUsesANonMonotonicFixture() {
+        // research low (j): a strictly-monotonic synthetic series can't exercise real recursive
+        // computation (e.g. RSI on strictly-rising bars is trivially pinned at 100) — the boot
+        // fixture must actually vary, or boot validation only ever proves "the constructor didn't
+        // throw", not "the computed value is a real number".
+        var reg = new IndicatorCatalogConfig().indicatorRegistry("");
+        var series = de.visterion.agora.research.IndicatorCatalogConfig.syntheticSeriesForTest(300);
+        boolean sawNonMonotonicMove = false;
+        for (int i = 1; i < series.getBarCount(); i++) {
+            var prev = series.getBar(i - 1).getClosePrice();
+            var cur = series.getBar(i).getClosePrice();
+            if (cur.isLessThan(prev)) { sawNonMonotonicMove = true; break; }
+        }
+        assertThat(sawNonMonotonicMove).as("boot fixture must include at least one down-move").isTrue();
+        // and every built-in/YAML entry still survives boot validation against it
+        assertThat(reg.find("rsi")).isPresent();
+        assertThat(reg.find("adx")).isPresent();
+        assertThat(reg.find("macd")).isPresent();
+    }
+
+    @Test
     void validateRemovesBrokenEntries() {
         var reg = new IndicatorRegistry();
         BuiltinIndicators.defs().forEach(reg::register);

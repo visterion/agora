@@ -39,4 +39,22 @@ class CancelOrderToolTest {
         assertThat(r.error()).contains("connection");
         verifyNoInteractions(broker);
     }
+
+    @Test void blankOrderIdIsUnavailableAndBrokerNeverCalled() {
+        BrokerService broker = mock(BrokerService.class);
+        var tool = new CancelOrderTool(broker);
+        ToolResult r = tool.call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("orderId", ""));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("orderId");
+        verify(broker, never()).cancel(any(), any());
+    }
+
+    @Test void blankConnectionIsUnavailableAndBrokerNeverCalled() {
+        BrokerService broker = mock(BrokerService.class);
+        var tool = new CancelOrderTool(broker);
+        ToolResult r = tool.call(mapper.createObjectNode().put("connection", "").put("orderId", "oid-1"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("connection");
+        verify(broker, never()).cancel(any(), any());
+    }
 }

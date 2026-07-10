@@ -1,6 +1,8 @@
 package de.visterion.agora.tools;
 
 import de.visterion.agora.tool.AgoraTool;
+import de.visterion.agora.tool.ToolParams;
+import de.visterion.agora.tool.ToolParams.InvalidArgumentException;
 import de.visterion.agora.tool.ToolResult;
 import de.visterion.agora.trading.BrokerException;
 import de.visterion.agora.trading.BrokerService;
@@ -47,16 +49,18 @@ public class FlattenTool implements AgoraTool {
 
     @Override
     public ToolResult call(JsonNode args) {
-        if (args == null || !args.hasNonNull("connection"))
-            return ToolResult.unavailable("missing required argument: connection");
-        String connection = args.get("connection").asString();
-        if (!args.hasNonNull("symbol"))
-            return ToolResult.unavailable("missing required argument: symbol");
-
-        String symbol = args.get("symbol").asString();
-
-        BigDecimal fraction = safeDecimal(args, "fraction");
-        BigDecimal qty = safeDecimal(args, "qty");
+        String connection;
+        String symbol;
+        BigDecimal fraction;
+        BigDecimal qty;
+        try {
+            connection = ToolParams.requiredString(args, "connection");
+            symbol = ToolParams.requiredString(args, "symbol");
+            fraction = ToolParams.optionalDecimal(args, "fraction");
+            qty = ToolParams.optionalDecimal(args, "qty");
+        } catch (InvalidArgumentException e) {
+            return ToolResult.unavailable(e.getMessage());
+        }
 
         if (fraction != null && qty != null)
             return ToolResult.unavailable("fraction and qty are mutually exclusive — provide at most one");
@@ -86,11 +90,4 @@ public class FlattenTool implements AgoraTool {
         }
     }
 
-    private BigDecimal safeDecimal(JsonNode args, String field) {
-        try {
-            return args.hasNonNull(field) ? args.get(field).decimalValue() : null;
-        } catch (Exception e) {
-            return null;
-        }
-    }
 }
