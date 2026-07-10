@@ -17,6 +17,7 @@ import java.util.List;
 public class GetOhlcTool implements AgoraTool {
 
     private static final int DEFAULT_DAYS = 260;
+    private static final int MAX_DAYS = 1825;
     private final MarketDataService service;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -30,7 +31,7 @@ public class GetOhlcTool implements AgoraTool {
         schema.put("type", "object");
         ObjectNode props = schema.putObject("properties");
         props.putObject("symbol").put("type", "string").put("description", "ticker symbol");
-        props.putObject("days").put("type", "integer").put("description", "trading days of history (default 260)");
+        props.putObject("days").put("type", "integer").put("description", "trading days of history (default 260, max " + MAX_DAYS + ")");
         schema.putArray("required").add("symbol");
         return schema;
     }
@@ -39,6 +40,7 @@ public class GetOhlcTool implements AgoraTool {
         if (args == null || !args.hasNonNull("symbol")) return ToolResult.unavailable("no symbol provided");
         String symbol = args.get("symbol").asString();
         int days = (args.has("days") && args.get("days").isIntegralNumber()) ? args.get("days").asInt() : DEFAULT_DAYS;
+        days = Math.clamp(days, 1, MAX_DAYS);
         try {
             List<OhlcBar> bars = service.ohlc(symbol, days);
             ObjectNode out = mapper.createObjectNode();

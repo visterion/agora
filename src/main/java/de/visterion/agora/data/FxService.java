@@ -9,6 +9,7 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.function.LongSupplier;
 
 /** On-demand FX rates via Yahoo (PAIR=X), cached per-family. No amount conversion (that is a consumer concern). */
@@ -21,13 +22,16 @@ public class FxService {
     @Autowired
     public FxService(@Value("${agora.data.yahoo.base-url}") String baseUrl,
                      @Value("${agora.data.yahoo.user-agent}") String userAgent,
-                     @Value("${agora.data.cache.ttl.prices-seconds:120}") long ttlSeconds) {
-        this(baseUrl, userAgent, ttlSeconds, System::currentTimeMillis);
+                     @Value("${agora.data.cache.ttl.prices-seconds:120}") long ttlSeconds,
+                     @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
+        this(baseUrl, userAgent, ttlSeconds, timeoutMs, System::currentTimeMillis);
     }
 
-    FxService(String baseUrl, String userAgent, long ttlSeconds, LongSupplier now) {
+    FxService(String baseUrl, String userAgent, long ttlSeconds, long timeoutMs, LongSupplier now) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
         this.client = RestClient.builder()
-                .requestFactory(new JdkClientHttpRequestFactory())
+                .requestFactory(rf)
                 .baseUrl(baseUrl)
                 .defaultHeader("User-Agent", userAgent)
                 .build();

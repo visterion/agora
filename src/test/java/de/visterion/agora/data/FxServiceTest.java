@@ -13,7 +13,7 @@ class FxServiceTest {
     @AfterAll static void stop() { wm.stop(); }
     @BeforeEach void reset() { wm.resetAll(); }
 
-    private FxService svc() { return new FxService(wm.baseUrl(), "TestAgent/1.0", 120L, System::currentTimeMillis); }
+    private FxService svc() { return new FxService(wm.baseUrl(), "TestAgent/1.0", 120L, 4_000L, System::currentTimeMillis); }
 
     @Test void identityWhenSameCurrency() {
         FxRate r = svc().rate("USD", "USD");
@@ -52,6 +52,18 @@ class FxServiceTest {
         assertThatThrownBy(() -> svc().rate("EUR", "USD"))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+    }
+
+    @Test void slowResponseFailsFastAsUnavailable() {
+        wm.stubFor(get(urlPathEqualTo("/v8/finance/chart/EURUSD=X"))
+                .willReturn(okJson("{\"chart\":{\"result\":[{\"meta\":{\"regularMarketPrice\":1.08}}],\"error\":null}}")
+                        .withFixedDelay(3_000)));
+        FxService fast = new FxService(wm.baseUrl(), "TestAgent/1.0", 120L, 250L, System::currentTimeMillis);
+        long t0 = System.nanoTime();
+        assertThatThrownBy(() -> fast.rate("EUR", "USD"))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+        assertThat((System.nanoTime() - t0) / 1_000_000L).isLessThan(2_500L);
     }
 
     @Test void cachesSuccess() {

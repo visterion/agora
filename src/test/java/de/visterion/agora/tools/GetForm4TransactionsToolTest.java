@@ -13,7 +13,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import org.mockito.ArgumentCaptor;
 
 class GetForm4TransactionsToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
@@ -51,5 +54,16 @@ class GetForm4TransactionsToolTest {
     @Test void namespaceIsGeneral() {
         assertThat(new GetForm4TransactionsTool(Mockito.mock(EdgarSearchService.class)).namespace())
                 .isEqualTo("general");
+    }
+
+    @Test void oversizedLimitIsClampedTo100() {
+        EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
+        when(svc.form4Transactions(any(), any(), anyInt())).thenReturn(List.of());
+        var args = mapper.createObjectNode();
+        args.put("limit", 100_000);
+        new GetForm4TransactionsTool(svc).call(args);
+        ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
+        verify(svc).form4Transactions(any(), any(), captor.capture());
+        assertThat(captor.getValue()).isEqualTo(100);
     }
 }

@@ -15,6 +15,9 @@ class AnnualFactsTest {
     private static ConceptDatapoint inst(String end, long v) {
         return new ConceptDatapoint(null, LocalDate.parse(end), BigDecimal.valueOf(v), null, "FY", "10-K", null);
     }
+    private static ConceptDatapoint instQ(String end, long v, String fp) {
+        return new ConceptDatapoint(null, LocalDate.parse(end), BigDecimal.valueOf(v), null, fp, "10-Q", null);
+    }
 
     @Test void picksTwoLatestAnnualDurations() {
         var s = new ConceptSeries("USD", List.of(
@@ -45,6 +48,27 @@ class AnnualFactsTest {
 
     @Test void emptySeriesHasNoCurrent() {
         var a = AnnualFacts.of(new ConceptSeries(null, List.of()));
+        assertThat(a.hasCurrent()).isFalse();
+        assertThat(a.available()).isFalse();
+    }
+
+    @Test void ofInstantIgnoresQuarterlySnapshots() {
+        var s = new ConceptSeries("USD", List.of(
+            inst("2022-12-31", 500),
+            instQ("2023-03-31", 510, "Q1"),
+            instQ("2023-06-30", 520, "Q2"),
+            instQ("2023-09-30", 530, "Q3"),
+            inst("2023-12-31", 600)));
+        var a = AnnualFacts.ofInstant(s);
+        assertThat(a.current()).isEqualByComparingTo("600");
+        assertThat(a.prior()).isEqualByComparingTo("500");
+    }
+
+    @Test void ofInstantWithoutFyTagsIsUnavailable() {
+        var s = new ConceptSeries("USD", List.of(
+            instQ("2023-03-31", 510, "Q1"),
+            instQ("2023-06-30", 520, null)));
+        var a = AnnualFacts.ofInstant(s);
         assertThat(a.hasCurrent()).isFalse();
         assertThat(a.available()).isFalse();
     }

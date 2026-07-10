@@ -6,6 +6,8 @@ import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
+import java.time.Duration;
+
 /** Shared Finnhub REST access: holds the base RestClient + API key for the fetch/finnhub family. */
 @Component
 public class FinnhubClient {
@@ -15,9 +17,12 @@ public class FinnhubClient {
 
     @Autowired
     public FinnhubClient(@Value("${agora.data.finnhub.base-url:https://finnhub.io/api/v1}") String baseUrl,
-                         @Value("${agora.data.finnhub.key:}") String apiKey) {
+                         @Value("${agora.data.finnhub.key:}") String apiKey,
+                         @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
         this.http = RestClient.builder()
-                .requestFactory(new JdkClientHttpRequestFactory())
+                .requestFactory(rf)
                 .baseUrl(baseUrl)
                 .build();
         this.apiKey = apiKey;

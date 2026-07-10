@@ -11,6 +11,7 @@ import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -29,12 +30,20 @@ public class YahooEarningsProvider implements EarningsProvider {
     @Autowired
     public YahooEarningsProvider(
             @Value("${agora.data.yahoo.base-url}") String baseUrl,
-            @Value("${agora.data.yahoo.user-agent}") String userAgent) {
+            @Value("${agora.data.yahoo.user-agent}") String userAgent,
+            @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
         this.client = RestClient.builder()
-                .requestFactory(new JdkClientHttpRequestFactory())
+                .requestFactory(rf)
                 .baseUrl(baseUrl)
                 .defaultHeader("User-Agent", userAgent)
                 .build();
+    }
+
+    /** Convenience constructor (default per-request timeout); used by tests. */
+    public YahooEarningsProvider(String baseUrl, String userAgent) {
+        this(baseUrl, userAgent, 15_000L);
     }
 
     @Override

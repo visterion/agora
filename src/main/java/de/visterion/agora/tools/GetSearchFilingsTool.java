@@ -19,6 +19,7 @@ import java.util.List;
 @Component
 public class GetSearchFilingsTool implements AgoraTool {
 
+    private static final int MAX_LIMIT = 100;
     private final EdgarSearchService service;
     private final ObjectMapper mapper = new ObjectMapper();
 
@@ -41,7 +42,7 @@ public class GetSearchFilingsTool implements AgoraTool {
         props.putObject("query").put("type", "string").put("description", "optional free-text query");
         props.putObject("from").put("type", "string").put("description", "earliest filing date ISO (YYYY-MM-DD); default now-30d");
         props.putObject("to").put("type", "string").put("description", "latest filing date ISO (YYYY-MM-DD); default now");
-        props.putObject("limit").put("type", "integer").put("description", "max hits to return; default 100");
+        props.putObject("limit").put("type", "integer").put("description", "max hits to return; default 100, max " + MAX_LIMIT);
         schema.putArray("required").add("forms");
         return schema;
     }
@@ -61,7 +62,7 @@ public class GetSearchFilingsTool implements AgoraTool {
         } catch (DateTimeParseException e) {
             return ToolResult.unavailable("invalid date");
         }
-        int limit = args.path("limit").asInt(100);
+        int limit = Math.clamp(args.path("limit").asInt(100), 1, MAX_LIMIT);
 
         try {
             List<FilingHit> hits = service.search(forms, query, from, to, limit);

@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
@@ -42,13 +43,19 @@ public class WikipediaService {
             @Value("${agora.data.wikipedia.base-url:https://en.wikipedia.org}") String baseUrl,
             @Value("${agora.data.wikipedia.user-agent:agora/1.0 (research)}") String userAgent,
             @Value("${agora.data.wikipedia.sp500-page:List of S&P 500 companies}") String pageTitle,
-            @Value("${agora.data.cache.ttl.constituents-seconds:86400}") long ttlSeconds) {
-        this(RestClient.builder()
-                        .requestFactory(new JdkClientHttpRequestFactory())
-                        .baseUrl(baseUrl)
-                        .defaultHeader("User-Agent", userAgent)
-                        .build(),
-                pageTitle, ttlSeconds, System::currentTimeMillis);
+            @Value("${agora.data.cache.ttl.constituents-seconds:86400}") long ttlSeconds,
+            @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
+        this(buildHttp(baseUrl, userAgent, timeoutMs), pageTitle, ttlSeconds, System::currentTimeMillis);
+    }
+
+    private static RestClient buildHttp(String baseUrl, String userAgent, long timeoutMs) {
+        JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory();
+        rf.setReadTimeout(Duration.ofMillis(timeoutMs));
+        return RestClient.builder()
+                .requestFactory(rf)
+                .baseUrl(baseUrl)
+                .defaultHeader("User-Agent", userAgent)
+                .build();
     }
 
     // Test constructor: pre-built RestClient + page title + ttl + clock.
