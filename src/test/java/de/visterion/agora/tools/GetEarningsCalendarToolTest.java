@@ -46,4 +46,15 @@ class GetEarningsCalendarToolTest {
                 .thenThrow(new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "down", null));
         assertThat(new GetEarningsCalendarTool(svc).call(mapper.createObjectNode().put("symbol", "AAPL")).available()).isFalse();
     }
+
+    @Test void notFoundQuietWindowReturnsAvailableEmpty() {
+        EarningsService svc = Mockito.mock(EarningsService.class);
+        when(svc.earnings(any(), any(LocalDate.class), any(LocalDate.class)))
+                .thenThrow(new MarketDataException(MarketDataException.Kind.NOT_FOUND, "no earnings", null));
+        var r = new GetEarningsCalendarTool(svc).call(mapper.createObjectNode().put("symbol", "AAPL"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("earnings")).isNotNull();
+        assertThat(r.output().get("earnings")).isEmpty();
+        assertThat(r.output().get("note")).isNotNull();
+    }
 }
