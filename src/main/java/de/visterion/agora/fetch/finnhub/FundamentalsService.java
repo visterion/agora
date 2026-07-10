@@ -29,7 +29,7 @@ public class FundamentalsService {
 
     FundamentalsService(FinnhubClient client, long ttlSeconds, LongSupplier now) {
         this.client = client;
-        this.cache = new TtlCache<>(ttlSeconds * 1000L, now);
+        this.cache = new TtlCache<>(ttlSeconds * 1000L, 2048, now);
     }
 
     public Fundamentals fundamentals(String symbol) {

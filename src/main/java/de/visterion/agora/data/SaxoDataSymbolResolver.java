@@ -42,7 +42,7 @@ public class SaxoDataSymbolResolver {
 
     SaxoDataSymbolResolver(SaxoDataAccess access, LongSupplier nowMillis) {
         this.access = access;
-        this.cache = new TtlCache<>(TTL_MILLIS, nowMillis);
+        this.cache = new TtlCache<>(TTL_MILLIS, 4096, nowMillis);
     }
 
     /** Resolves to a UIC or throws MarketDataException (UNAVAILABLE / NOT_FOUND). */

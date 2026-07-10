@@ -77,10 +77,11 @@ public class EdgarService {
     protected EdgarService(RestClient http, EdgarCikResolver cikResolver, long ttlSeconds, LongSupplier now) {
         this.http = http;
         this.cikResolver = cikResolver;
-        this.filingsCache = new TtlCache<>(ttlSeconds * 1000L, now);
-        this.epsCache = new TtlCache<>(ttlSeconds * 1000L, now);
-        this.conceptCache = new TtlCache<>(ttlSeconds * 1000L, now);
-        this.factsCache = new TtlCache<>(ttlSeconds * 1000L, now);
+        this.filingsCache = new TtlCache<>(ttlSeconds * 1000L, 1024, now);
+        this.epsCache = new TtlCache<>(ttlSeconds * 1000L, 1024, now);
+        this.conceptCache = new TtlCache<>(ttlSeconds * 1000L, 512, now);
+        // Company-facts bodies are full XBRL dumps per CIK — multi-MB each — keep this cache small.
+        this.factsCache = new TtlCache<>(ttlSeconds * 1000L, 64, now);
     }
 
     /** cikOrSymbol: 10-digit CIK if all-digits, else resolved via ticker. */

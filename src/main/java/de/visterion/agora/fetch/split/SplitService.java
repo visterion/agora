@@ -27,7 +27,7 @@ public class SplitService {
 
     SplitService(List<SplitProvider> providers, long ttlMillis, LongSupplier now) {
         this.providers = List.copyOf(providers);
-        this.cache = new TtlCache<>(ttlMillis, now);
+        this.cache = new TtlCache<>(ttlMillis, 4096, now);
     }
 
     public List<SplitEvent> splits(String symbol) {

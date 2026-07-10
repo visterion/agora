@@ -31,7 +31,7 @@ public class EstimatesService {
 
     EstimatesService(FinnhubClient client, long ttlSeconds, LongSupplier now) {
         this.client = client;
-        this.cache = new TtlCache<>(ttlSeconds * 1000L, now);
+        this.cache = new TtlCache<>(ttlSeconds * 1000L, 2048, now);
     }
 
     public List<Recommendation> recommendations(String symbol) {

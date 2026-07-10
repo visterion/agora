@@ -39,8 +39,8 @@ public class MarketDataService {
      */
     MarketDataService(List<MarketDataProvider> providers, long ttlMillis, LongSupplier now) {
         this.providers = List.copyOf(providers);
-        this.ohlcCache = new TtlCache<>(ttlMillis, now);
-        this.quoteCache = new TtlCache<>(ttlMillis, now);
+        this.ohlcCache = new TtlCache<>(ttlMillis, 4096, now);
+        this.quoteCache = new TtlCache<>(ttlMillis, 4096, now);
     }
 
     public Quote quote(String symbol) {

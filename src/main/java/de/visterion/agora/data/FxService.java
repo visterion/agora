@@ -35,7 +35,8 @@ public class FxService {
                 .baseUrl(baseUrl)
                 .defaultHeader("User-Agent", userAgent)
                 .build();
-        this.cache = new TtlCache<>(ttlSeconds * 1000L, now);
+        // Currency-pair keyspace is small (ISO-4217 combinations); 1024 comfortably covers it.
+        this.cache = new TtlCache<>(ttlSeconds * 1000L, 1024, now);
     }
 
     public FxRate rate(String from, String to) {

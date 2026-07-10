@@ -127,9 +127,10 @@ public class EdgarSearchService {
         this.now = now;
         this.sleeper = sleeper;
         this.maxFilingBytes = maxFilingBytes;
-        this.searchCache = new TtlCache<>(ttlSeconds * 1000L, now);
-        this.form4Cache = new TtlCache<>(ttlSeconds * 1000L, now);
-        this.filingTextCache = new TtlCache<>(ttlSeconds * 1000L, now);
+        this.searchCache = new TtlCache<>(ttlSeconds * 1000L, 512, now);
+        this.form4Cache = new TtlCache<>(ttlSeconds * 1000L, 512, now);
+        // Filing text bodies run up to ~24KB each — keep this cache small to bound heap.
+        this.filingTextCache = new TtlCache<>(ttlSeconds * 1000L, 32, now);
     }
 
     /** Full-text filing search on efts. ticker on a hit may be empty (fresh registrations). */

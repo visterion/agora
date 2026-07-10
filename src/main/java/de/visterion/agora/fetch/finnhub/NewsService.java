@@ -33,7 +33,8 @@ public class NewsService {
 
     NewsService(FinnhubClient client, long ttlSeconds, LongSupplier now) {
         this.client = client;
-        this.cache = new TtlCache<>(ttlSeconds * 1000L, now);
+        // Keyed by symbol+date-range, so cardinality grows with distinct windows queried.
+        this.cache = new TtlCache<>(ttlSeconds * 1000L, 2048, now);
     }
 
     public List<NewsItem> companyNews(String symbol, LocalDate from, LocalDate to) {

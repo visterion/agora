@@ -62,7 +62,9 @@ public class WikipediaService {
     WikipediaService(RestClient http, String pageTitle, long ttlSeconds, LongSupplier now) {
         this.http = http;
         this.pageTitle = pageTitle;
-        this.cache = new TtlCache<>(ttlSeconds * 1000L, now);
+        // Single well-known key ("constituents:sp500") today; a small cap still allows
+        // headroom without pretending this cache needs to scale.
+        this.cache = new TtlCache<>(ttlSeconds * 1000L, 8, now);
     }
 
     /** Constituents of a stock index. Only "sp500" (case-insensitive; null/blank treated as sp500) is known. */
