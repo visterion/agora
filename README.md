@@ -1,4 +1,5 @@
 # Agora
+<img width="2163" height="717" alt="image" src="https://github.com/user-attachments/assets/1d64694e-59db-4337-b771-38566451057f" />
 
 > A broker and provider agnostic MCP tool suite for market data, quant research, and
 > trade execution. Register a tool once in Agora and every consumer can use it without a
