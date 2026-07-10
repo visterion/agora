@@ -196,6 +196,10 @@ public class YahooMarketDataProvider implements MarketDataProvider {
                 out.add(new OhlcBar(date, open, high, low, close, volume));
             }
         }
+        if (out.isEmpty()) {
+            throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
+                    "Symbol " + symbol + " has no OHLC bars at Yahoo", null);
+        }
         // Yahoo returns oldest-first — no reverse needed
         return out;
     }

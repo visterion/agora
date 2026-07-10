@@ -219,4 +219,16 @@ class YahooMarketDataProviderTest {
     void nameIsYahoo() {
         assertThat(provider.name()).isEqualTo("yahoo");
     }
+
+    @Test
+    void ohlcEmptyTimestampsThrowsNotFound() {
+        wm.stubFor(get(urlPathEqualTo("/v8/finance/chart/AAPL"))
+                .willReturn(okJson("""
+                    {"chart":{"result":[{"timestamp":[],
+                      "indicators":{"quote":[{"open":[],"high":[],"low":[],"close":[],"volume":[]}]}}],"error":null}}
+                    """)));
+        assertThatThrownBy(() -> provider.ohlc("AAPL", 5))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
+    }
 }
