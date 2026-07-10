@@ -56,4 +56,23 @@ class EdgarServiceCompanyFactsTest {
         assertThat(facts.isEmpty()).isTrue();
         assertThat(facts.series("Assets").datapoints()).isEmpty();
     }
+
+    @Test void serverErrorThrowsAndNothingCached() {
+        wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyfacts/CIK0000320193.json"))
+                .willReturn(aResponse().withStatus(500)));
+        EdgarService svc = svc();
+        assertThatThrownBy(() -> svc.companyFacts("AAPL", null))
+                .isInstanceOf(de.visterion.agora.data.MarketDataException.class);
+
+        // Reconfigure to succeed; a subsequent call must re-hit upstream (nothing was cached on failure).
+        wm.stubFor(get(urlPathEqualTo("/api/xbrl/companyfacts/CIK0000320193.json"))
+                .willReturn(okJson("""
+                    {"cik":320193,"facts":{"us-gaap":{
+                      "Assets":{"units":{"USD":[{"end":"2023-09-30","val":352583000000,"fy":2023,"fp":"FY","form":"10-K","filed":"2023-11-03"}]}}
+                    }}}
+                    """)));
+        EdgarService.CompanyFacts facts = svc.companyFacts("AAPL", null);
+        assertThat(facts.isEmpty()).isFalse();
+        assertThat(facts.series("Assets").datapoints()).hasSize(1);
+    }
 }

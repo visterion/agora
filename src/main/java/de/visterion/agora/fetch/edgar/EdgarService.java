@@ -182,8 +182,11 @@ public class EdgarService {
                     .uri("/api/xbrl/companyconcept/CIK{cik}/us-gaap/{tag}.json", padded, tag)
                     .retrieve().body(String.class);
             body = raw == null ? null : EPS_MAPPER.readTree(raw);
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 404) return List.of();   // genuine "tag not filed" — cacheable empty
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR HTTP " + e.getStatusCode(), e);
         } catch (Exception e) {
-            return List.of();   // 404/error on a tag → treat as empty, try the next tag
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR unreachable: " + e.getMessage(), e);
         }
         if (body == null) return List.of();
 
@@ -237,8 +240,11 @@ public class EdgarService {
                     .uri("/api/xbrl/companyconcept/CIK{cik}/{taxonomy}/{tag}.json", padded, taxonomy, tag)
                     .retrieve().body(String.class);
             body = raw == null ? null : EPS_MAPPER.readTree(raw);
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 404) return new ConceptSeries(null, List.of());   // genuine "concept not filed" — cacheable empty
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR HTTP " + e.getStatusCode(), e);
         } catch (Exception e) {
-            return new ConceptSeries(null, List.of());   // 404/error → concept may not exist; not fatal
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR unreachable: " + e.getMessage(), e);
         }
         if (body == null) return new ConceptSeries(null, List.of());
 
@@ -262,7 +268,8 @@ public class EdgarService {
 
     /** All us-gaap concepts for a company (by symbol or CIK) from a single companyfacts fetch.
      *  Cheaper than N calls to {@link #companyConcept} when several tags are needed for one company.
-     *  Unreachable/malformed EDGAR responses yield an empty CompanyFacts rather than an error. */
+     *  A 404 (company has no XBRL facts on file) yields an empty CompanyFacts; any other
+     *  failure (429/5xx/timeout) throws so nothing is cached. */
     public CompanyFacts companyFacts(String symbol, String cik) {
         String padded = resolveCik(symbol, cik);
         return factsCache.get("facts:" + padded, () -> fetchCompanyFacts(padded));
@@ -275,8 +282,11 @@ public class EdgarService {
                     .uri("/api/xbrl/companyfacts/CIK{cik}.json", padded)
                     .retrieve().body(String.class);
             body = raw == null ? null : EPS_MAPPER.readTree(raw);
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 404) return new CompanyFacts(Map.of());   // genuine "no facts filed" — cacheable empty
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR HTTP " + e.getStatusCode(), e);
         } catch (Exception e) {
-            return new CompanyFacts(Map.of());   // 404/error → not fatal, treat as no facts
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR unreachable: " + e.getMessage(), e);
         }
         if (body == null) return new CompanyFacts(Map.of());
 

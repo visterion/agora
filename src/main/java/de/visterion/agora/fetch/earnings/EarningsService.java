@@ -13,11 +13,12 @@ import java.util.function.LongSupplier;
 /**
  * Earnings calendar with provider fallback (Finnhub → Yahoo), per-family TTL cache.
  *
- * <p>A successful result is cached for the TTL — including an empty list from the Yahoo
- * fallback. This is not a live-reconfiguration hazard: provider keys are read from the
- * environment at startup, so a key added later only takes effect on restart, which builds
- * a fresh (empty) in-memory cache. Hence a cached-empty result never outlives the config
- * that produced it.
+ * <p>A provider returning an empty list is treated as "no answer", not success — the chain
+ * tries the next provider. Only a non-empty result is cached. If every provider is either
+ * unavailable or returns empty, {@link #firstSuccess} throws instead of returning/caching
+ * an empty list, so a transient all-empty outcome (e.g. a quiet window queried right as a
+ * provider's data lags) is retried on the next call rather than poisoning the cache for
+ * the full TTL.
  */
 @Component
 public class EarningsService {
@@ -49,10 +50,22 @@ public class EarningsService {
     private List<EarningsEvent> firstSuccess(String symbol, LocalDate from, LocalDate to) {
         MarketDataException last = null;
         for (EarningsProvider p : providers) {
-            try { return p.earnings(symbol, from, to); }
-            catch (MarketDataException e) { last = e; }
+            try {
+                List<EarningsEvent> result = p.earnings(symbol, from, to);
+                if (!result.isEmpty()) return result;
+                // Empty is "no answer", not success — try the next provider.
+            } catch (MarketDataException e) {
+                last = e;
+            }
         }
-        throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                "no provider could serve earnings " + symbol, last);
+        if (last != null) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    "no provider could serve earnings " + symbol, last);
+        }
+        // Every provider answered but none had data. Throw rather than cache an empty
+        // list: a genuinely quiet window looks identical to a transient upstream gap,
+        // and caching the latter for the full TTL would poison subsequent lookups.
+        throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
+                "no earnings data for " + symbol, null);
     }
 }

@@ -76,6 +76,31 @@ class WikipediaServiceTest {
         assertThatThrownBy(() -> svc().constituents("sp500")).isInstanceOf(MarketDataException.class);
     }
 
+    @Test void emptyParseResultThrowsInsteadOfCachingEmptyList() {
+        // Wikitext without the "id=\"constituents\"" anchor: the table can't be located, so
+        // parse() would previously return an empty list. That must not become a cached
+        // "0 constituents" answer — it must throw so nothing is cached.
+        String wikitext = "Some unrelated page content with no constituents table at all.";
+        wm.stubFor(get(urlPathEqualTo("/w/api.php"))
+                .willReturn(okJson("{\"parse\":{\"wikitext\":" + toJsonString(wikitext) + "}}")));
+        assertThatThrownBy(() -> svc().constituents("sp500")).isInstanceOf(MarketDataException.class);
+    }
+
+    @Test void serverErrorThrowsAndNothingCached() {
+        wm.stubFor(get(urlPathEqualTo("/w/api.php")).willReturn(aResponse().withStatus(500)));
+        WikipediaService svc = svc();
+        assertThatThrownBy(() -> svc.constituents("sp500")).isInstanceOf(MarketDataException.class);
+
+        // Reconfigure to succeed; a subsequent call must re-hit upstream (nothing was cached on failure).
+        String wikitext = "{| class=\"wikitable sortable\" id=\"constituents\"\n! Symbol !! Security !! GICS Sector !! Date added\n" +
+                "|-\n| [[Apple Inc.|AAPL]] || Apple Inc. || Information Technology || 1982-11-30\n|}";
+        wm.stubFor(get(urlPathEqualTo("/w/api.php"))
+                .willReturn(okJson("{\"parse\":{\"wikitext\":" + toJsonString(wikitext) + "}}")));
+        List<Constituent> c = svc.constituents("sp500");
+        assertThat(c).hasSize(1);
+        assertThat(c.get(0).symbol()).isEqualTo("AAPL");
+    }
+
     @Test
     void slowResponseFailsFastAsUnavailable() {
         wm.stubFor(get(urlPathEqualTo("/w/api.php"))

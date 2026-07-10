@@ -96,12 +96,19 @@ public class WikipediaService {
         JsonNode wt = body.path("parse").path("wikitext");
         if (!wt.isTextual())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "wikipedia: empty response", null);
+        List<Constituent> result;
         try {
-            return parse(wt.asString());
+            result = parse(wt.asString());
         } catch (Exception e) {
             log.warn("Wikipedia S&P 500 parse failed: {}", e.getMessage());
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "wikipedia: parse failed", e);
         }
+        // An empty parse result means the page structure changed (missing anchor/table/columns)
+        // rather than a genuine "zero constituents" answer — throw so the failure is never
+        // cached as a successful-but-empty index.
+        if (result.isEmpty())
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "wikipedia: no constituents parsed", null);
+        return result;
     }
 
     private List<Constituent> parse(String wikitext) {
