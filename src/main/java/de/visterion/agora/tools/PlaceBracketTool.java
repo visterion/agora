@@ -1,6 +1,8 @@
 package de.visterion.agora.tools;
 
 import de.visterion.agora.tool.AgoraTool;
+import de.visterion.agora.tool.ToolParams;
+import de.visterion.agora.tool.ToolParams.InvalidArgumentException;
 import de.visterion.agora.tool.ToolResult;
 import de.visterion.agora.trading.BracketOrderRequest;
 import de.visterion.agora.trading.BrokerException;
@@ -12,6 +14,8 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
 
 @Component
 public class PlaceBracketTool implements AgoraTool {
@@ -52,39 +56,36 @@ public class PlaceBracketTool implements AgoraTool {
 
     @Override
     public ToolResult call(JsonNode args) {
-        if (args == null || !args.hasNonNull("connection"))
-            return ToolResult.unavailable("missing required argument: connection");
-        String connection = args.get("connection").asString();
-        if (!args.hasNonNull("symbol"))
-            return ToolResult.unavailable("missing required argument: symbol");
-        if (!args.hasNonNull("side"))
-            return ToolResult.unavailable("missing required argument: side");
-        if (!args.hasNonNull("qty"))
-            return ToolResult.unavailable("missing required argument: qty");
-        if (!args.hasNonNull("stopLossStop"))
-            return ToolResult.unavailable("missing required argument: stopLossStop");
-        if (!args.hasNonNull("takeProfitLimit"))
-            return ToolResult.unavailable("missing required argument: takeProfitLimit");
-
-        String symbol = args.get("symbol").asString();
-        String side = args.get("side").asString();
-
+        String connection;
+        String symbol;
+        String side;
         BigDecimal qty;
         BigDecimal stopLossStop;
         BigDecimal takeProfitLimit;
+        BigDecimal limitPrice;
+        BigDecimal stopLossLimit;
+        String type;
+        String timeInForce;
+        String clientRef;
         try {
-            qty = args.get("qty").decimalValue();
-            stopLossStop = args.get("stopLossStop").decimalValue();
-            takeProfitLimit = args.get("takeProfitLimit").decimalValue();
-        } catch (Exception e) {
-            return ToolResult.unavailable("invalid numeric argument: " + e.getMessage());
+            connection = ToolParams.requiredString(args, "connection");
+            symbol = ToolParams.requiredString(args, "symbol");
+            side = ToolParams.requiredString(args, "side");
+            qty = requiredDecimal(args, "qty");
+            stopLossStop = requiredDecimal(args, "stopLossStop");
+            takeProfitLimit = requiredDecimal(args, "takeProfitLimit");
+            limitPrice = ToolParams.optionalDecimal(args, "limitPrice");
+            stopLossLimit = ToolParams.optionalDecimal(args, "stopLossLimit");
+            type = args.hasNonNull("type") ? args.get("type").asString() : "limit";
+            timeInForce = args.hasNonNull("timeInForce") ? args.get("timeInForce").asString() : "gtc";
+            clientRef = args.hasNonNull("clientRef") ? args.get("clientRef").asString() : null;
+        } catch (InvalidArgumentException e) {
+            return ToolResult.unavailable(e.getMessage());
         }
 
-        String type = args.hasNonNull("type") ? args.get("type").asString() : "limit";
-        String timeInForce = args.hasNonNull("timeInForce") ? args.get("timeInForce").asString() : "gtc";
-        BigDecimal limitPrice = safeDecimal(args, "limitPrice");
-        BigDecimal stopLossLimit = safeDecimal(args, "stopLossLimit");
-        String clientRef = args.hasNonNull("clientRef") ? args.get("clientRef").asString() : null;
+        List<String> violations = validate(side, qty, limitPrice, stopLossStop, takeProfitLimit, type);
+        if (!violations.isEmpty())
+            return ToolResult.unavailable(String.join("; ", violations));
 
         BracketOrderRequest req = new BracketOrderRequest(
                 symbol, side, qty, type, timeInForce, limitPrice,
@@ -98,12 +99,53 @@ public class PlaceBracketTool implements AgoraTool {
         }
     }
 
-    private BigDecimal safeDecimal(JsonNode args, String field) {
-        try {
-            return args.hasNonNull(field) ? args.get(field).decimalValue() : null;
-        } catch (Exception e) {
-            return null;
+    /** Required decimal: presence-checked, then parsed via {@link ToolParams#optionalDecimal}
+     *  so malformed values raise the same explicit "invalid numeric argument" error as optional fields. */
+    private BigDecimal requiredDecimal(JsonNode args, String field) {
+        if (args == null || !args.hasNonNull(field))
+            throw new InvalidArgumentException("missing or blank argument: " + field);
+        return ToolParams.optionalDecimal(args, field);
+    }
+
+    /** M-X1/M-X3: side/sign/relational validation. Collects every violation instead of
+     *  failing on the first, so the caller sees the full picture in one round-trip. */
+    private List<String> validate(String side, BigDecimal qty, BigDecimal limitPrice,
+                                   BigDecimal stopLossStop, BigDecimal takeProfitLimit, String type) {
+        List<String> errors = new ArrayList<>();
+        boolean buy = "buy".equals(side);
+        boolean sell = "sell".equals(side);
+        if (!buy && !sell)
+            errors.add("side must be 'buy' or 'sell', got: " + side);
+
+        if (qty.signum() <= 0) errors.add("qty must be > 0");
+        if (stopLossStop.signum() <= 0) errors.add("stopLossStop must be > 0");
+        if (takeProfitLimit.signum() <= 0) errors.add("takeProfitLimit must be > 0");
+        if (limitPrice != null && limitPrice.signum() <= 0) errors.add("limitPrice must be > 0");
+
+        boolean limitTypeMissingPrice = "limit".equals(type) && limitPrice == null;
+        if (limitTypeMissingPrice) errors.add("limitPrice is required when type is limit");
+
+        // Relational checks only make sense once side/signs/required-price are sane.
+        if ((buy || sell) && !limitTypeMissingPrice
+                && qty.signum() > 0 && stopLossStop.signum() > 0 && takeProfitLimit.signum() > 0
+                && (limitPrice == null || limitPrice.signum() > 0)) {
+            if (limitPrice != null) {
+                if (buy && !(takeProfitLimit.compareTo(limitPrice) > 0 && limitPrice.compareTo(stopLossStop) > 0))
+                    errors.add("buy requires takeProfitLimit > limitPrice > stopLossStop (got takeProfitLimit="
+                            + takeProfitLimit + ", limitPrice=" + limitPrice + ", stopLossStop=" + stopLossStop + ")");
+                if (sell && !(takeProfitLimit.compareTo(limitPrice) < 0 && limitPrice.compareTo(stopLossStop) < 0))
+                    errors.add("sell requires takeProfitLimit < limitPrice < stopLossStop (got takeProfitLimit="
+                            + takeProfitLimit + ", limitPrice=" + limitPrice + ", stopLossStop=" + stopLossStop + ")");
+            } else {
+                if (buy && takeProfitLimit.compareTo(stopLossStop) <= 0)
+                    errors.add("buy requires takeProfitLimit > stopLossStop (got takeProfitLimit="
+                            + takeProfitLimit + ", stopLossStop=" + stopLossStop + ")");
+                if (sell && takeProfitLimit.compareTo(stopLossStop) >= 0)
+                    errors.add("sell requires takeProfitLimit < stopLossStop (got takeProfitLimit="
+                            + takeProfitLimit + ", stopLossStop=" + stopLossStop + ")");
+            }
         }
+        return errors;
     }
 
     private ToolResult mapResult(OrderResult r) {
