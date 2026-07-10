@@ -13,6 +13,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class GetIntradayToolTest {
@@ -42,6 +43,26 @@ class GetIntradayToolTest {
                 .thenThrow(new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "down", null));
         var tool = new GetIntradayTool(svc);
         assertThat(tool.call(mapper.createObjectNode().put("symbol", "AAPL")).available()).isFalse();
+    }
+
+    @Test void unknownIntervalIsInvalidArgumentNotOutage() {
+        IntradayService svc = Mockito.mock(IntradayService.class);
+        var tool = new GetIntradayTool(svc);
+        var args = mapper.createObjectNode().put("symbol", "AAPL").put("interval", "5nn");
+        var r = tool.call(args);
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("invalid interval");
+        verifyNoInteractions(svc);
+    }
+
+    @Test void unknownRangeIsInvalidArgumentNotOutage() {
+        IntradayService svc = Mockito.mock(IntradayService.class);
+        var tool = new GetIntradayTool(svc);
+        var args = mapper.createObjectNode().put("symbol", "AAPL").put("range", "3x");
+        var r = tool.call(args);
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("invalid range");
+        verifyNoInteractions(svc);
     }
 
     @Test void namespaceIsGeneral() {

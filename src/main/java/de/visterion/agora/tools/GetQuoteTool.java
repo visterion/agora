@@ -43,6 +43,14 @@ public class GetQuoteTool implements AgoraTool {
         if (args != null) {
             if (args.has("symbols") && args.get("symbols").isArray()) {
                 for (JsonNode n : args.get("symbols")) symbols.add(n.asString());
+            } else if (args.has("symbols") && args.get("symbols").isTextual()) {
+                // low: 'symbols' as a comma-separated string is also accepted, mirroring
+                // GetSearchFilingsTool's 'forms' handling — avoids a misleading "no symbols
+                // provided" when the caller passed a valid comma-string.
+                for (String part : args.get("symbols").asString("").split(",")) {
+                    String s = part.trim();
+                    if (!s.isEmpty()) symbols.add(s);
+                }
             } else if (args.hasNonNull("symbol")) {
                 symbols.add(args.get("symbol").asString());
             }
@@ -59,6 +67,16 @@ public class GetQuoteTool implements AgoraTool {
                 o.put("price", q.price());
                 o.put("dayChangePercent", q.dayChangePercent());
                 o.put("currency", q.currency());
+            }
+            // M-X8: symbols the service couldn't resolve are simply omitted from `resolved` —
+            // surface them explicitly instead of letting a partially-wrong batch look fully OK.
+            List<String> unresolved = new ArrayList<>();
+            for (String s : symbols) {
+                if (!resolved.containsKey(s)) unresolved.add(s);
+            }
+            if (!unresolved.isEmpty()) {
+                ArrayNode unresolvedArr = out.putArray("unresolved");
+                unresolved.forEach(unresolvedArr::add);
             }
             return ToolResult.ok(out);
         } catch (MarketDataException e) {

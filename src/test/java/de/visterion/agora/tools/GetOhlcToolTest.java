@@ -96,6 +96,16 @@ class GetOhlcToolTest {
     }
 
     @Test
+    void nonIntegralDaysIsUnavailable() {
+        var tool = new GetOhlcTool(svcWith(okProvider()));
+        ObjectNode args = mapper.createObjectNode();
+        args.put("symbol", "AAPL");
+        args.put("days", 5.5);
+        var r = tool.call(args);
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test
     void nonPositiveDaysIsClampedTo1() {
         int[] seen = new int[1];
         MarketDataProvider capturing = new MarketDataProvider() {

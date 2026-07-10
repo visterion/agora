@@ -4,6 +4,8 @@ import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.fetch.edgar.EdgarSearchService;
 import de.visterion.agora.fetch.edgar.FilingHit;
 import de.visterion.agora.tool.AgoraTool;
+import de.visterion.agora.tool.ToolParams;
+import de.visterion.agora.tool.ToolParams.InvalidArgumentException;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -62,7 +64,16 @@ public class GetSearchFilingsTool implements AgoraTool {
         } catch (DateTimeParseException e) {
             return ToolResult.unavailable("invalid date");
         }
-        int limit = Math.clamp(args.path("limit").asInt(100), 1, MAX_LIMIT);
+        if (from.isAfter(to)) return ToolResult.unavailable("from must not be after to");
+
+        int limit;
+        try {
+            Integer limitArg = ToolParams.optionalInt(args, "limit");
+            limit = limitArg == null ? 100 : limitArg;
+        } catch (InvalidArgumentException e) {
+            return ToolResult.unavailable(e.getMessage());
+        }
+        limit = Math.clamp(limit, 1, MAX_LIMIT);
 
         try {
             List<FilingHit> hits = service.search(forms, query, from, to, limit);
@@ -77,6 +88,9 @@ public class GetSearchFilingsTool implements AgoraTool {
                 o.put("accession", h.accession());
                 o.put("url", h.url());
             }
+            // low: the service already caps results at `limit`; a full page is the only signal
+            // available here that more results may exist beyond it.
+            out.put("truncated", hits.size() >= limit);
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
             return ToolResult.unavailable(e.getMessage());

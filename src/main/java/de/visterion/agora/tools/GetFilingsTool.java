@@ -4,6 +4,8 @@ import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.fetch.edgar.EdgarService;
 import de.visterion.agora.fetch.edgar.FilingRef;
 import de.visterion.agora.tool.AgoraTool;
+import de.visterion.agora.tool.ToolParams;
+import de.visterion.agora.tool.ToolParams.InvalidArgumentException;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -58,7 +60,17 @@ public class GetFilingsTool implements AgoraTool {
         } catch (DateTimeParseException e) {
             return ToolResult.unavailable("invalid date");
         }
-        int limit = Math.clamp(args.path("limit").asInt(40), 1, MAX_LIMIT);
+        if (from != null && to != null && from.isAfter(to))
+            return ToolResult.unavailable("from must not be after to");
+
+        int limit;
+        try {
+            Integer limitArg = ToolParams.optionalInt(args, "limit");
+            limit = limitArg == null ? 40 : limitArg;
+        } catch (InvalidArgumentException e) {
+            return ToolResult.unavailable(e.getMessage());
+        }
+        limit = Math.clamp(limit, 1, MAX_LIMIT);
         try {
             String resolvedCik = service.resolveCik(symbol, cik);
             List<FilingRef> filings = service.filings(symbol, cik, formType, from, to, limit);
@@ -74,6 +86,7 @@ public class GetFilingsTool implements AgoraTool {
                 o.put("primaryDoc", f.primaryDoc());
                 o.put("url", f.url());
             }
+            out.put("truncated", filings.size() >= limit);
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
             return ToolResult.unavailable(e.getMessage());
