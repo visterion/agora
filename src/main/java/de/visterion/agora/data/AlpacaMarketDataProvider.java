@@ -9,7 +9,9 @@ import tools.jackson.databind.JsonNode;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -29,6 +31,9 @@ import java.util.List;
 @Component
 @Order(5)
 public class AlpacaMarketDataProvider implements MarketDataProvider {
+
+    /** Alpaca's market calendar (bar/session boundaries) is anchored to US Eastern time. */
+    private static final ZoneId MARKET_ZONE = ZoneId.of("America/New_York");
 
     private final AlpacaDataClient client;
 
@@ -66,9 +71,21 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
                     "Alpaca returned empty snapshot for " + symbol, null);
         }
 
-        // price: latest trade, else the day's close
-        BigDecimal price = bd(snap.path("latestTrade").path("p"));
-        if (price.signum() == 0) price = bd(snap.path("dailyBar").path("c"));
+        // price: whichever of latestTrade / dailyBar is fresher wins (the free IEX feed's
+        // latestTrade can lag well behind the daily bar close, e.g. after-hours or during
+        // low-volume IEX-only trading), falling back to whichever one is present.
+        BigDecimal tradePrice = bd(snap.path("latestTrade").path("p"));
+        BigDecimal barPrice = bd(snap.path("dailyBar").path("c"));
+        Instant tradeTime = instantOf(snap.path("latestTrade").path("t"));
+        Instant barTime = instantOf(snap.path("dailyBar").path("t"));
+        BigDecimal price;
+        if (tradePrice.signum() != 0 && barPrice.signum() != 0) {
+            price = (barTime != null && tradeTime != null && barTime.isAfter(tradeTime)) ? barPrice : tradePrice;
+        } else if (tradePrice.signum() != 0) {
+            price = tradePrice;
+        } else {
+            price = barPrice;
+        }
         if (price.signum() == 0) {
             throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
                     "Symbol " + symbol + " not found at Alpaca", null);
@@ -91,7 +108,7 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "alpaca: no api key", null);
         }
         // Cover weekends/holidays so we get ~`days` trading bars, then trim to the most recent.
-        String start = LocalDate.now().minusDays((long) Math.ceil(days * 1.5) + 5).toString();
+        String start = LocalDate.now(MARKET_ZONE).minusDays((long) Math.ceil(days * 1.5) + 5).toString();
         JsonNode root;
         try {
             root = client.http().get()
@@ -100,6 +117,10 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
                             .queryParam("feed", "iex")
                             .queryParam("start", start)
                             .queryParam("limit", 10000)
+                            // Split-adjusted closes so bars stay continuous across a symbol's
+                            // split history and are comparable with the Yahoo/TwelveData
+                            // fallback providers, which both return adjusted series.
+                            .queryParam("adjustment", "split")
                             .build(symbol))
                     .retrieve()
                     .body(JsonNode.class);
@@ -146,5 +167,12 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
         if (node == null || node.isNull() || node.isMissingNode()) return BigDecimal.ZERO;
         try { return new BigDecimal(node.asString("0")); }
         catch (NumberFormatException e) { return BigDecimal.ZERO; }
+    }
+
+    /** Parses Alpaca's RFC-3339 "t" timestamp field, or {@code null} if absent/unparseable. */
+    private static Instant instantOf(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) return null;
+        try { return Instant.parse(node.asString("")); }
+        catch (Exception e) { return null; }
     }
 }
