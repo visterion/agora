@@ -1,5 +1,7 @@
 package de.visterion.agora.data;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
@@ -24,6 +26,8 @@ import java.util.List;
 @Component
 @Order(10)
 public class TwelveDataMarketDataProvider implements MarketDataProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(TwelveDataMarketDataProvider.class);
 
     private final RestClient client;
     private final String key;
@@ -67,23 +71,26 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
             node = client.get()
                     .uri(uri -> uri.path("/quote")
                             .queryParam("symbol", symbol)
-                            .queryParam("apikey", key)
                             .build())
+                    .header("Authorization", "apikey " + key)
                     .retrieve()
                     .body(JsonNode.class);
         } catch (RestClientResponseException e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "TwelveData returned HTTP " + e.getStatusCode(), e);
         } catch (Exception e) {
+            log.warn("twelvedata quote request failed for {}", symbol, e);
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "TwelveData unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("twelvedata", e), e);
         }
         if (node == null) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "TwelveData returned empty body for " + symbol, null);
         }
-        if ("error".equals(node.path("status").asString(""))
-                || node.path("close").isMissingNode()) {
+        if ("error".equals(node.path("status").asString(""))) {
+            throw classifyErrorPayload(node, symbol);
+        }
+        if (node.path("close").isMissingNode()) {
             throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
                     "Symbol " + symbol + " not found at TwelveData", null);
         }
@@ -103,24 +110,24 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
                             .queryParam("symbol", symbol)
                             .queryParam("interval", "1day")
                             .queryParam("outputsize", days)
-                            .queryParam("apikey", key)
                             .build())
+                    .header("Authorization", "apikey " + key)
                     .retrieve()
                     .body(JsonNode.class);
         } catch (RestClientResponseException e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "TwelveData history returned HTTP " + e.getStatusCode(), e);
         } catch (Exception e) {
+            log.warn("twelvedata history request failed for {}", symbol, e);
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "TwelveData history unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("twelvedata", e), e);
         }
         if (ts == null) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "TwelveData history returned empty body for " + symbol, null);
         }
         if ("error".equals(ts.path("status").asString(""))) {
-            throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
-                    "Symbol " + symbol + " not found at TwelveData", null);
+            throw classifyErrorPayload(ts, symbol);
         }
         List<OhlcBar> out = new ArrayList<>();
         JsonNode values = ts.path("values");
@@ -144,6 +151,23 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
                     "Symbol " + symbol + " has no bars at TwelveData", null);
         }
         return out;
+    }
+
+    /**
+     * M-D6: classifies a TwelveData HTTP-200 {@code "status":"error"} payload by its numeric
+     * {@code code} field instead of collapsing every error onto NOT_FOUND (a rate-limit or auth
+     * incident must not look like "symbol not found").
+     */
+    private static MarketDataException classifyErrorPayload(JsonNode node, String symbol) {
+        int code = node.path("code").asInt(0);
+        if (code == 429) {
+            return new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "twelvedata rate limited", null);
+        }
+        if (code == 401 || code == 403) {
+            return new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "twelvedata auth failed", null);
+        }
+        return new MarketDataException(MarketDataException.Kind.NOT_FOUND,
+                "Symbol " + symbol + " not found at TwelveData", null);
     }
 
     private static BigDecimal parseBd(JsonNode n) {

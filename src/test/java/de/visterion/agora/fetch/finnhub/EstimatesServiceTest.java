@@ -25,7 +25,7 @@ class EstimatesServiceTest {
     @Test void parsesRecommendations() {
         wm.stubFor(get(urlPathEqualTo("/stock/recommendation"))
                 .withQueryParam("symbol", equalTo("AAPL"))
-                .withQueryParam("token", equalTo("k"))
+                .withHeader("X-Finnhub-Token", equalTo("k"))
                 .willReturn(okJson("""
                     [{"period":"2025-06-01","strongBuy":10,"buy":15,"hold":5,"sell":1,"strongSell":0}]
                     """)));

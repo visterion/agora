@@ -34,4 +34,8 @@ public class FinnhubClient {
     public boolean configured() { return apiKey != null && !apiKey.isBlank(); }
     public RestClient http() { return http; }
     public String token() { return apiKey; }
+
+    /** Header name Finnhub expects the API key in (H8: never as a {@code token=} query param,
+     *  which leaks into transport-exception messages that embed the full request URI). */
+    public static final String TOKEN_HEADER = "X-Finnhub-Token";
 }

@@ -1,5 +1,8 @@
 package de.visterion.agora.data;
 
+import de.visterion.agora.fetch.finnhub.FinnhubClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
@@ -22,6 +25,8 @@ import java.util.List;
 @Component
 @Order(20)
 public class FinnhubMarketDataProvider implements MarketDataProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(FinnhubMarketDataProvider.class);
 
     private final RestClient client;
     private final String key;
@@ -65,16 +70,17 @@ public class FinnhubMarketDataProvider implements MarketDataProvider {
             node = client.get()
                     .uri(uri -> uri.path("/quote")
                             .queryParam("symbol", symbol)
-                            .queryParam("token", key)
                             .build())
+                    .header(FinnhubClient.TOKEN_HEADER, key)
                     .retrieve()
                     .body(JsonNode.class);
         } catch (RestClientResponseException e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "Finnhub returned HTTP " + e.getStatusCode(), e);
         } catch (Exception e) {
+            log.warn("finnhub quote request failed for {}", symbol, e);
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "Finnhub unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("finnhub", e), e);
         }
         if (node == null) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,

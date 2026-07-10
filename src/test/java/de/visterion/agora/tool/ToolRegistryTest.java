@@ -61,6 +61,58 @@ class ToolRegistryTest {
         assertThat(r.available()).isFalse();
     }
 
+    // M-X7: an unexpected bug (e.g. NPE, no message) must map to a generic, non-null,
+    // per-tool message — never a raw (possibly null) e.getMessage().
+    @Test
+    void unexpectedRuntimeExceptionYieldsGenericInternalErrorMessage() {
+        AgoraTool npe = new AgoraTool() {
+            public String name() { return "npe-tool"; }
+            public String description() { return "throws NPE with no message"; }
+            public ObjectNode inputSchema() { return mapper.createObjectNode(); }
+            public ToolResult call(tools.jackson.databind.JsonNode args) {
+                throw new NullPointerException();
+            }
+        };
+        ToolRegistry reg = new ToolRegistry(List.of(npe));
+        ToolResult r = reg.invoke("npe-tool", mapper.createObjectNode());
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).isEqualTo("internal error in tool 'npe-tool'");
+    }
+
+    // M-X7: ToolParams.InvalidArgumentException (caller-supplied-argument problem) must be
+    // distinguished from an internal bug and its message safely echoed back.
+    @Test
+    void invalidArgumentExceptionYieldsInvalidArgumentMessage() {
+        AgoraTool badArgs = new AgoraTool() {
+            public String name() { return "bad-args"; }
+            public String description() { return "rejects its args"; }
+            public ObjectNode inputSchema() { return mapper.createObjectNode(); }
+            public ToolResult call(tools.jackson.databind.JsonNode args) {
+                throw new ToolParams.InvalidArgumentException("missing or blank argument: symbol");
+            }
+        };
+        ToolRegistry reg = new ToolRegistry(List.of(badArgs));
+        ToolResult r = reg.invoke("bad-args", mapper.createObjectNode());
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).isEqualTo("invalid argument: missing or blank argument: symbol");
+    }
+
+    @Test
+    void illegalArgumentExceptionYieldsInvalidArgumentMessage() {
+        AgoraTool badArgs = new AgoraTool() {
+            public String name() { return "bad-args-2"; }
+            public String description() { return "rejects its args"; }
+            public ObjectNode inputSchema() { return mapper.createObjectNode(); }
+            public ToolResult call(tools.jackson.databind.JsonNode args) {
+                throw new IllegalArgumentException("days must be <= 1825");
+            }
+        };
+        ToolRegistry reg = new ToolRegistry(List.of(badArgs));
+        ToolResult r = reg.invoke("bad-args-2", mapper.createObjectNode());
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).isEqualTo("invalid argument: days must be <= 1825");
+    }
+
     @Test
     void preservesInsertionOrder() {
         AgoraTool alpha = new AgoraTool() {

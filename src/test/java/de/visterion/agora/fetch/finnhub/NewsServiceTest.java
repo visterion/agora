@@ -26,7 +26,7 @@ class NewsServiceTest {
     @Test void parsesHeadlines() {
         wm.stubFor(get(urlPathEqualTo("/company-news"))
                 .withQueryParam("symbol", equalTo("AAPL"))
-                .withQueryParam("token", equalTo("k"))
+                .withHeader("X-Finnhub-Token", equalTo("k"))
                 .willReturn(okJson("""
                     [{"headline":"Apple beats","summary":"strong quarter","source":"Reuters","datetime":1749600000,"url":"http://x/1"},
                      {"headline":"","summary":"skip me","source":"X","datetime":1749600001,"url":"http://x/2"}]

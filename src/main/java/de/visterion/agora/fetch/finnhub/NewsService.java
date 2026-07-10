@@ -1,7 +1,10 @@
 package de.visterion.agora.fetch.finnhub;
 
 import de.visterion.agora.data.MarketDataException;
+import de.visterion.agora.data.ProviderErrors;
 import de.visterion.agora.data.TtlCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -16,6 +19,8 @@ import java.util.function.LongSupplier;
 /** Company news headlines via Finnhub, cached per-family (news TTL). */
 @Component
 public class NewsService {
+
+    private static final Logger log = LoggerFactory.getLogger(NewsService.class);
 
     private final FinnhubClient client;
     private final TtlCache<String, List<NewsItem>> cache;
@@ -45,13 +50,14 @@ public class NewsService {
                             .queryParam("symbol", symbol)
                             .queryParam("from", from.toString())
                             .queryParam("to", to.toString())
-                            .queryParam("token", client.token())
                             .build())
+                    .header(FinnhubClient.TOKEN_HEADER, client.token())
                     .retrieve()
                     .body(JsonNode.class);
         } catch (Exception e) {
+            log.warn("finnhub company-news request failed for {}", symbol, e);
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "finnhub company-news unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("finnhub company-news", e), e);
         }
         if (arr == null || !arr.isArray())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "empty news body", null);

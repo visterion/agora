@@ -1,7 +1,10 @@
 package de.visterion.agora.fetch.finnhub;
 
 import de.visterion.agora.data.MarketDataException;
+import de.visterion.agora.data.ProviderErrors;
 import de.visterion.agora.data.TtlCache;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -12,6 +15,8 @@ import java.util.function.LongSupplier;
 /** Fundamental metrics for a symbol via Finnhub (whole `metric` object passthrough), cached per-family. */
 @Component
 public class FundamentalsService {
+
+    private static final Logger log = LoggerFactory.getLogger(FundamentalsService.class);
 
     private final FinnhubClient client;
     private final TtlCache<String, Fundamentals> cache;
@@ -40,13 +45,14 @@ public class FundamentalsService {
                     .uri(uri -> uri.path("/stock/metric")
                             .queryParam("symbol", symbol)
                             .queryParam("metric", "all")
-                            .queryParam("token", client.token())
                             .build())
+                    .header(FinnhubClient.TOKEN_HEADER, client.token())
                     .retrieve()
                     .body(JsonNode.class);
         } catch (Exception e) {
+            log.warn("finnhub fundamentals request failed for {}", symbol, e);
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "finnhub fundamentals unreachable: " + e.getMessage(), e);
+                    ProviderErrors.categorize("finnhub fundamentals", e), e);
         }
         if (body == null)
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "no fundamentals for " + symbol, null);
