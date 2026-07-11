@@ -53,4 +53,28 @@ class LiveAccessGuardTest {
         var guard = new LiveAccessGuard(Set.of("live-token-abcdef"), () -> "live-token-abcxxx");
         assertThat(guard.hasLiveAccess()).isFalse();
     }
+
+    @Test
+    void readonlyTokenSeesLiveButCannotTrade() {
+        var g = new LiveAccessGuard(Set.of("live-1"), Set.of("ro-1"), () -> "ro-1");
+        assertThat(g.hasLiveAccess()).isFalse();
+        assertThat(g.hasLiveReadAccess()).isTrue();
+        assertThat(g.canSee(conn(ConnectionConfig.Environment.LIVE))).isTrue();
+        assertThat(g.canTrade(conn(ConnectionConfig.Environment.LIVE))).isFalse();
+    }
+
+    @Test
+    void fullLiveTokenKeepsBothRights() {
+        var g = new LiveAccessGuard(Set.of("live-1"), Set.of("ro-1"), () -> "live-1");
+        assertThat(g.hasLiveReadAccess()).isTrue();
+        assertThat(g.canTrade(conn(ConnectionConfig.Environment.LIVE))).isTrue();
+    }
+
+    @Test
+    void plainTokenSeesNoLiveEitherWay() {
+        var g = new LiveAccessGuard(Set.of("live-1"), Set.of("ro-1"), () -> "other");
+        assertThat(g.hasLiveReadAccess()).isFalse();
+        assertThat(g.canSee(conn(ConnectionConfig.Environment.LIVE))).isFalse();
+        assertThat(g.canTrade(conn(ConnectionConfig.Environment.PAPER))).isTrue();
+    }
 }

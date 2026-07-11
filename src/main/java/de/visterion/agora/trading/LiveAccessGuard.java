@@ -23,34 +23,51 @@ import java.util.stream.Collectors;
 public class LiveAccessGuard {
 
     private final Set<String> liveTokens;
+    private final Set<String> liveReadonlyTokens;
     private final Supplier<String> callerToken;
 
     @Autowired
-    public LiveAccessGuard(@Value("${agora.trading.live-tokens:}") String liveCsv) {
-        this(parseCsv(liveCsv), LiveAccessGuard::requestToken);
+    public LiveAccessGuard(@Value("${agora.trading.live-tokens:}") String liveCsv,
+                           @Value("${agora.trading.live-tokens-readonly:}") String readonlyCsv) {
+        this(parseCsv(liveCsv), parseCsv(readonlyCsv), LiveAccessGuard::requestToken);
     }
 
+    /** Back-compat convenience for existing tests/harness. */
     public LiveAccessGuard(Set<String> liveTokens, Supplier<String> callerToken) {
+        this(liveTokens, Set.of(), callerToken);
+    }
+
+    public LiveAccessGuard(Set<String> liveTokens, Set<String> liveReadonlyTokens,
+                           Supplier<String> callerToken) {
         this.liveTokens = liveTokens;
+        this.liveReadonlyTokens = liveReadonlyTokens;
         this.callerToken = callerToken;
     }
 
-    public boolean hasLiveAccess() {
+    public boolean hasLiveAccess() { return matches(liveTokens); }
+
+    /** Full live access OR a read-only live token: may see/read LIVE, never trade it. */
+    public boolean hasLiveReadAccess() { return hasLiveAccess() || matches(liveReadonlyTokens); }
+
+    /** Visibility/read: paper for everyone, live with read access. */
+    public boolean canSee(RegisteredConnection c) {
+        return c.config().getEnvironment() != ConnectionConfig.Environment.LIVE || hasLiveReadAccess();
+    }
+
+    /** Mutation: paper for everyone, live ONLY with a full live token. */
+    public boolean canTrade(RegisteredConnection c) {
+        return c.config().getEnvironment() != ConnectionConfig.Environment.LIVE || hasLiveAccess();
+    }
+
+    private boolean matches(Set<String> tokens) {
         String token = callerToken.get();
         if (token == null) return false;
         byte[] candidate = token.getBytes(StandardCharsets.UTF_8);
         boolean found = false;
-        for (String liveToken : liveTokens) {
-            if (MessageDigest.isEqual(liveToken.getBytes(StandardCharsets.UTF_8), candidate)) {
-                found = true;
-            }
+        for (String t : tokens) {
+            if (MessageDigest.isEqual(t.getBytes(StandardCharsets.UTF_8), candidate)) found = true;
         }
         return found;
-    }
-
-    /** Visibility: paper is visible to every trading caller; live only with live access. */
-    public boolean canSee(RegisteredConnection c) {
-        return c.config().getEnvironment() != ConnectionConfig.Environment.LIVE || hasLiveAccess();
     }
 
     private static Set<String> parseCsv(String csv) {
