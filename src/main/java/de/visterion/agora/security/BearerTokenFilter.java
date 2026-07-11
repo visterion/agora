@@ -23,10 +23,13 @@ import java.util.List;
 /**
  * Guards /tools/** and /mcp/** with bearer tokens.
  * <ul>
- *   <li>General tools (and /mcp, unknown paths) → accept general ∪ trading ∪ live tokens.</li>
- *   <li>Trading tools (/tools/{name} where namespace()=="trading") → accept trading ∪ live tokens.</li>
+ *   <li>General tools (and /mcp, unknown paths) → accept general ∪ trading ∪ live ∪ live-readonly tokens.</li>
+ *   <li>Trading tools (/tools/{name} where namespace()=="trading") → accept trading ∪ live ∪ live-readonly tokens.</li>
  *   <li>/actuator/health → public (no token required).</li>
  * </ul>
+ * Read-only live tokens authenticate exactly like live tokens here; whether a
+ * read-only token may perform a given mutation is decided downstream by
+ * {@code LiveAccessGuard}, not by this filter.
  */
 @Component
 public class BearerTokenFilter extends OncePerRequestFilter {
@@ -45,15 +48,16 @@ public class BearerTokenFilter extends OncePerRequestFilter {
             @Value("${agora.auth.tokens:}") String general,
             @Value("${agora.trading.tokens:}") String trading,
             @Value("${agora.trading.live-tokens:}") String live,
+            @Value("${agora.trading.live-tokens-readonly:}") String liveReadonly,
             ToolRegistry registry) {
-        this(parseCsv(general), parseCsv(trading), parseCsv(live), registry);
+        this(parseCsv(general), parseCsv(trading), parseCsv(live), parseCsv(liveReadonly), registry);
     }
 
     BearerTokenFilter(List<String> generalTokens, List<String> tradingTokens,
-                      List<String> liveTokens, ToolRegistry registry) {
+                      List<String> liveTokens, List<String> liveReadonlyTokens, ToolRegistry registry) {
         this.registry = registry;
         List<byte[]> tradingBytes = toBytes(tradingTokens);
-        List<byte[]> liveBytes = toBytes(liveTokens);
+        List<byte[]> liveBytes = concat(toBytes(liveTokens), toBytes(liveReadonlyTokens));
         this.tradingOrLiveTokens = concat(tradingBytes, liveBytes);
         this.allTokens = concat(concat(toBytes(generalTokens), tradingBytes), liveBytes);
     }
