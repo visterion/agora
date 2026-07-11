@@ -4,6 +4,7 @@ import de.visterion.agora.trading.*;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -38,6 +39,7 @@ class GetPositionsToolTest {
         assertThat(positions.get(0).get("qty").decimalValue()).isEqualByComparingTo("10");
         assertThat(positions.get(0).get("avgEntryPrice").decimalValue()).isEqualByComparingTo("150.00");
         assertThat(positions.get(0).get("currency").asString()).isEqualTo("USD");
+        assertThat(Instant.parse(r.output().get("asOf").asString())).isNotNull();
     }
 
     @Test void unavailableOnBrokerException() {

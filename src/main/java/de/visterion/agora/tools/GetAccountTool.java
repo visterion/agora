@@ -52,6 +52,7 @@ public class GetAccountTool implements AgoraTool {
             acct.put("cash", a.cash());
             acct.put("currency", a.currency());
             acct.put("status", a.status());
+            out.put("asOf", java.time.Instant.now().toString());
             return ToolResult.ok(out);
         } catch (BrokerException e) {
             return ToolResult.unavailable(e.getMessage());

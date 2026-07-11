@@ -58,6 +58,7 @@ public class GetPositionsTool implements AgoraTool {
                 node.put("unrealizedPl", p.unrealizedPl());
                 node.put("currency", p.currency());
             }
+            out.put("asOf", java.time.Instant.now().toString());
             return ToolResult.ok(out);
         } catch (BrokerException e) {
             return ToolResult.unavailable(e.getMessage());

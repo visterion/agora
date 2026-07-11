@@ -4,6 +4,7 @@ import de.visterion.agora.trading.*;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,6 +40,7 @@ class GetOrdersToolTest {
         assertThat(orders.get(0).get("symbol").asString()).isEqualTo("AAPL");
         assertThat(orders.get(0).get("side").asString()).isEqualTo("buy");
         assertThat(orders.get(0).get("status").asString()).isEqualTo("new");
+        assertThat(Instant.parse(r.output().get("asOf").asString())).isNotNull();
     }
 
     @Test void nullClientRefOmittedNotExplicitNull() {
