@@ -22,16 +22,16 @@ public class BrokerService {
         this.guard = guard;
     }
 
-    public OrderResult submitBracket(String connection, BracketOrderRequest r) { return resolve(connection).submitBracket(r); }
-    public OrderResult modifyBracket(String connection, String id, String symbol, BigDecimal stop, BigDecimal target) { return resolve(connection).modifyBracket(id, symbol, stop, target); }
+    public OrderResult submitBracket(String connection, BracketOrderRequest r) { return resolveMutable(connection).submitBracket(r); }
+    public OrderResult modifyBracket(String connection, String id, String symbol, BigDecimal stop, BigDecimal target) { return resolveMutable(connection).modifyBracket(id, symbol, stop, target); }
     public OrderResult flatten(String connection, String symbol, BigDecimal fraction, BigDecimal qty) {
-        return resolve(connection).flatten(symbol, fraction, qty);
+        return resolveMutable(connection).flatten(symbol, fraction, qty);
     }
     public List<Position> positions(String connection) { return resolve(connection).positions(); }
     public List<Order> orders(String connection, String status) { return resolve(connection).orders(status); }
     public Account account(String connection) { return resolve(connection).account(); }
     public Order orderByClientRef(String connection, String ref) { return resolve(connection).orderByClientRef(ref); }
-    public OrderResult cancel(String connection, String brokerOrderId) { return resolve(connection).cancel(brokerOrderId); }
+    public OrderResult cancel(String connection, String brokerOrderId) { return resolveMutable(connection).cancel(brokerOrderId); }
 
     /** Lookup + visibility gate. Invisible (live without live token) == unknown. */
     private BrokerProvider resolve(String connection) {
@@ -40,6 +40,21 @@ public class BrokerService {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "unknown or inactive connection: " + connection
                             + " (active: " + String.join(", ", visibleIds()) + ")", null);
+        }
+        return rc.provider();
+    }
+
+    /** Lookup + visibility gate + trade gate. Mutating ops on LIVE require a full live token. */
+    private BrokerProvider resolveMutable(String connection) {
+        RegisteredConnection rc = registry.get(connection).orElse(null);
+        if (rc == null || !guard.canSee(rc)) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "unknown or inactive connection: " + connection
+                            + " (active: " + String.join(", ", visibleIds()) + ")", null);
+        }
+        if (!guard.canTrade(rc)) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "live trading on '" + connection + "' requires a live trading token", null);
         }
         return rc.provider();
     }
