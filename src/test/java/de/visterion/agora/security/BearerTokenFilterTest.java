@@ -53,7 +53,7 @@ class BearerTokenFilterTest {
     private final ToolRegistry pingOnlyRegistry = registryWith(generalTool("ping"));
 
     private final BearerTokenFilter filter =
-            new BearerTokenFilter(List.of("good-token"), List.of(), List.of(), pingOnlyRegistry);
+            new BearerTokenFilter(List.of("good-token"), List.of(), List.of(), List.of(), pingOnlyRegistry);
 
     @Test
     void rejectsMissingToken() throws Exception {
@@ -89,7 +89,8 @@ class BearerTokenFilterTest {
 
     private BearerTokenFilter guardFilter() {
         ToolRegistry registry = registryWith(generalTool("gen"), tradingTool("trade"));
-        return new BearerTokenFilter(List.of("gen-token"), List.of("trade-token"), List.of("live-token"), registry);
+        return new BearerTokenFilter(List.of("gen-token"), List.of("trade-token"), List.of("live-token"),
+                List.of("ro-live-token"), registry);
     }
 
     @Test
@@ -259,6 +260,42 @@ class BearerTokenFilterTest {
         guardFilter().doFilter(req, res, chain);
         assertThat(res.getStatus()).isEqualTo(401);
         assertThat(req.getAttribute(BearerTokenFilter.TOKEN_ATTR)).isNull();
+    }
+
+    // --- Readonly-live-token tests (Task A3) ---
+
+    @Test
+    void readonlyLiveTokenPassesTradingToolAuth() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest("GET", "/tools/trade");
+        req.addHeader("Authorization", "Bearer ro-live-token");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        guardFilter().doFilter(req, res, chain);
+        assertThat(res.getStatus()).isEqualTo(200);
+        verify(chain).doFilter(any(), any());
+        assertThat(req.getAttribute(BearerTokenFilter.TOKEN_ATTR)).isEqualTo("ro-live-token");
+    }
+
+    @Test
+    void readonlyLiveTokenPassesGeneralMcpAuth() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/mcp");
+        req.addHeader("Authorization", "Bearer ro-live-token");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        guardFilter().doFilter(req, res, chain);
+        assertThat(res.getStatus()).isEqualTo(200);
+        verify(chain).doFilter(any(), any());
+    }
+
+    @Test
+    void bogusTokenIsRejected() throws Exception {
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/tools/trade");
+        req.addHeader("Authorization", "Bearer totally-bogus-token");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+        FilterChain chain = mock(FilterChain.class);
+        guardFilter().doFilter(req, res, chain);
+        assertThat(res.getStatus()).isEqualTo(401);
+        verify(chain, never()).doFilter(any(), any());
     }
 
     @Test
