@@ -28,6 +28,7 @@ agora:
   trading:
     tokens: ${AGORA_TRADING_TOKENS:}
     live-tokens: ${AGORA_TRADING_LIVE_TOKENS:}
+    live-tokens-readonly: ${AGORA_TRADING_LIVE_TOKENS_READONLY:}
     # per-request response timeout for broker/OAuth HTTP calls (no fallback chain here;
     # this only bounds hangs — well under the 30s scheduler tick)
     provider-timeout-ms: ${AGORA_TRADING_PROVIDER_TIMEOUT_MS:10000}
