@@ -4,6 +4,7 @@ import de.visterion.agora.trading.*;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -33,6 +34,7 @@ class GetAccountToolTest {
         assertThat(acct.get("cash").decimalValue()).isEqualByComparingTo("15000");
         assertThat(acct.get("currency").asString()).isEqualTo("USD");
         assertThat(acct.get("status").asString()).isEqualTo("ACTIVE");
+        assertThat(Instant.parse(r.output().get("asOf").asString())).isNotNull();
     }
 
     @Test void unavailableOnBrokerException() {

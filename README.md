@@ -268,6 +268,12 @@ Guarded by `BearerTokenFilter` on `/tools/**` and `/mcp/**`:
   disjoint token set `AGORA_TRADING_LIVE_TOKENS`. Only a token in that set can see or
   call a live connection; a normal trading token sees the paper/sim connections only.
   Enforced by `LiveAccessGuard`.
+- **Read-only live tokens** (`AGORA_TRADING_LIVE_TOKENS_READONLY`): a fourth token set
+  that can see live connections (`list_connections`) and call trading **read** tools
+  (`get_account`, `get_positions`, `get_orders`) on them, but cannot mutate — order
+  submission, modification, cancellation, and flatten on a live connection still require
+  a full `AGORA_TRADING_LIVE_TOKENS` token. Read tools stamp a top-level `asOf`
+  (ISO-8601 instant) on their output so callers know how fresh the data is.
 - **`/actuator/health`**: public, no token.
 - Fail-closed: an empty token config denies all tool calls.
 
@@ -285,6 +291,7 @@ for the full list and defaults). Key ones:
 | `AGORA_AUTH_TOKENS` | Comma-separated general (read/quant) bearer tokens |
 | `AGORA_TRADING_TOKENS` | Comma-separated execution bearer tokens (paper/sim connections) |
 | `AGORA_TRADING_LIVE_TOKENS` | Comma-separated tokens that unlock live connections (`saxo-live`, `alpaca-live`); a disjoint set from `AGORA_TRADING_TOKENS`, enforced by `LiveAccessGuard` |
+| `AGORA_TRADING_LIVE_TOKENS_READONLY` | Comma-separated tokens that can see live connections and call trading read tools (`get_account`, `get_positions`, `get_orders`) on them, but cannot mutate; a disjoint set, enforced by `LiveAccessGuard` |
 | `AGORA_TRADING_ALPACA_KEY_ID` / `_SECRET` / `_BASE_URL` | Alpaca **paper** credentials (`alpaca-paper`; defaults to paper API) |
 | `AGORA_TRADING_ALPACA_LIVE_KEY_ID` / `_SECRET` / `_BASE_URL` | Alpaca **live** credentials (`alpaca-live`) |
 | `AGORA_TRADING_SAXO_SIM_APP_KEY` / `_APP_SECRET` / `_BASE_URL` / `_REDIRECT_URI` | Saxo SIM developer-app credentials + OAuth redirect (`saxo-sim`) |
