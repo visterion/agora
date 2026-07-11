@@ -241,7 +241,7 @@ provider.
 | Filings / XBRL concepts / EPS / Form-4 | SEC EDGAR |
 | Earnings calendar | Finnhub, Yahoo |
 | Index constituents | Wikipedia (S&P 500) |
-| Execution | Alpaca and Saxo, selected per named connection (`alpaca-paper`, `alpaca-live`, `saxo-sim`, `saxo-live`) |
+| Execution | Alpaca and Saxo, selected per named connection (`alpaca-paper`, `alpaca-live`, `depot-1`, `saxo-live`) |
 
 Responses are cached with per-family TTLs (prices 120s, news 15m, fundamentals 6h,
 filings 1h, constituents 24h), all configurable.
@@ -294,7 +294,7 @@ for the full list and defaults). Key ones:
 | `AGORA_TRADING_LIVE_TOKENS_READONLY` | Comma-separated tokens that can see live connections and call trading read tools (`get_account`, `get_positions`, `get_orders`) on them, but cannot mutate; a disjoint set, enforced by `LiveAccessGuard` |
 | `AGORA_TRADING_ALPACA_KEY_ID` / `_SECRET` / `_BASE_URL` | Alpaca **paper** credentials (`alpaca-paper`; defaults to paper API) |
 | `AGORA_TRADING_ALPACA_LIVE_KEY_ID` / `_SECRET` / `_BASE_URL` | Alpaca **live** credentials (`alpaca-live`) |
-| `AGORA_TRADING_SAXO_SIM_APP_KEY` / `_APP_SECRET` / `_BASE_URL` / `_REDIRECT_URI` | Saxo SIM developer-app credentials + OAuth redirect (`saxo-sim`) |
+| `AGORA_TRADING_SAXO_SIM_APP_KEY` / `_APP_SECRET` / `_BASE_URL` / `_REDIRECT_URI` | Saxo SIM developer-app credentials + OAuth redirect (`depot-1`) |
 | `AGORA_TRADING_SAXO_LIVE_APP_KEY` / `_APP_SECRET` / `_BASE_URL` / `_REDIRECT_URI` | Saxo LIVE developer-app credentials + OAuth redirect (`saxo-live`) |
 | `AGORA_TRADING_SAXO_TOKEN_DIR` | Directory for persisted Saxo OAuth tokens (default `/data/saxo`) |
 | `AGORA_TRADING_SAXO_REFRESH_CHECK_MS` | Saxo token auto-refresh check interval in ms (default `30000`) |
@@ -317,7 +317,7 @@ connection's `environment` selects the endpoints:
 - **OpenAPI gateway:** `gateway.saxobank.com/sim/openapi` (SIM) vs `gateway.saxobank.com/openapi` (LIVE).
 
 Each connection needs a **one-time OAuth login**: open
-`GET /auth/saxo/login?connection=<name>` (e.g. `saxo-sim`), complete Saxo's login, and the
+`GET /auth/saxo/login?connection=<name>` (e.g. `depot-1`), complete Saxo's login, and the
 callback `/auth/saxo/callback` stores tokens under the token-dir
 (`AGORA_TRADING_SAXO_TOKEN_DIR`, default `/data/saxo`). Tokens are auto-refreshed from
 there, so the login persists across restarts.

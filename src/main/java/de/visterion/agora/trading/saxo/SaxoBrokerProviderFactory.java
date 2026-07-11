@@ -12,7 +12,7 @@ import org.springframework.web.client.RestClient;
  * Builds one SaxoBrokerProvider per active saxo connection.
  * INVARIANT (M-T7): the token-store key equals the yaml connection id — whatever key the
  * connection is registered under in {@code agora.trading.connections} (conventionally
- * saxo-sim / saxo-live, but not required to be). This MUST match the key used by the
+ * depot-1 / saxo-live, but not required to be). This MUST match the key used by the
  * refresher, the data provider, and the auth endpoints (/auth/saxo/login?connection=<id>),
  * all of which key by connection id — not by a value derived from the environment.
  */

@@ -48,7 +48,7 @@ agora:
         base-url: ${AGORA_TRADING_ALPACA_LIVE_BASE_URL:https://api.alpaca.markets/v2}
         key-id: ${AGORA_TRADING_ALPACA_LIVE_KEY_ID:}
         secret: ${AGORA_TRADING_ALPACA_LIVE_SECRET:}
-      saxo-sim:
+      depot-1:
         provider: saxo
         environment: paper
         base-url: ${AGORA_TRADING_SAXO_SIM_BASE_URL:https://gateway.saxobank.com/sim/openapi}
