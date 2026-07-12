@@ -79,6 +79,12 @@ public class GetForm4TransactionsTool implements AgoraTool {
                 o.put("code", t.code());
                 o.put("acquiredDisposedCode", t.acquiredDisposedCode());
                 o.put("form", t.form());
+                o.put("price", t.price());
+                o.put("sharesOwnedFollowing", t.sharesOwnedFollowing());
+                // Tri-state: true/false = explicit 10b5-1(c) checkbox, null = filing predates
+                // the 2023 checkbox (unknown) — consumers must not read null as false.
+                o.put("aff10b5One", t.aff10b5One());
+                o.put("filerCik", t.filerCik());
             }
             out.put("truncated", result.truncated());
             return ToolResult.ok(out);
