@@ -25,7 +25,8 @@ class GetForm4TransactionsToolTest {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
         when(svc.form4Transactions(any(), any(), anyInt())).thenReturn(new EdgarSearchService.Form4Result(List.of(
                 new Form4Transaction("AAPL", "Cook Timothy", "CEO", LocalDate.parse("2025-05-05"),
-                        new BigDecimal("1000"), new BigDecimal("190000"), "P", "A", "4")), false));
+                        new BigDecimal("1000"), new BigDecimal("190000"), "P", "A", "4",
+                        new BigDecimal("190.00"), new BigDecimal("34567"), Boolean.TRUE, "0001214156")), false));
         var r = new GetForm4TransactionsTool(svc).call(mapper.createObjectNode());
         assertThat(r.available()).isTrue();
         var t = r.output().get("transactions").get(0);
@@ -38,7 +39,28 @@ class GetForm4TransactionsToolTest {
         assertThat(t.get("code").asString()).isEqualTo("P");
         assertThat(t.get("acquiredDisposedCode").asString()).isEqualTo("A");
         assertThat(t.get("form").asString()).isEqualTo("4");
+        assertThat(t.get("price").decimalValue()).isEqualByComparingTo("190.00");
+        assertThat(t.get("sharesOwnedFollowing").decimalValue()).isEqualByComparingTo("34567");
+        assertThat(t.get("aff10b5One").asBoolean()).isTrue();
+        assertThat(t.get("filerCik").asString()).isEqualTo("0001214156");
         assertThat(r.output().get("truncated").asBoolean()).isFalse();
+    }
+
+    // Wire semantics for the tri-state/nullable additions: absent-in-filing values serialize as
+    // JSON null (aff10b5One null = "unknown", pre-2023 filing), never as false/0.
+    @Test void nullableNewFieldsSerializeAsJsonNull() {
+        EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
+        when(svc.form4Transactions(any(), any(), anyInt())).thenReturn(new EdgarSearchService.Form4Result(List.of(
+                new Form4Transaction("AAPL", "Cook Timothy", "", LocalDate.parse("2025-05-05"),
+                        new BigDecimal("1000"), BigDecimal.ZERO, "G", "", "4",
+                        null, null, null, "")), false));
+        var r = new GetForm4TransactionsTool(svc).call(mapper.createObjectNode());
+        assertThat(r.available()).isTrue();
+        var t = r.output().get("transactions").get(0);
+        assertThat(t.get("price").isNull()).isTrue();
+        assertThat(t.get("sharesOwnedFollowing").isNull()).isTrue();
+        assertThat(t.get("aff10b5One").isNull()).isTrue();
+        assertThat(t.get("filerCik").asString()).isEmpty();
     }
 
     @Test void truncatedFlagPassedThrough() {

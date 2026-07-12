@@ -137,9 +137,17 @@ public class EdgarSearchService {
 
     /** Full-text filing search on efts. ticker on a hit may be empty (fresh registrations). */
     public List<FilingHit> search(List<String> forms, String query, LocalDate from, LocalDate to, int limit) {
+        return search(forms, query, null, from, to, limit);
+    }
+
+    /** Like {@link #search(List, String, LocalDate, LocalDate, int)} but additionally filtered to
+     *  filings involving the given entity CIK (efts {@code ciks} filter; zero-padded 10 digits).
+     *  For ownership forms (3/4/5) the issuer is one of the filing entities, so an issuer CIK
+     *  matches its Form-4 filings. {@code cik} null/blank means no entity filter. */
+    public List<FilingHit> search(List<String> forms, String query, String cik, LocalDate from, LocalDate to, int limit) {
         String formsCsv = String.join(",", forms);
-        String key = cacheKey("search", formsCsv, query, str(from), str(to), String.valueOf(limit));
-        return searchCache.get(key, () -> fetchSearch(formsCsv, query, from, to, limit));
+        String key = cacheKey("search", formsCsv, query, cik, str(from), str(to), String.valueOf(limit));
+        return searchCache.get(key, () -> fetchSearch(formsCsv, query, cik, from, to, limit));
     }
 
     // Length-prefixed segment join — a plain ":"-joined key collides whenever a field itself
@@ -156,13 +164,13 @@ public class EdgarSearchService {
 
     private static String str(Object o) { return o == null ? "" : o.toString(); }
 
-    private List<FilingHit> fetchSearch(String formsCsv, String query, LocalDate from, LocalDate to, int limit) {
+    private List<FilingHit> fetchSearch(String formsCsv, String query, String cik, LocalDate from, LocalDate to, int limit) {
         List<FilingHit> out = new ArrayList<>();
         int offset = 0;
         boolean capped = false;
         while (out.size() < limit) {
             if (offset >= HARD_FETCH_CAP) { capped = true; break; }
-            JsonNode search = fetchPage(formsCsv, query, from, to, offset);
+            JsonNode search = fetchPage(formsCsv, query, cik, from, to, offset);
             JsonNode hitsNode = search == null ? null : search.path("hits");
             JsonNode hits = hitsNode == null ? null : hitsNode.path("hits");
             if (hits == null || !hits.isArray() || hits.isEmpty()) break;
@@ -189,7 +197,7 @@ public class EdgarSearchService {
         return out;
     }
 
-    private JsonNode fetchPage(String formsCsv, String query, LocalDate from, LocalDate to, int offset) {
+    private JsonNode fetchPage(String formsCsv, String query, String cik, LocalDate from, LocalDate to, int offset) {
         try {
             return http.get()
                     .uri(uri -> {
@@ -203,6 +211,7 @@ public class EdgarSearchService {
                                     .queryParam("enddt", to == null ? "" : to.toString());
                         }
                         if (query != null && !query.isBlank()) uri.queryParam("q", query);
+                        if (cik != null && !cik.isBlank()) uri.queryParam("ciks", cik);
                         return uri.build();
                     })
                     .retrieve()
@@ -260,7 +269,15 @@ public class EdgarSearchService {
         return new FilingHit(ticker, company, form, filedDate, accession, url);
     }
 
-    /** Form-4 transaction list plus a truncation flag (set when the aggregate fetch deadline hit). */
+    /**
+     * Form-4 transaction list plus a truncation flag. {@code truncated} is true whenever the
+     * result may be incomplete: the aggregate fetch deadline hit, the transaction {@code limit}
+     * stopped the hit loop early, or the underlying search returned a full {@code limit}-sized
+     * hit list (more filings may exist beyond the cut). Consumers must treat a truncated result
+     * as a partial window, never as the complete history. Note: because a filing's transactions
+     * are added atomically, the list may slightly overshoot {@code limit} (no trimming); an
+     * overshoot that leaves hits unprocessed is likewise marked truncated.
+     */
     public record Form4Result(List<Form4Transaction> transactions, boolean truncated) {}
 
     /**
@@ -270,22 +287,48 @@ public class EdgarSearchService {
      * efts search for forms=4,4/A, then per-hit Form-4 XML fetch + DOM parse, throttled to stay
      * under SEC's request-rate limit with an aggregate deadline. Malformed hits/XML are skipped
      * (never throw per-hit); an efts search failure surfaces as {@link MarketDataException}.
+     *
+     * <p>Ordering: EFTS has no documented usable sort parameter (a simple {@code sort=} value is
+     * rejected), but its default order is deterministic — {@code file_date} descending with the
+     * hit {@code _id} as tiebreak (verified 2026-07). A limit/deadline cut therefore drops the
+     * OLDEST filings of the window, never a random subset.
+     *
+     * <p>Price fail-soft (intentional change, 2026-07): an absent/empty/unparsable
+     * {@code transactionPricePerShare} no longer discards the filing — the transaction is kept
+     * with {@code price=null} and {@code dollarValue=0}. Previously such filings were skipped
+     * entirely by the per-hit catch.
      */
     public Form4Result form4Transactions(LocalDate from, LocalDate to, int limit) {
         String key = cacheKey("form4", str(from), str(to), String.valueOf(limit));
-        return form4Cache.get(key, () -> fetchForm4(from, to, limit));
+        return form4Cache.get(key, () -> fetchForm4(null, from, to, limit));
     }
 
-    private Form4Result fetchForm4(LocalDate from, LocalDate to, int limit) {
+    /**
+     * Like {@link #form4Transactions(LocalDate, LocalDate, int)} but restricted to one company:
+     * only filings involving the given entity CIK (the issuer is a filing entity on every Form 4,
+     * so an issuer CIK returns that company's Form-4 stream). Same widen-then-narrow window
+     * handling, throttle, aggregate deadline and truncation semantics as the market-wide variant.
+     */
+    public Form4Result form4TransactionsByCik(String cik, LocalDate from, LocalDate to, int limit) {
+        String key = cacheKey("form4cik", cik, str(from), str(to), String.valueOf(limit));
+        return form4Cache.get(key, () -> fetchForm4(cik, from, to, limit));
+    }
+
+    private Form4Result fetchForm4(String cik, LocalDate from, LocalDate to, int limit) {
         LocalDate searchFrom = from == null ? null : from.minusDays(FORM4_WINDOW_PAD_DAYS);
         LocalDate searchTo = to == null ? null : to.plusDays(FORM4_WINDOW_PAD_DAYS);
-        List<FilingHit> hits = search(List.of("4", "4/A"), null, searchFrom, searchTo, limit);
+        List<FilingHit> hits = search(List.of("4", "4/A"), null, cik, searchFrom, searchTo, limit);
         List<Form4Transaction> out = new ArrayList<>();
-        boolean truncated = false;
+        // A full limit-sized hit list means the search itself was cut (more filings may exist,
+        // including a silent HARD_FETCH_CAP stop) — never report such a window as complete.
+        boolean truncated = hits.size() >= limit;
         long deadline = now.getAsLong() + FORM4_DEADLINE_MS;
         boolean first = true;
         for (FilingHit hit : hits) {
-            if (out.size() >= limit) break;
+            if (out.size() >= limit) {
+                truncated = true;   // hits remain unprocessed beyond the transaction limit
+                break;
+            }
             if (now.getAsLong() >= deadline) {
                 truncated = true;
                 break;
@@ -379,10 +422,12 @@ public class EdgarSearchService {
         if (symbols.getLength() > 0) ticker = symbols.item(0).getTextContent().trim();
 
         // Read ALL reportingOwner elements: a Form 4 can list several co-filers (e.g. a trust plus
-        // the individual trustee). Join their names; take the first non-empty officer title/role.
+        // the individual trustee). Join their names; take the first non-empty officer title/role
+        // and the first non-empty owner CIK.
         var owners = doc.getElementsByTagName("reportingOwner");
         List<String> filerNames = new ArrayList<>();
         String filerRole = "";
+        String filerCik = "";
         for (int i = 0; i < owners.getLength(); i++) {
             var owner = (org.w3c.dom.Element) owners.item(i);
             var names = owner.getElementsByTagName("rptOwnerName");
@@ -397,8 +442,16 @@ public class EdgarSearchService {
                     if (!t.isEmpty()) filerRole = t;
                 }
             }
+            if (filerCik.isEmpty()) {
+                var ciks = owner.getElementsByTagName("rptOwnerCik");
+                if (ciks.getLength() > 0) filerCik = ciks.item(0).getTextContent().trim();
+            }
         }
         String filerName = String.join(", ", filerNames);
+
+        // Filing-level Rule 10b5-1(c) checkbox (mandatory on filings since 2023). Tri-state:
+        // absent on pre-2023 filings → null ("unknown"), never coerced to false.
+        Boolean aff10b5One = parseXmlBoolean(textOf(doc.getDocumentElement(), "aff10b5One"));
 
         var transactions = doc.getElementsByTagName("nonDerivativeTransaction");
         for (int i = 0; i < transactions.getLength(); i++) {
@@ -420,12 +473,35 @@ public class EdgarSearchService {
             if (from != null && txDate.isBefore(from)) continue;
             if (to != null && txDate.isAfter(to)) continue;
             BigDecimal shares = new BigDecimal(sharesStr);
-            BigDecimal price = priceStr.isEmpty() ? BigDecimal.ZERO : new BigDecimal(priceStr);
-            BigDecimal dollar = shares.multiply(price);
+            BigDecimal price = bdOrNull(priceStr);
+            BigDecimal dollar = shares.multiply(price == null ? BigDecimal.ZERO : price);
+            // postTransactionAmounts/sharesOwnedFollowingTransaction — fail-soft nullable.
+            BigDecimal sharesOwnedFollowing = bdOrNull(valueOf(tx, "sharesOwnedFollowingTransaction"));
             out.add(new Form4Transaction(
                     ticker, filerName, filerRole,
-                    txDate, shares, dollar, code, acquiredDisposedCode, hit.form()
+                    txDate, shares, dollar, code, acquiredDisposedCode, hit.form(),
+                    price, sharesOwnedFollowing, aff10b5One, filerCik
             ));
+        }
+    }
+
+    /** SEC XML boolean ("1"/"true"/"0"/"false"); anything else, including absent/empty → null. */
+    private static Boolean parseXmlBoolean(String raw) {
+        if (raw == null) return null;
+        return switch (raw.trim().toLowerCase()) {
+            case "1", "true" -> Boolean.TRUE;
+            case "0", "false" -> Boolean.FALSE;
+            default -> null;
+        };
+    }
+
+    /** Fail-soft decimal: empty/unparsable → null (never throws). */
+    private static BigDecimal bdOrNull(String raw) {
+        if (raw == null || raw.isEmpty()) return null;
+        try {
+            return new BigDecimal(raw);
+        } catch (NumberFormatException e) {
+            return null;
         }
     }
 

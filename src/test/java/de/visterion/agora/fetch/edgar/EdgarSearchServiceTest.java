@@ -158,8 +158,10 @@ class EdgarSearchServiceTest {
         wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml"))
                 .willReturn(aResponse().withStatus(200).withHeader("Content-Type","application/xml").withBody("""
                     <ownershipDocument>
+                      <aff10b5One>1</aff10b5One>
                       <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
-                      <reportingOwner><reportingOwnerId><rptOwnerName>Cook Timothy</rptOwnerName></reportingOwnerId>
+                      <reportingOwner><reportingOwnerId><rptOwnerCik>0001214156</rptOwnerCik>
+                        <rptOwnerName>Cook Timothy</rptOwnerName></reportingOwnerId>
                         <reportingOwnerRelationship><officerTitle>CEO</officerTitle></reportingOwnerRelationship></reportingOwner>
                       <nonDerivativeTable><nonDerivativeTransaction>
                         <transactionDate><value>2025-05-05</value></transactionDate>
@@ -169,6 +171,9 @@ class EdgarSearchServiceTest {
                           <transactionPricePerShare><value>190.00</value></transactionPricePerShare>
                           <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
                         </transactionAmounts>
+                        <postTransactionAmounts>
+                          <sharesOwnedFollowingTransaction><value>34567</value></sharesOwnedFollowingTransaction>
+                        </postTransactionAmounts>
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
@@ -186,6 +191,330 @@ class EdgarSearchServiceTest {
         assertThat(t.dollarValue()).isEqualByComparingTo("190000"); // 1000 * 190
         assertThat(t.acquiredDisposedCode()).isEqualTo("A");
         assertThat(t.form()).isEqualTo("4");
+        assertThat(t.price()).isEqualByComparingTo("190.00");
+        assertThat(t.sharesOwnedFollowing()).isEqualByComparingTo("34567");
+        assertThat(t.aff10b5One()).isTrue();
+        assertThat(t.filerCik()).isEqualTo("0001214156");
+    }
+
+    // Pre-2023 filing shape: no aff10b5One element, no postTransactionAmounts, no owner CIK, no
+    // price — the new fields degrade to null/empty (aff10b5One null means UNKNOWN, never false).
+    @Test void form4LegacyFilingWithoutNewFieldsYieldsNulls() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4,4/A"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000099:form4.xml","_source":{
+                         "ciks":["0000320193"],
+                         "display_names":["Cook Timothy (CIK 0000000001)"],
+                         "file_date":"2025-05-05","file_type":"4"}}
+                    ]}}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type","application/xml").withBody("""
+                    <ownershipDocument>
+                      <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerName>Cook Timothy</rptOwnerName></reportingOwnerId></reportingOwner>
+                      <nonDerivativeTable><nonDerivativeTransaction>
+                        <transactionDate><value>2025-05-05</value></transactionDate>
+                        <transactionCoding><transactionCode>G</transactionCode></transactionCoding>
+                        <transactionAmounts>
+                          <transactionShares><value>1000</value></transactionShares>
+                        </transactionAmounts>
+                      </nonDerivativeTransaction></nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis);
+        List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
+        assertThat(tx).hasSize(1);
+        Form4Transaction t = tx.get(0);
+        assertThat(t.price()).isNull();
+        assertThat(t.dollarValue()).isEqualByComparingTo("0"); // missing price still yields 0, unchanged
+        assertThat(t.sharesOwnedFollowing()).isNull();
+        assertThat(t.aff10b5One()).isNull();
+        assertThat(t.filerCik()).isEmpty();
+    }
+
+    // An explicit unchecked 10b5-1 box must come back as FALSE — distinguishable from the
+    // absent-element null above.
+    @Test void form4ExplicitUncheckedAff10b5OneIsFalse() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4,4/A"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000099:form4.xml","_source":{
+                         "ciks":["0000320193"],
+                         "display_names":["Cook Timothy (CIK 0000000001)"],
+                         "file_date":"2025-05-05","file_type":"4"}}
+                    ]}}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type","application/xml").withBody("""
+                    <ownershipDocument>
+                      <aff10b5One>false</aff10b5One>
+                      <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerName>Cook Timothy</rptOwnerName></reportingOwnerId></reportingOwner>
+                      <nonDerivativeTable><nonDerivativeTransaction>
+                        <transactionDate><value>2025-05-05</value></transactionDate>
+                        <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                        <transactionAmounts>
+                          <transactionShares><value>1000</value></transactionShares>
+                          <transactionPricePerShare><value>190.00</value></transactionPricePerShare>
+                        </transactionAmounts>
+                      </nonDerivativeTransaction></nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis);
+        List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
+        assertThat(tx).hasSize(1);
+        assertThat(tx.get(0).aff10b5One()).isFalse();
+    }
+
+    // form4TransactionsByCik must pass the efts `ciks` entity filter and parse identically to the
+    // market-wide variant (same pipeline).
+    @Test void form4TransactionsByCikFiltersOnEftsCiksParam() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("ciks", equalTo("0000320193"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000099:form4.xml","_source":{
+                         "ciks":["0000320193"],
+                         "display_names":["Cook Timothy (CIK 0000000001)"],
+                         "file_date":"2025-05-05","file_type":"4"}}
+                    ]}}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type","application/xml").withBody("""
+                    <ownershipDocument>
+                      <aff10b5One>0</aff10b5One>
+                      <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerCik>0001214156</rptOwnerCik>
+                        <rptOwnerName>Cook Timothy</rptOwnerName></reportingOwnerId></reportingOwner>
+                      <nonDerivativeTable><nonDerivativeTransaction>
+                        <transactionDate><value>2025-05-05</value></transactionDate>
+                        <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                        <transactionAmounts>
+                          <transactionShares><value>1000</value></transactionShares>
+                          <transactionPricePerShare><value>190.00</value></transactionPricePerShare>
+                        </transactionAmounts>
+                        <postTransactionAmounts>
+                          <sharesOwnedFollowingTransaction><value>2000</value></sharesOwnedFollowingTransaction>
+                        </postTransactionAmounts>
+                      </nonDerivativeTransaction></nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis);
+        EdgarSearchService.Form4Result result =
+                s.form4TransactionsByCik("0000320193", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
+        assertThat(result.transactions()).hasSize(1);
+        Form4Transaction t = result.transactions().get(0);
+        assertThat(t.ticker()).isEqualTo("AAPL");
+        assertThat(t.filerCik()).isEqualTo("0001214156");
+        assertThat(t.sharesOwnedFollowing()).isEqualByComparingTo("2000");
+        assertThat(t.aff10b5One()).isFalse();
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withQueryParam("ciks", equalTo("0000320193")));
+    }
+
+    // The market-wide variant must NOT send an entity filter — and the two variants must not
+    // share a cache entry.
+    @Test void marketWideForm4SendsNoCiksParam() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4,4/A"))
+                .willReturn(okJson("{\"hits\":{\"hits\":[]}}")));
+        EdgarSearchService s = svc();
+        s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
+        s.form4TransactionsByCik("0000320193", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withoutQueryParam("ciks"));
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withQueryParam("ciks", equalTo("0000320193")));
+    }
+
+    // Truncation on the LIMIT path (a): a multi-transaction filing fills the limit before the
+    // hit list is exhausted — the remaining hit is never fetched and the result MUST be marked
+    // truncated (a consumer must never mistake the cut-off window for the complete history).
+    @Test void form4LimitBreakWithHitsRemainingMarksTruncated() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4,4/A"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000001:f1.xml","_source":{"ciks":["1"],"display_names":["A"],"file_date":"2025-05-01","file_type":"4"}},
+                      {"_id":"0000320193-25-000002:f2.xml","_source":{"ciks":["1"],"display_names":["B"],"file_date":"2025-05-02","file_type":"4"}}
+                    ]}}
+                    """)));
+        // f1 carries THREE transactions — with limit=3 the loop breaks before ever fetching f2.
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/1/000032019325000001/f1.xml"))
+                .willReturn(aResponse().withHeader("Content-Type","application/xml").withBody("""
+                    <ownershipDocument>
+                      <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerName>X</rptOwnerName></reportingOwnerId></reportingOwner>
+                      <nonDerivativeTable>
+                        <nonDerivativeTransaction>
+                          <transactionDate><value>2025-05-01</value></transactionDate>
+                          <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                          <transactionAmounts><transactionShares><value>1</value></transactionShares>
+                            <transactionPricePerShare><value>1</value></transactionPricePerShare></transactionAmounts>
+                        </nonDerivativeTransaction>
+                        <nonDerivativeTransaction>
+                          <transactionDate><value>2025-05-01</value></transactionDate>
+                          <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                          <transactionAmounts><transactionShares><value>2</value></transactionShares>
+                            <transactionPricePerShare><value>1</value></transactionPricePerShare></transactionAmounts>
+                        </nonDerivativeTransaction>
+                        <nonDerivativeTransaction>
+                          <transactionDate><value>2025-05-01</value></transactionDate>
+                          <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                          <transactionAmounts><transactionShares><value>3</value></transactionShares>
+                            <transactionPricePerShare><value>1</value></transactionPricePerShare></transactionAmounts>
+                        </nonDerivativeTransaction>
+                      </nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis);
+        EdgarSearchService.Form4Result result =
+                s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 3);
+        assertThat(result.transactions()).hasSize(3);
+        assertThat(result.truncated()).isTrue();
+        // hits.size()=2 < limit=3, so path (b) does not apply — this asserts the limit-break path.
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/Archives/edgar/data/1/000032019325000002/f2.xml")));
+    }
+
+    // Truncation on the LIMIT path (b): the search returned a full limit-sized hit list — the
+    // search itself was cut, more filings may exist, so the result is truncated even though every
+    // fetched filing was parsed to completion.
+    @Test void form4ExactlyLimitSizedHitListMarksTruncated() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4,4/A"))
+                .willReturn(okJson("""
+                    {"hits":{"total":{"value":50},"hits":[
+                      {"_id":"0000320193-25-000001:f1.xml","_source":{"ciks":["1"],"display_names":["A"],"file_date":"2025-05-01","file_type":"4"}}
+                    ]}}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/1/000032019325000001/f1.xml"))
+                .willReturn(aResponse().withHeader("Content-Type","application/xml").withBody("""
+                    <ownershipDocument>
+                      <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerName>X</rptOwnerName></reportingOwnerId></reportingOwner>
+                      <nonDerivativeTable><nonDerivativeTransaction>
+                        <transactionDate><value>2025-05-01</value></transactionDate>
+                        <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                        <transactionAmounts><transactionShares><value>1</value></transactionShares>
+                          <transactionPricePerShare><value>1</value></transactionPricePerShare></transactionAmounts>
+                      </nonDerivativeTransaction></nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis);
+        EdgarSearchService.Form4Result result =
+                s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1);
+        assertThat(result.transactions()).hasSize(1);
+        assertThat(result.truncated()).isTrue();
+    }
+
+    // Control: fewer hits than the limit and no deadline → truncated stays false.
+    @Test void form4UnderLimitIsNotTruncated() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4,4/A"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000001:f1.xml","_source":{"ciks":["1"],"display_names":["A"],"file_date":"2025-05-01","file_type":"4"}}
+                    ]}}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/1/000032019325000001/f1.xml"))
+                .willReturn(aResponse().withHeader("Content-Type","application/xml").withBody("""
+                    <ownershipDocument>
+                      <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerName>X</rptOwnerName></reportingOwnerId></reportingOwner>
+                      <nonDerivativeTable><nonDerivativeTransaction>
+                        <transactionDate><value>2025-05-01</value></transactionDate>
+                        <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                        <transactionAmounts><transactionShares><value>1</value></transactionShares>
+                          <transactionPricePerShare><value>1</value></transactionPricePerShare></transactionAmounts>
+                      </nonDerivativeTransaction></nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis);
+        EdgarSearchService.Form4Result result =
+                s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
+        assertThat(result.transactions()).hasSize(1);
+        assertThat(result.truncated()).isFalse();
+    }
+
+    // Fail-soft price + per-row sharesOwnedFollowing + garbage 10b5-1 value: a footnote-only or
+    // empty-<value/> transactionPricePerShare yields price=null/dollarValue=0 but KEEPS the
+    // transaction (intentional change — the old code skipped the whole filing on an unparsable
+    // price); each row keeps its own sharesOwnedFollowing (none bleeds into the row without one);
+    // a garbage aff10b5One value degrades to null (unknown), not false.
+    @Test void form4UnparsablePricePerRowOwnedAndGarbageFlagDegradeGracefully() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4,4/A"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000001:f1.xml","_source":{"ciks":["1"],"display_names":["A"],"file_date":"2025-05-06","file_type":"4"}}
+                    ]}}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/1/000032019325000001/f1.xml"))
+                .willReturn(aResponse().withHeader("Content-Type","application/xml").withBody("""
+                    <ownershipDocument>
+                      <aff10b5One>maybe</aff10b5One>
+                      <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerName>X</rptOwnerName></reportingOwnerId></reportingOwner>
+                      <nonDerivativeTable>
+                        <nonDerivativeTransaction>
+                          <transactionDate><value>2025-05-05</value></transactionDate>
+                          <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                          <transactionAmounts>
+                            <transactionShares><value>100</value></transactionShares>
+                            <transactionPricePerShare><footnoteId id="F1"/></transactionPricePerShare>
+                          </transactionAmounts>
+                          <postTransactionAmounts>
+                            <sharesOwnedFollowingTransaction><value>1100</value></sharesOwnedFollowingTransaction>
+                          </postTransactionAmounts>
+                        </nonDerivativeTransaction>
+                        <nonDerivativeTransaction>
+                          <transactionDate><value>2025-05-06</value></transactionDate>
+                          <transactionCoding><transactionCode>S</transactionCode></transactionCoding>
+                          <transactionAmounts>
+                            <transactionShares><value>50</value></transactionShares>
+                            <transactionPricePerShare><value></value></transactionPricePerShare>
+                          </transactionAmounts>
+                          <postTransactionAmounts>
+                            <sharesOwnedFollowingTransaction><value>1050</value></sharesOwnedFollowingTransaction>
+                          </postTransactionAmounts>
+                        </nonDerivativeTransaction>
+                        <nonDerivativeTransaction>
+                          <transactionDate><value>2025-05-07</value></transactionDate>
+                          <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                          <transactionAmounts>
+                            <transactionShares><value>10</value></transactionShares>
+                            <transactionPricePerShare><value>200.00</value></transactionPricePerShare>
+                          </transactionAmounts>
+                        </nonDerivativeTransaction>
+                      </nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis);
+        List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
+        assertThat(tx).hasSize(3);
+        // row 1: footnote-only price
+        assertThat(tx.get(0).price()).isNull();
+        assertThat(tx.get(0).dollarValue()).isEqualByComparingTo("0");
+        assertThat(tx.get(0).sharesOwnedFollowing()).isEqualByComparingTo("1100");
+        // row 2: empty <value/> price; own sharesOwnedFollowing, not row 1's
+        assertThat(tx.get(1).price()).isNull();
+        assertThat(tx.get(1).dollarValue()).isEqualByComparingTo("0");
+        assertThat(tx.get(1).sharesOwnedFollowing()).isEqualByComparingTo("1050");
+        // row 3: normal price; NO postTransactionAmounts → null (no bleed from rows 1/2)
+        assertThat(tx.get(2).price()).isEqualByComparingTo("200.00");
+        assertThat(tx.get(2).dollarValue()).isEqualByComparingTo("2000");
+        assertThat(tx.get(2).sharesOwnedFollowing()).isNull();
+        // garbage checkbox value → unknown (null), never coerced to a boolean
+        assertThat(tx).allSatisfy(t -> assertThat(t.aff10b5One()).isNull());
     }
 
     // M-F9: transaction date outside [from,to] must be filtered even though the filing itself
