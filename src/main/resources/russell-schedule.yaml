@@ -1,0 +1,24 @@
+# FTSE Russell US annual reconstitution schedule.
+#
+# Config-driven (authoritative), NOT scraped. Each entry pins one year's key dates so the
+# Russell index-change provider knows which dated PDFs to fetch and which announcement/effective
+# dates to emit. A year absent here is computed from the published cadence
+# (effectiveDate = last Friday of June, preliminaryDate = 5 weeks earlier) — the computed values
+# reproduce these observed dates exactly, so the file only guards against a future cadence change.
+#
+#   rankDay          last business day of April (ranking snapshot)
+#   preliminaryDate  preliminary additions/deletions lists published (~late May) — announcement anchor
+#   effectiveDate    reconstitution effective (last Friday of June) — appears in final-list PDF names
+schedule:
+  2024:
+    rankDay: "2024-04-30"
+    preliminaryDate: "2024-05-24"
+    effectiveDate: "2024-06-28"
+  2025:
+    rankDay: "2025-04-30"
+    preliminaryDate: "2025-05-23"
+    effectiveDate: "2025-06-27"
+  2026:
+    rankDay: "2026-04-30"
+    preliminaryDate: "2026-05-22"
+    effectiveDate: "2026-06-26"

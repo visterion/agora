@@ -15,7 +15,9 @@ external market-data and broker APIs over HTTPS.
      ┌──────────────┐   HTTPS   ┌─────────────────────────────┐
      │    Agora     │──────────▶│ Market data: Finnhub,       │
      │  (this repo) │           │ Twelve Data, Yahoo, Alpaca, │
-     │              │           │ Saxo, SEC EDGAR, Wikipedia  │
+     │              │           │ Saxo, SEC EDGAR, Wikipedia, │
+     │              │           │ S&P press, FTSE Russell,    │
+     │              │           │ iShares                     │
      │              │──────────▶│ Brokers: Alpaca, Saxo       │
      └──────────────┘           └─────────────────────────────┘
 ```

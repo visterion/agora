@@ -112,7 +112,7 @@ design spec:
 
 ## Tool catalog
 
-33 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
+34 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
 webhook-only and require a trading token.
 
 ### Market data (`agora-data`)
@@ -129,6 +129,7 @@ webhook-only and require a trading token.
 | `get_analyst_estimates` | Analyst recommendation trend |
 | `get_earnings_estimates` | Reported EPS vs. estimate per period with the raw surprise delta (actual − estimate) — raw passthrough, no scoring |
 | `get_index_constituents` | Constituents of a stock index (default S&P 500) |
+| `get_index_constituent_changes` | Pending and recent constituent changes for a stock index (add/remove, announcement + effective dates). Aggregates ordered providers: `sp_press` (S&P press-release RSS, for `sp500`) and `russell_reconstitution` (FTSE Russell reconstitution PDFs + iShares IWB/IWM bucket resolution, for `russell1000`/`russell2000`) |
 
 ### Fundamentals & SEC filings (`agora-data`)
 
@@ -242,6 +243,7 @@ provider.
 | Filings / XBRL concepts / EPS / Form-4 | SEC EDGAR |
 | Earnings calendar | Finnhub, Yahoo |
 | Index constituents | Wikipedia (S&P 500) |
+| Index constituent changes | S&P Dow Jones Indices press-release RSS (S&P 500 add/remove); FTSE Russell reconstitution PDFs + iShares IWB/IWM holdings for the Russell 1000/2000 bucket split |
 | Execution | Alpaca and Saxo, selected per named connection (`alpaca-paper`, `alpaca-live`, `depot-1`, `saxo-live`) |
 
 Responses are cached with per-family TTLs (prices 120s, news 15m, fundamentals 6h,
