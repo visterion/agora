@@ -112,7 +112,7 @@ design spec:
 
 ## Tool catalog
 
-34 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
+35 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
 webhook-only and require a trading token.
 
 ### Market data (`agora-data`)
@@ -139,6 +139,7 @@ webhook-only and require a trading token.
 | `search_filings` | SEC EDGAR full-text search by form type(s) and date window |
 | `get_filing_text` | Fetch a SEC filing's primary document as cleaned text, extracting the summary/term-sheet section when present (fallback: a leading text window), truncated to ~24k chars. Input `url` — an archive document URL as returned by `search_filings`. Neutral and form-agnostic. Output `{ text, section_found, truncated, char_count, source_url }`. SSRF-guarded: only URLs under the configured SEC archive base are fetched. |
 | `get_company_concept` | Full reported history of any XBRL company-concept (e.g. `us-gaap/Assets`) |
+| `get_company_facts` | Several XBRL `us-gaap` company-concepts for one company in a single upstream fetch. Input `tags` (array) selects the concepts; returns per requested tag its `unit` and per-period `datapoints` (same shape as `get_company_concept`) under `facts`. Cheaper than N `get_company_concept` calls for one company |
 | `get_eps_history` | Reported quarterly EPS history (by symbol or CIK) |
 | `get_form4_transactions` | Non-derivative SEC Form-4 transactions (beneficial-ownership changes) filed market-wide in a date window. Per transaction: `ticker`, `filerName`/`filerRole`/`filerCik`, `transactionDate`, `code`, `acquiredDisposedCode`, `form` (4 vs. 4/A), `shares`, `price`, `dollarValue`, `sharesOwnedFollowing` (post-transaction holdings; null when the filing omits it), `aff10b5One` (the filing-level Rule 10b5-1(c) checkbox — tri-state: `true`/`false` on filings since 2023, `null` = "unknown" on older filings, never coerced to `false`) |
 | `get_form4_owner_history` | Multi-year Form-4 transaction history for ONE company (by symbol or CIK; `years` back from today, default 3, max 5), grouped per reporting owner (`name`, `cik`, `role` on the owner object — no per-transaction ticker/filer fields). Transactions per owner are newest-first, each with `transactionDate`, `code`, `acquiredDisposedCode`, `form`, `shares`, `price`, `dollarValue`, `sharesOwnedFollowing`, `aff10b5One` (same semantics as `get_form4_transactions`). Long histories can hit the EDGAR fetch deadline or the transaction `limit` — `truncated: true` marks a partial result |
