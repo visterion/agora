@@ -45,6 +45,23 @@
             <groupId>org.yaml</groupId>
             <artifactId>snakeyaml</artifactId>
         </dependency>
+        <!-- Apache PDFBox — the one PDF text-extraction dependency (no JDK PDF parser exists).
+             Used to read FTSE Russell reconstitution PDFs into text for the Russell index-change
+             provider; the JDK has no PDF support and this is the only new dependency added here. -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.5</version>
+            <exclusions>
+                <!-- PDFBox pulls commons-logging transitively; exclude it so its logging resolves
+                     through Spring's commons-logging bridge (spring-jcl) rather than JCL's own
+                     runtime discovery. -->
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

@@ -97,6 +97,29 @@ agora:
       base-url: ${AGORA_DATA_WIKIPEDIA_BASE_URL:https://en.wikipedia.org}
       user-agent: ${AGORA_DATA_WIKIPEDIA_USER_AGENT:agora/1.0 (research)}
       sp500-page: ${AGORA_DATA_WIKIPEDIA_SP500_PAGE:List of S&P 500 companies}
+    sp-press:
+      # S&P Dow Jones Indices public press-release RSS feed (index constituent changes).
+      base-url: ${AGORA_DATA_SP_PRESS_BASE_URL:https://press.spglobal.com}
+      feed-path: ${AGORA_DATA_SP_PRESS_FEED_PATH:/index.php?s=2429&l=100&pagetemplate=rss}
+      user-agent: ${AGORA_DATA_SP_PRESS_USER_AGENT:agora/1.0 (research)}
+      # Externalised title-classification regexes (comma-separated); prose is brittle, so these
+      # are tuned in config, not code. Must not contain a literal comma.
+      add-title-patterns: ${AGORA_DATA_SP_PRESS_ADD_TITLE_PATTERNS:(?i)^(.+?)\s+Set to Join S&P 500}
+      remove-title-patterns: ${AGORA_DATA_SP_PRESS_REMOVE_TITLE_PATTERNS:(?i)^(.+?)\s+(?:Set to be Removed|to be Removed) from S&P 500}
+    russell:
+      # FTSE Russell annual US reconstitution (Russell 1000/2000 constituent changes).
+      # Additions/deletions come from free, per-date-immutable LSEG PDFs; the R1000-vs-R2000
+      # bucket is resolved against the iShares IWB/IWM holdings CSVs (bot-walled from server IPs
+      # -> degrades to a default russell2000 bucket, by design).
+      lseg-base-url: ${AGORA_DATA_RUSSELL_LSEG_BASE_URL:https://www.lseg.com}
+      pdf-path-pattern: ${AGORA_DATA_RUSSELL_PDF_PATH_PATTERN:/content/dam/ftse-russell/en_us/documents/other/{list}-{date}.pdf}
+      ishares-base-url: ${AGORA_DATA_RUSSELL_ISHARES_BASE_URL:https://www.ishares.com}
+      iwb-path: ${AGORA_DATA_RUSSELL_IWB_PATH:/us/products/239707/ishares-russell-1000-etf/1521942788811.ajax?fileType=csv&fileName=IWB_holdings&dataType=fund}
+      iwm-path: ${AGORA_DATA_RUSSELL_IWM_PATH:/us/products/239710/ishares-russell-2000-etf/1467271812596.ajax?fileType=csv&fileName=IWM_holdings&dataType=fund}
+      user-agent: ${AGORA_DATA_RUSSELL_USER_AGENT:Mozilla/5.0 (compatible; agora/1.0; research)}
+      schedule-resource: ${AGORA_DATA_RUSSELL_SCHEDULE_RESOURCE:russell-schedule.yaml}
+      # Days after the effective date the reconstitution window stays "active" (changes still surfaced).
+      window-tail-days: ${AGORA_DATA_RUSSELL_WINDOW_TAIL_DAYS:14}
     intraday:
       interval: ${AGORA_DATA_INTRADAY_INTERVAL:5m}
       range: ${AGORA_DATA_INTRADAY_RANGE:1d}
@@ -115,6 +138,10 @@ agora:
         filings-seconds: ${AGORA_DATA_CACHE_TTL_FILINGS:3600}
         constituents-seconds: ${AGORA_DATA_CACHE_TTL_CONSTITUENTS:86400}
         splits-seconds: ${AGORA_DATA_CACHE_TTL_SPLITS:21600}
+        sp-press-seconds: ${AGORA_DATA_CACHE_TTL_SP_PRESS:3600}                # RSS list (recent releases)
+        sp-press-detail-seconds: ${AGORA_DATA_CACHE_TTL_SP_PRESS_DETAIL:604800}  # release bodies (immutable)
+        russell-pdf-seconds: ${AGORA_DATA_CACHE_TTL_RUSSELL_PDF:604800}         # reconstitution PDFs (immutable per date)
+        russell-ishares-seconds: ${AGORA_DATA_CACHE_TTL_RUSSELL_ISHARES:86400}  # iShares holdings (drift daily)
   research:
     atr-period: ${AGORA_RESEARCH_ATR_PERIOD:22}
     atr-multiple: ${AGORA_RESEARCH_ATR_MULTIPLE:3.0}
