@@ -53,6 +53,7 @@ class McpStreamableHttpSmokeIT {
                     "get_company_news", "get_fundamentals", "get_analyst_estimates", "get_earnings_calendar",
                     "get_filings", "get_eps_history", "get_index_constituents", "get_index_constituent_changes",
                     "search_filings", "get_form4_transactions", "get_form4_owner_history", "get_company_concept",
+                    "get_company_facts",
                     "get_indicators", "list_indicators", "get_r_framework");
 
             // The granular indicator tools are gone — replaced by the generic catalog
