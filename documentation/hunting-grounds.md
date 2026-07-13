@@ -22,6 +22,7 @@ Agora's data tools resolve through provider plugins with fallback, so consumers 
 
 | Domain | Provider | Coverage | Semantics | Notes |
 |---|---|---|---|---|
+| Company fundamentals — screener metrics | **US:** Finnhub / **Non-US (suffixed):** computed from SEC EDGAR + Yahoo concepts, OHLC, quote | US (Finnhub's universe), non-US (suffixed symbols like SAP.DE, 7203.T, 0700.HK) | Metrics in reporting currency (cap/P-B/P-E) or quote currency (price-relative). Config-gated by `agora.fundamentals.global-metrics-enabled` (default off); fails gracefully if data unavailable. | Accessed via `get_fundamentals` (global routing) |
 | Company fundamentals — raw line items | **US:** SEC EDGAR (XBRL `us-gaap`) / **Non-US:** Yahoo `fundamentals-timeseries` | **US:** COMPLETE (all reported concepts) / **Non-US:** SPARSE (curated subset) | Reporting currency (may differ from listing currency) | Non-US is free, unofficial, and fail-soft; EODHD planned as future reliability upgrade |
 | SEC filings (by symbol/CIK), filterable by form | SEC EDGAR | US-listed and foreign-filers (form 20-F, 20-F/A, 40-F) | Raw EDGAR archive | Public filings only; Form-4 available via separate tool |
 | SEC filing full text (primary doc extraction) | SEC EDGAR | US-listed and foreign-filers | Text extraction, summary/term-sheet section detection, ~24k char limit, SSRF-guarded | Passthrough for non-EDGAR forms |
