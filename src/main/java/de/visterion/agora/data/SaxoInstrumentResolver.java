@@ -13,8 +13,11 @@ import java.util.function.LongSupplier;
 public class SaxoInstrumentResolver implements InstrumentResolver {
 
     private static final org.slf4j.Logger log = LoggerFactory.getLogger(SaxoInstrumentResolver.class);
-    static final Map<String, String> SUFFIX_TO_EXCHANGE = Map.of(
-            "DE", "FSE", "MI", "MIL", "TO", "TSE");     // Saxo ExchangeId (≠ MIC). Slice-1 verified set.
+    static final Map<String, String> SUFFIX_TO_EXCHANGE = Map.ofEntries(
+            Map.entry("DE", "FSE"),   Map.entry("MI", "MIL"),  Map.entry("TO", "TSE"),
+            Map.entry("L",  "LSE_SETS"), Map.entry("T", "TYO"), Map.entry("HK", "HKEX"),
+            Map.entry("PA", "PAR"),   Map.entry("AS", "AMS"),  Map.entry("SW", "SWX"),
+            Map.entry("AX", "ASX"));   // Saxo ExchangeId (≠ MIC), verified 2026-07-13 vs ref/v1/exchanges
     static final Set<String> SUFFIXES = SUFFIX_TO_EXCHANGE.keySet();
     private static final long TTL_MILLIS = 24 * 3600 * 1000L;
     private static final long NEGATIVE_TTL_MILLIS = 60 * 1000L;

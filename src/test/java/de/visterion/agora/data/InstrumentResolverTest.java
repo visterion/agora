@@ -182,4 +182,17 @@ class InstrumentResolverTest {
         // - 1 time in second resolve (succeeded)
         wm.verify(3, getRequestedFor(urlPathEqualTo("/ref/v1/instruments/details/1126/Stock")));
     }
+
+    @Test void londonSuffixIsMappedAndResolvesViaLseSets() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("ExchangeId", equalTo("LSE_SETS"))
+                .willReturn(okJson("""
+                  {"Data":[{"AssetType":"Stock","CurrencyCode":"GBP","ExchangeId":"LSE_SETS","Identifier":899,"Symbol":"VOD:xlon"}]}""")));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/899/Stock")).willReturn(okJson("""
+            {"Uic":899,"ExchangeId":"LSE_SETS","CurrencyCode":"GBP","CountryCode":"GB","Mic":"XLON","PriceToContractFactor":0.01}""")));
+        Instrument i = resolver(true).resolve("VOD.L");
+        assertThat(i.uic()).isEqualTo(899L);
+        assertThat(i.priceToContractFactor()).isEqualTo(0.01);
+        assertThat(i.currencyCode()).isEqualTo("GBP");
+    }
 }
