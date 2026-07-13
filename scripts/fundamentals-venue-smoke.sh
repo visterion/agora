@@ -8,7 +8,7 @@
 #   concepts with source:"SPARSE" and correct unit (EUR/JPY/CNY)
 # - get_fundamental_score: AAPL unchanged; non-US returns real score with criteriaAvailable > 0
 
-set -e
+set -u
 
 # Extract the first token from AGORA_AUTH_TOKENS
 TOKEN=$(grep -E '^AGORA_AUTH_TOKENS=' /root/agora-deploy/.env | cut -d= -f2- | tr -d ' "' | cut -d, -f1)
