@@ -2,7 +2,7 @@ package de.visterion.agora.tools;
 
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.fetch.finnhub.Fundamentals;
-import de.visterion.agora.fetch.finnhub.FundamentalsService;
+import de.visterion.agora.research.fundamentals.GlobalMetricsRouter;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.stereotype.Component;
@@ -13,10 +13,10 @@ import tools.jackson.databind.node.ObjectNode;
 @Component
 public class GetFundamentalsTool implements AgoraTool {
 
-    private final FundamentalsService service;
+    private final GlobalMetricsRouter router;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public GetFundamentalsTool(FundamentalsService service) { this.service = service; }
+    public GetFundamentalsTool(GlobalMetricsRouter router) { this.router = router; }
 
     public String name() { return "get_fundamentals"; }
     public String description() { return "Fundamental metrics for a symbol."; }
@@ -34,7 +34,7 @@ public class GetFundamentalsTool implements AgoraTool {
         String symbol = args == null ? null : args.path("symbol").asString(null);
         if (symbol == null || symbol.isBlank()) return ToolResult.unavailable("no symbol provided");
         try {
-            Fundamentals f = service.fundamentals(symbol);
+            Fundamentals f = router.fundamentals(symbol);
             ObjectNode out = mapper.createObjectNode();
             out.put("symbol", f.symbol());
             out.set("metrics", f.metrics().deepCopy());

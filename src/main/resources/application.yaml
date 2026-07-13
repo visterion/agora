@@ -160,6 +160,7 @@ agora:
     r-multiples: ${AGORA_RESEARCH_R_MULTIPLES:1,2,3}
   fundamentals:
     non-us-suffixes: ${AGORA_FUNDAMENTALS_NON_US_SUFFIXES:DE,MI,TO,L,T,HK,PA,AS,SW,AX,ST,CO,OL,HE,MC,BR,LS,VI,IR,NZ}
+    global-metrics-enabled: ${AGORA_FUNDAMENTALS_GLOBAL_METRICS_ENABLED:false}
 
 management:
   endpoints:
