@@ -88,7 +88,7 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "saxo infoprice has no Mid for " + label, null);
         }
-        BigDecimal factor = BigDecimal.valueOf(inst.priceToContractFactor());
+        BigDecimal factor = factorOf(inst);
         BigDecimal price = rawMid.multiply(factor);
         String currency = inst.currencyCode() != null && !inst.currencyCode().isBlank()
                 ? inst.currencyCode()
@@ -118,7 +118,7 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
         String bearer = requireBearer();
         long uic = inst.uic();
         String label = inst.rawInput();
-        BigDecimal factor = BigDecimal.valueOf(inst.priceToContractFactor());
+        BigDecimal factor = factorOf(inst);
         String accountKey = access.accountKey().orElseThrow(() -> new MarketDataException(
                 MarketDataException.Kind.UNAVAILABLE, "saxo: no account key available", null));
         int count = Math.min(days, 1200);   // Saxo chart max sample count
@@ -185,6 +185,11 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
     private String requireBearer() {
         return access.bearer().orElseThrow(() -> new MarketDataException(
                 MarketDataException.Kind.UNAVAILABLE, "saxo: no active session", null));
+    }
+
+    private static BigDecimal factorOf(Instrument inst) {
+        double f = inst.priceToContractFactor();
+        return f == 1.0 ? BigDecimal.ONE : BigDecimal.valueOf(f);
     }
 
     static BigDecimal bd(JsonNode node) {
