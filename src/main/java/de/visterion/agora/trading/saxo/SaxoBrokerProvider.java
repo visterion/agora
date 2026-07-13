@@ -1,6 +1,8 @@
 package de.visterion.agora.trading.saxo;
 
 import de.visterion.agora.trading.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -26,6 +28,8 @@ import java.util.function.Supplier;
  * a rejected order).
  */
 public class SaxoBrokerProvider implements BrokerProvider {
+
+    private static final Logger log = LoggerFactory.getLogger(SaxoBrokerProvider.class);
 
     static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -212,21 +216,21 @@ public class SaxoBrokerProvider implements BrokerProvider {
         boolean limit = req.limitPrice() != null;
         boolean slLimit = req.stopLossLimit() != null;
 
-        ObjectNode body = MAPPER.createObjectNode();
-        body.put("Uic", ri.uic());
-        body.put("AssetType", ri.assetType());
-        body.put("BuySell", side);
-        body.put("Amount", req.qty());
-        body.put("OrderType", limit ? "Limit" : "Market");
-        if (limit) body.put("OrderPrice", req.limitPrice());
-        body.put("ManualOrder", false);
-        body.put("AccountKey", ctx.accountKey());
-        if (req.clientRef() != null) body.put("ExternalReference", req.clientRef());
+        ObjectNode entryFields = MAPPER.createObjectNode();
+        entryFields.put("Uic", ri.uic());
+        entryFields.put("AssetType", ri.assetType());
+        entryFields.put("BuySell", side);
+        entryFields.put("Amount", req.qty());
+        entryFields.put("OrderType", limit ? "Limit" : "Market");
+        if (limit) entryFields.put("OrderPrice", req.limitPrice());
+        entryFields.put("ManualOrder", false);
+        entryFields.put("AccountKey", ctx.accountKey());
+        if (req.clientRef() != null) entryFields.put("ExternalReference", req.clientRef());
         // 🔶 Saxo semantics: a Market entry order defaults to DayOrder (Saxo rejects/normalizes
         // GoodTillCancel on Market orders — a market order that doesn't fill same-session has
         // nothing left to "keep good"). Limit entries keep the GoodTillCancel default. An
         // explicit timeInForce always wins over either default.
-        body.set("OrderDuration", durationNode(mapTif(req.timeInForce(), limit ? "GoodTillCancel" : "DayOrder")));
+        entryFields.set("OrderDuration", durationNode(mapTif(req.timeInForce(), limit ? "GoodTillCancel" : "DayOrder")));
 
         ObjectNode takeProfit = MAPPER.createObjectNode();
         takeProfit.put("OrderType", "Limit");
@@ -247,10 +251,25 @@ public class SaxoBrokerProvider implements BrokerProvider {
         stopLoss.put("AccountKey", ctx.accountKey());
         stopLoss.set("OrderDuration", durationNode("GoodTillCancel"));
 
+        // The full entry+legs body doubles as the precheck body (Saxo's precheck endpoint
+        // takes the exact same shape as a real placement) — built once, reused for whichever
+        // branch below actually needs it.
+        ObjectNode fullBody = entryFields.deepCopy();
         var children = MAPPER.createArrayNode();
         children.add(takeProfit);
         children.add(stopLoss);
-        body.set("Orders", children);
+        fullBody.set("Orders", children);
+
+        Precheck pc = precheckBracket(fullBody, UUID.randomUUID().toString());
+        switch (pc.kind()) {
+            case REJECTED:
+                return OrderResult.rejected(pc.rejectMessage(), pc.rejectCode());
+            case SL_TOO_FAR:
+                return submitFarStopFallback(req, ri, ctx, opposite, entryFields);
+            case CLEAN:
+            default:
+                break;
+        }
 
         String requestId = req.clientRef() != null ? req.clientRef() : UUID.randomUUID().toString();
 
@@ -259,7 +278,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .header("Authorization", bearer())
                     .header("X-Request-ID", requestId)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .body(body)
+                    .body(fullBody)
                     .retrieve().body(JsonNode.class);
             String orderId = resp == null ? null : resp.path("OrderId").asString(null);
             return withLegIds(orderId, req.clientRef());
@@ -269,6 +288,95 @@ public class SaxoBrokerProvider implements BrokerProvider {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "saxo submitBracket failed: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Far-stop fallback (Saxo precheck classified {@link PrecheckOutcome#SL_TOO_FAR}): Saxo's
+     * proximity band rejects a bracket whose stop-loss sits outside it, so instead of a single
+     * bracket POST this places the entry alone, then a standalone {@code StopIfTraded} at the
+     * requested stop level — no take-profit leg (Dracul exits such positions via its own
+     * trailing chandelier, so a lone entry/stop needs no TP). Two distinct {@code X-Request-ID}s
+     * are used (Saxo dedupes by that header) since these are two independent order placements.
+     *
+     * <p><b>Fail-safe (non-negotiable):</b> once the entry is placed, this position must never
+     * be left without a protective stop. If the standalone stop POST fails for any reason
+     * (throws, or the response carries no usable {@code OrderId}), the entry is canceled; if
+     * the cancel itself 404s (the entry already filled before the cancel reached it), the
+     * resulting position is flattened instead. Either way the fallback reports
+     * {@code rejected("STOP_PLACEMENT_FAILED")} rather than an accepted-but-unprotected result.
+     */
+    private OrderResult submitFarStopFallback(BracketOrderRequest req, SaxoInstrumentResolver.ResolvedInstrument ri,
+                                                AccountContext ctx, String opposite, ObjectNode entryBody) {
+        String entryId;
+        try {
+            JsonNode resp = client.post().uri("/trade/v2/orders")
+                    .header("Authorization", bearer())
+                    .header("X-Request-ID", req.clientRef() != null ? req.clientRef() : UUID.randomUUID().toString())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(entryBody)
+                    .retrieve().body(JsonNode.class);
+            entryId = resp == null ? null : resp.path("OrderId").asString(null);
+        } catch (RestClientResponseException e) {
+            // Nothing has been placed yet — safe to report as a plain reject, same as the
+            // CLEAN path's error mapping.
+            return writeError(e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo submitBracket (far-stop entry) failed: " + e.getMessage(), e);
+        }
+
+        ObjectNode standaloneStop = MAPPER.createObjectNode();
+        standaloneStop.put("Uic", ri.uic());
+        standaloneStop.put("AssetType", ri.assetType());
+        standaloneStop.put("BuySell", opposite);
+        standaloneStop.put("Amount", req.qty());
+        standaloneStop.put("OrderType", "StopIfTraded");
+        standaloneStop.put("OrderPrice", req.stopLossStop());
+        standaloneStop.put("ManualOrder", false);
+        standaloneStop.put("AccountKey", ctx.accountKey());
+        standaloneStop.set("OrderDuration", durationNode("GoodTillCancel"));
+
+        String stopId = null;
+        Exception stopFailure = null;
+        try {
+            JsonNode resp = client.post().uri("/trade/v2/orders")
+                    .header("Authorization", bearer())
+                    .header("X-Request-ID", UUID.randomUUID().toString())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(standaloneStop)
+                    .retrieve().body(JsonNode.class);
+            stopId = resp == null ? null : resp.path("OrderId").asString(null);
+        } catch (Exception e) {
+            stopFailure = e;
+        }
+
+        if (stopId == null) {
+            return protectUnprotectedEntry(entryId, req.symbol(), stopFailure);
+        }
+
+        log.info("saxo far-stop fallback: entry {} + standalone stop {} for {}", entryId, stopId, req.symbol());
+        return OrderResult.accepted(entryId, req.clientRef(), "accepted", stopId, null);
+    }
+
+    /**
+     * Mandatory fail-safe for {@link #submitFarStopFallback}: an entry must never be left
+     * without a protective stop. Cancels the (presumably still-unfilled) entry; if the cancel
+     * itself comes back {@code NOT_FOUND} (the entry filled before the cancel reached it, so
+     * there's a live position instead of a working order), flattens that position instead.
+     */
+    private OrderResult protectUnprotectedEntry(String entryId, String symbol, Exception stopFailure) {
+        try {
+            cancel(entryId);
+        } catch (BrokerException e) {
+            if (e.kind() == BrokerException.Kind.NOT_FOUND) {
+                flatten(symbol, BigDecimal.ONE, null);
+            } else {
+                log.warn("saxo far-stop fail-safe: cancel of unprotected entry {} failed ({}); "
+                        + "position may still need manual review", entryId, e.getMessage());
+            }
+        }
+        String cause = stopFailure == null ? "no OrderId in response" : stopFailure.getMessage();
+        return OrderResult.rejected("standalone stop placement failed: " + cause, "STOP_PLACEMENT_FAILED");
     }
 
     // ---- precheck (standalone far-stop fallback classifier; wired in by a later task) ----
