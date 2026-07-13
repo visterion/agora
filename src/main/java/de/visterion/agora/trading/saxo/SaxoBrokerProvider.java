@@ -130,6 +130,17 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 .queryParam("ClientKey", "{ck}")
                 .queryParam("AccountKey", "{ak}")
                 .build(ctx.clientKey(), ctx.accountKey()));
+        // TEMP diagnostic (branch diag-saxo-balances-fields): dump the raw balance fields so we
+        // can pick the one matching Saxo's app "Barmittel" (available cash) — CashBalance
+        // over-counts for cash-funded positions. REVERT once the correct cash field is confirmed.
+        log.info("saxo balances diag [{}]: CashBalance={} CashAvailableForTrading={} "
+                        + "MarginAvailableForTrading={} NonMarginPositionsValue={} TotalValue={} "
+                        + "UnrealizedMarginProfitLoss={} InitialMargin={} MarginUsedByCurrentPositions={}",
+                ctx.accountKey(),
+                n.path("CashBalance"), n.path("CashAvailableForTrading"),
+                n.path("MarginAvailableForTrading"), n.path("NonMarginPositionsValue"),
+                n.path("TotalValue"), n.path("UnrealizedMarginProfitLoss"),
+                n.path("InitialMargin"), n.path("MarginUsedByCurrentPositions"));
         return new Account(ctx.accountKey(), bd(n.path("TotalValue")),
                 bd(n.path("MarginAvailableForTrading")), bd(n.path("CashBalance")),
                 n.path("Currency").asString("USD"), "ACTIVE");
