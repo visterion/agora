@@ -87,4 +87,22 @@ class InstrumentResolverTest {
         r.resolve("SAP.DE");
         wm.verify(2, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));
     }
+
+    static final String ISIN_SEARCH = """
+        {"Data":[
+          {"AssetType":"Stock","CurrencyCode":"GBp","ExchangeId":"LSE_INTL","Identifier":9001,"Symbol":"SAP:xlon"},
+          {"AssetType":"Stock","CurrencyCode":"EUR","ExchangeId":"FSE","Identifier":1126,"Symbol":"SAPG:xetr"}
+        ]}""";
+
+    @Test void isinPicksDomesticVenueAndEnrichesFromDetails() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("Keywords", equalTo("DE0007164600")).willReturn(okJson(ISIN_SEARCH)));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126")).willReturn(okJson("""
+            {"Uic":1126,"Isin":"DE0007164600","ExchangeId":"FSE","CurrencyCode":"EUR","CountryCode":"DE"}""")));
+        Instrument i = resolver(true).resolve("DE0007164600");
+        assertThat(i.uic()).isEqualTo(1126L);              // German ISIN → Xetra (EUR), not LSE (GBp)
+        assertThat(i.isin()).isEqualTo("DE0007164600");
+        assertThat(i.currencyCode()).isEqualTo("EUR");
+        assertThat(i.displaySymbol()).isEqualTo("DE0007164600");
+    }
 }
