@@ -362,7 +362,12 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * Mandatory fail-safe for {@link #submitFarStopFallback}: an entry must never be left
      * without a protective stop. Cancels the (presumably still-unfilled) entry; if the cancel
      * itself comes back {@code NOT_FOUND} (the entry filled before the cancel reached it, so
-     * there's a live position instead of a working order), flattens that position instead.
+     * there's a live position instead of a working order), flattens that position instead. Any
+     * other cancel failure (e.g. UNAVAILABLE on a 5xx/timeout) leaves the entry's state
+     * ambiguous — it may have filled — so this also falls through to a best-effort flatten as
+     * the last resort; a {@code NOT_FOUND} from that flatten (no position existed after all) is
+     * tolerated, but any further failure is escalated loudly since an unprotected position may
+     * now exist with nothing automated left to try.
      */
     private OrderResult protectUnprotectedEntry(String entryId, String symbol, Exception stopFailure) {
         try {
@@ -371,8 +376,20 @@ public class SaxoBrokerProvider implements BrokerProvider {
             if (e.kind() == BrokerException.Kind.NOT_FOUND) {
                 flatten(symbol, BigDecimal.ONE, null);
             } else {
-                log.warn("saxo far-stop fail-safe: cancel of unprotected entry {} failed ({}); "
-                        + "position may still need manual review", entryId, e.getMessage());
+                // Cancel failed for a reason other than "already gone" (e.g. UNAVAILABLE on a
+                // 5xx/timeout, or a non-404 rejection). The entry's state is now ambiguous — it
+                // may have filled — so fall through to a best-effort flatten as the last resort
+                // rather than leaving a possibly-live position with no protective stop.
+                try {
+                    flatten(symbol, BigDecimal.ONE, null);
+                } catch (BrokerException flattenFailure) {
+                    if (flattenFailure.kind() != BrokerException.Kind.NOT_FOUND) {
+                        log.error("saxo far-stop fail-safe: cancel of unprotected entry {} failed ({}) "
+                                + "AND last-resort flatten of {} also failed ({}); an unprotected "
+                                + "position may exist and needs manual review", entryId, e.getMessage(),
+                                symbol, flattenFailure.getMessage());
+                    }
+                }
             }
         }
         String cause = stopFailure == null ? "no OrderId in response" : stopFailure.getMessage();
