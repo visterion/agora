@@ -22,6 +22,7 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
     private final SaxoDataAccess access;
     private final TtlCache<String, Instrument> cache;
     private final TtlCache<String, Boolean> failureCache;
+    private final TtlCache<Long, tools.jackson.databind.JsonNode> detailsCache;
 
     @Autowired
     public SaxoInstrumentResolver(SaxoDataAccess access) { this(access, System::currentTimeMillis); }
@@ -30,6 +31,7 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
         this.access = access;
         this.cache = new TtlCache<>(TTL_MILLIS, 4096, nowMillis);
         this.failureCache = new TtlCache<>(NEGATIVE_TTL_MILLIS, 4096, nowMillis);
+        this.detailsCache = new TtlCache<>(TTL_MILLIS, 4096, nowMillis);
     }
 
     @Override
@@ -50,7 +52,8 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
 
     /** Saxo ref/v1 resolution — filled in Tasks 3 (suffix) and 4 (ISIN). */
     private Instrument lookup(String input, Instrument.InputKind kind) {
-        String bearer = access.bearer().orElseThrow();
+        if (kind == Instrument.InputKind.ISIN) return lookupIsin(input, bearer());
+        String bearer = bearer();
         int dot = input.lastIndexOf('.');
         String ticker = input.substring(0, dot);
         String exchangeId = SUFFIX_TO_EXCHANGE.get(input.substring(dot + 1).toUpperCase(Locale.ROOT));
@@ -73,5 +76,51 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
                     hit.path("CurrencyCode").asString(null), id, null, "Stock", true);
         }
         throw new IllegalStateException("no exchange hit");
+    }
+
+    private String bearer() { return access.bearer().orElseThrow(); }
+
+    private Instrument lookupIsin(String isin, String bearer) {
+        tools.jackson.databind.JsonNode root = access.http().get()
+                .uri(uri -> uri.path("/ref/v1/instruments")
+                        .queryParam("Keywords", isin).queryParam("AssetTypes", "Stock")
+                        .queryParam("$top", 10).build())
+                .header("Authorization", bearer)
+                .retrieve().body(tools.jackson.databind.JsonNode.class);
+        tools.jackson.databind.JsonNode data = root == null ? null : root.path("Data");
+        if (data == null || !data.isArray() || data.isEmpty()) throw new IllegalStateException("no hit");
+
+        String country = isin.substring(0, 2);
+        Long uic = null;
+        for (tools.jackson.databind.JsonNode hit : data) {                 // venue policy: domestic country first
+            tools.jackson.databind.JsonNode d = details(hit.path("Identifier").asLong(0), bearer);
+            if (d != null && country.equals(d.path("CountryCode").asString(""))) {
+                return build(isin, d);
+            }
+            if (uic == null) uic = hit.path("Identifier").asLong(0);
+        }
+        return build(isin, details(uic, bearer));                          // fallback: first hit
+    }
+
+    private tools.jackson.databind.JsonNode details(long uic, String bearer) {
+        if (uic == 0) return null;
+        return detailsCache.get(uic, () -> {
+            try {
+                return access.http().get()
+                        .uri(uri -> uri.path("/ref/v1/instruments/details/" + uic).build())
+                        .header("Authorization", bearer)
+                        .retrieve().body(tools.jackson.databind.JsonNode.class);
+            } catch (RuntimeException e) {           // one venue's details 404ing must not abort the whole scan
+                log.debug("saxo details lookup failed for uic {}: {}", uic, e.toString());
+                return null;
+            }
+        });
+    }
+
+    private Instrument build(String isin, tools.jackson.databind.JsonNode d) {
+        if (d == null) throw new IllegalStateException("no details");
+        return new Instrument(isin, isin, d.path("Isin").asString(isin), d.path("Mic").asString(null),
+                d.path("ExchangeId").asString(null), d.path("CurrencyCode").asString(null),
+                d.path("Uic").asLong(0), d.path("CountryCode").asString(null), "Stock", true);
     }
 }
