@@ -271,6 +271,91 @@ public class SaxoBrokerProvider implements BrokerProvider {
         }
     }
 
+    // ---- precheck (standalone far-stop fallback classifier; wired in by a later task) ----
+
+    /** Outcome of {@link #precheckBracket}: CLEAN can be placed as-is, SL_TOO_FAR needs the
+     * far-stop fallback, REJECTED is any other business-rule reject Saxo would raise on placement. */
+    enum PrecheckOutcome { CLEAN, SL_TOO_FAR, REJECTED }
+
+    /** Package-private result of {@link #precheckBracket} — mirrors OrderResult's reject shape
+     * (message/code) without pulling in the full accepted-order fields precheck has no use for. */
+    record Precheck(PrecheckOutcome kind, String rejectMessage, String rejectCode) {}
+
+    /**
+     * Dry-runs a bracket body against Saxo's precheck endpoint before real placement, so a
+     * too-far stop-loss can be classified ({@link PrecheckOutcome#SL_TOO_FAR}) without ever
+     * placing a live order. Mirrors {@link #submitBracket}'s POST (same Authorization/
+     * Content-Type/X-Request-ID headers). A precheck HTTP failure must never be silently
+     * treated as clean — a transport failure (5xx/timeout) throws UNAVAILABLE so the caller
+     * does not place blind.
+     */
+    Precheck precheckBracket(JsonNode bracketBody, String requestId) {
+        try {
+            JsonNode resp = client.post().uri("/trade/v2/orders/precheck")
+                    .header("Authorization", bearer())
+                    .header("X-Request-ID", requestId)
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(bracketBody)
+                    .retrieve().body(JsonNode.class);
+            return classifyPrecheckResponse(resp);
+        } catch (RestClientResponseException e) {
+            return classifyPrecheckError(e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo precheckBracket failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * A 200 OK precheck response: TooFarFromEntryOrder can surface either as the top-level
+     * ErrorInfo or nested under a specific leg in Orders[] (the SL leg, in practice) —
+     * checked first regardless of where it appears, since it needs the caller's fallback
+     * path rather than an outright reject. Any other ErrorInfo (top-level or PreCheckResult
+     * == "Error") is a plain business-rule reject; absent both, the bracket is clean.
+     */
+    private static Precheck classifyPrecheckResponse(JsonNode resp) {
+        if (resp == null) return new Precheck(PrecheckOutcome.CLEAN, null, null);
+        for (JsonNode leg : resp.path("Orders")) {
+            JsonNode legError = leg.path("ErrorInfo");
+            String legCode = legError.path("ErrorCode").asString(null);
+            if ("TooFarFromEntryOrder".equals(legCode)) {
+                return new Precheck(PrecheckOutcome.SL_TOO_FAR, legError.path("Message").asString(null), legCode);
+            }
+        }
+        JsonNode topError = resp.path("ErrorInfo");
+        String topCode = topError.path("ErrorCode").asString(null);
+        String topMessage = topError.path("Message").asString(null);
+        if ("TooFarFromEntryOrder".equals(topCode)) {
+            return new Precheck(PrecheckOutcome.SL_TOO_FAR, topMessage, topCode);
+        }
+        boolean businessRuleError = "Error".equals(resp.path("PreCheckResult").asString(null)) || topCode != null;
+        if (businessRuleError) {
+            return new Precheck(PrecheckOutcome.REJECTED, topMessage, topCode);
+        }
+        return new Precheck(PrecheckOutcome.CLEAN, null, null);
+    }
+
+    /**
+     * A precheck 400 carries the same {@code ErrorInfo} shape as {@link #writeError}'s
+     * submitBracket 400 — reuses its message/code extraction, then classifies TooFar vs any
+     * other reject. Any other status (5xx, 401/403, etc.) is a transport failure and must
+     * throw rather than be treated as a reject — delegated to {@link #readError}.
+     */
+    private static Precheck classifyPrecheckError(RestClientResponseException e) {
+        if (e.getStatusCode().value() != 400) {
+            throw readError(e);
+        }
+        JsonNode errorBody = parseErrorBody(e);
+        String code = errorBody.path("ErrorInfo").path("ErrorCode").asString(null);
+        String message = errorBody.path("ErrorInfo").path("Message").asString(null);
+        if (message == null) message = errorBody.path("Message").asString(null);
+        if (message == null) message = rawBody(e);
+        if ("TooFarFromEntryOrder".equals(code)) {
+            return new Precheck(PrecheckOutcome.SL_TOO_FAR, message, code);
+        }
+        return new Precheck(PrecheckOutcome.REJECTED, message, code);
+    }
+
     /**
      * Best-effort follow-up: Saxo's placement response carries only the parent OrderId
      * (never child leg ids — unlike Alpaca), so to hand the caller SL/TP leg ids for a
