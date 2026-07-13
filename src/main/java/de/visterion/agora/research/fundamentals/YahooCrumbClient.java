@@ -38,7 +38,10 @@ public class YahooCrumbClient {
      *  in production — at a single WireMock base URL. */
     @org.springframework.beans.factory.annotation.Autowired
     public YahooCrumbClient(
-            @Value("${agora.data.yahoo.user-agent}") String userAgent,
+            // Yahoo's crumb + fundamentals-timeseries endpoints reject non-browser User-Agents
+            // with HTTP 429 ("Too Many Requests"), so this client must present a browser UA —
+            // NOT the agora bot UA (agora.data.yahoo.user-agent) the price/chart provider uses.
+            @Value("${agora.data.yahoo.crumb-user-agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36}") String userAgent,
             @Value("${agora.data.yahoo.base-url:https://query1.finance.yahoo.com}") String query1,
             @Value("${agora.data.yahoo.timeseries-base-url:https://query2.finance.yahoo.com}") String query2,
             @Value("${agora.data.yahoo.fc-base-url:https://fc.yahoo.com}") String fcBaseUrl,
