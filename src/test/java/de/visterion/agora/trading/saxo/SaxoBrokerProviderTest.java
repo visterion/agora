@@ -570,6 +570,42 @@ class SaxoBrokerProviderTest {
                 .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell"))));
     }
 
+    @Test
+    void submitBracketFarStopFallbackFlattensWhenCancelFailsWithNonNotFoundError() {
+        stubInstrument();
+        stubPrecheckSlTooFar();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel-unavailable")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
+                .willSetStateTo("entry-placed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel-unavailable")
+                .whenScenarioStateIs("entry-placed")
+                .willReturn(aResponse().withStatus(500))
+                .willSetStateTo("stop-failed"));
+        // flatten's own closing Market order, once the last-resort fail-safe kicks in
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel-unavailable")
+                .whenScenarioStateIs("stop-failed")
+                .willReturn(okJson("{\"OrderId\":\"F1\"}")));
+        // cancel fails with a non-404 error (5xx/timeout) — state is ambiguous, entry may
+        // already be filled, so the fail-safe must fall through to flatten rather than give up.
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/E1")).willReturn(aResponse().withStatus(500)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":1.0,"Uic":211,"AssetType":"Stock"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("{\"Data\":[]}")));
+
+        var r = provider.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("STOP_PLACEMENT_FAILED");
+        wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/E1")));
+        wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions")));
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
+                .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell"))));
+    }
+
     // ---- precheckBracket ----
 
     private tools.jackson.databind.node.ObjectNode precheckBody() {
