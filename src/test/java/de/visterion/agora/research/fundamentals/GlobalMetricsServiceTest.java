@@ -9,7 +9,7 @@ import de.visterion.agora.data.Quote;
 import de.visterion.agora.fetch.edgar.ConceptDatapoint;
 import de.visterion.agora.fetch.edgar.EdgarService.ConceptSeries;
 import org.junit.jupiter.api.Test;
-import java.math.BigDecimal; import java.time.LocalDate; import java.util.List; import java.util.Map;
+import java.math.BigDecimal; import java.math.MathContext; import java.time.LocalDate; import java.util.List; import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any; import static org.mockito.ArgumentMatchers.anyInt; import static org.mockito.ArgumentMatchers.eq; import static org.mockito.Mockito.*;
 
@@ -69,6 +69,7 @@ class GlobalMetricsServiceTest {
         when(marketData.quote("0700.HK")).thenReturn(new Quote("0700.HK", BigDecimal.TEN, BigDecimal.ZERO, "HKD"));
         FxService fx = mock(FxService.class);
         when(fx.rate("CNY","HKD")).thenReturn(new FxRate("CNY","HKD", BigDecimal.valueOf(1.1)));
+        when(fx.rate("HKD","CNY")).thenReturn(new FxRate("HKD","CNY", BigDecimal.valueOf(0.9)));
 
         var svc = new GlobalMetricsService(router, marketData, fx);
         var m = svc.metrics(Instrument.raw("0700.HK")).metrics();
@@ -86,9 +87,49 @@ class GlobalMetricsServiceTest {
         when(marketData.quote("0700.HK")).thenReturn(new Quote("0700.HK", BigDecimal.TEN, BigDecimal.ZERO, "HKD"));
         FxService fx = mock(FxService.class);
         when(fx.rate("CNY","HKD")).thenThrow(new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "no rate", null));
+        when(fx.rate("HKD","CNY")).thenReturn(new FxRate("HKD","CNY", BigDecimal.valueOf(0.9)));
 
         var svc = new GlobalMetricsService(router, marketData, fx);
         var m = svc.metrics(Instrument.raw("0700.HK")).metrics();
         assertThat(m.has("freeCashFlowPerShareTTM")).isFalse();
+    }
+
+    @Test void marketCapPbPeInReportingCurrency() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        Map<FundamentalConcept,ConceptSeries> c = Map.of(
+            FundamentalConcept.TOTAL_ASSETS, s("CNY",1000), FundamentalConcept.TOTAL_LIABILITIES, s("CNY",400),
+            FundamentalConcept.NET_INCOME, s("CNY",100), FundamentalConcept.SHARES_OUTSTANDING, s("CNY",100));
+        when(router.facts(any())).thenReturn(new SourceResult(c, AbsenceSemantics.SPARSE));
+
+        MarketDataService marketData = mock(MarketDataService.class);
+        when(marketData.quote("0700.HK")).thenReturn(new Quote("0700.HK", BigDecimal.valueOf(50), BigDecimal.ZERO, "HKD"));
+        FxService fx = mock(FxService.class);
+        when(fx.rate("HKD","CNY")).thenReturn(new FxRate("HKD","CNY", BigDecimal.ONE));
+
+        var svc = new GlobalMetricsService(router, marketData, fx);
+        var m = svc.metrics(Instrument.raw("0700.HK")).metrics();
+        assertThat(m.path("marketCapitalization").decimalValue()).isEqualByComparingTo("0.005"); // 5000/1e6
+        assertThat(m.path("pbAnnual").decimalValue()).isEqualByComparingTo(
+            BigDecimal.valueOf(5000).divide(BigDecimal.valueOf(600), MathContext.DECIMAL64)); // 5000/(1000-400)
+        assertThat(m.path("peTTM").decimalValue()).isEqualByComparingTo("50"); // 5000/100
+    }
+
+    @Test void marketCapPbPeOmittedWhenFxMissing() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        Map<FundamentalConcept,ConceptSeries> c = Map.of(
+            FundamentalConcept.TOTAL_ASSETS, s("CNY",1000), FundamentalConcept.TOTAL_LIABILITIES, s("CNY",400),
+            FundamentalConcept.NET_INCOME, s("CNY",100), FundamentalConcept.SHARES_OUTSTANDING, s("CNY",100));
+        when(router.facts(any())).thenReturn(new SourceResult(c, AbsenceSemantics.SPARSE));
+
+        MarketDataService marketData = mock(MarketDataService.class);
+        when(marketData.quote("0700.HK")).thenReturn(new Quote("0700.HK", BigDecimal.valueOf(50), BigDecimal.ZERO, "HKD"));
+        FxService fx = mock(FxService.class);
+        when(fx.rate("HKD","CNY")).thenThrow(new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "no rate", null));
+
+        var svc = new GlobalMetricsService(router, marketData, fx);
+        var m = svc.metrics(Instrument.raw("0700.HK")).metrics();
+        assertThat(m.has("marketCapitalization")).isFalse();
+        assertThat(m.has("pbAnnual")).isFalse();
+        assertThat(m.has("peTTM")).isFalse();
     }
 }
