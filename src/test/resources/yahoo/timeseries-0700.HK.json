@@ -1,0 +1,499 @@
+{
+  "timeseries": {
+    "result": [
+      {
+        "meta": {
+          "type": [
+            "annualTotalAssets"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualTotalAssets": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 300000,
+              "fmt": "300000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 330000,
+              "fmt": "330000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 360000,
+              "fmt": "360000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualCurrentAssets"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualCurrentAssets": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 120000,
+              "fmt": "120000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 126000,
+              "fmt": "126000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 135000,
+              "fmt": "135000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualCurrentLiabilities"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualCurrentLiabilities": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 60000,
+              "fmt": "60000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 63000,
+              "fmt": "63000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 66000,
+              "fmt": "66000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualLongTermDebt"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualLongTermDebt": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 45000,
+              "fmt": "45000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 48000,
+              "fmt": "48000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 51000,
+              "fmt": "51000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualTotalLiabilitiesNetMinorityInterest"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualTotalLiabilitiesNetMinorityInterest": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 180000,
+              "fmt": "180000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 189000,
+              "fmt": "189000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 198000,
+              "fmt": "198000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualRetainedEarnings"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualRetainedEarnings": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 90000,
+              "fmt": "90000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 99000,
+              "fmt": "99000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 108000,
+              "fmt": "108000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualOrdinarySharesNumber"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualOrdinarySharesNumber": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 3000,
+              "fmt": "3000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 3000,
+              "fmt": "3000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 3000,
+              "fmt": "3000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualEBIT"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualEBIT": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 24000,
+              "fmt": "24000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 25500,
+              "fmt": "25500"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 27000,
+              "fmt": "27000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualTotalRevenue"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualTotalRevenue": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 150000,
+              "fmt": "150000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 159000,
+              "fmt": "159000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 168000,
+              "fmt": "168000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualGrossProfit"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualGrossProfit": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 75000,
+              "fmt": "75000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 78000,
+              "fmt": "78000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 81000,
+              "fmt": "81000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualNetIncome"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualNetIncome": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 18000,
+              "fmt": "18000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 19500,
+              "fmt": "19500"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 21000,
+              "fmt": "21000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualOperatingCashFlow"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualOperatingCashFlow": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 27000,
+              "fmt": "27000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 28500,
+              "fmt": "28500"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "CNY",
+            "reportedValue": {
+              "raw": 30000,
+              "fmt": "30000"
+            }
+          }
+        ]
+      }
+    ],
+    "error": null
+  }
+}

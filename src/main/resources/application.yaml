@@ -75,6 +75,9 @@ agora:
     provider-timeout-ms: ${AGORA_DATA_PROVIDER_TIMEOUT_MS:4000}
     yahoo:
       base-url: ${AGORA_DATA_YAHOO_BASE_URL:https://query1.finance.yahoo.com}
+      timeseries-base-url: ${AGORA_DATA_YAHOO_TIMESERIES_BASE_URL:https://query2.finance.yahoo.com}
+      fc-base-url: ${AGORA_DATA_YAHOO_FC_BASE_URL:https://fc.yahoo.com}
+      finance-base-url: ${AGORA_DATA_YAHOO_FINANCE_BASE_URL:https://finance.yahoo.com}
       user-agent: ${AGORA_DATA_YAHOO_USER_AGENT:agora/0.1 (+https://github.com/visterion/agora)}
     twelvedata:
       base-url: ${AGORA_DATA_TWELVEDATA_BASE_URL:https://api.twelvedata.com}
