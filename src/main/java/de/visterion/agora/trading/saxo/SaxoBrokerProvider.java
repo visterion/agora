@@ -251,25 +251,11 @@ public class SaxoBrokerProvider implements BrokerProvider {
         stopLoss.put("AccountKey", ctx.accountKey());
         stopLoss.set("OrderDuration", durationNode("GoodTillCancel"));
 
-        // The full entry+legs body doubles as the precheck body (Saxo's precheck endpoint
-        // takes the exact same shape as a real placement) — built once, reused for whichever
-        // branch below actually needs it.
         ObjectNode fullBody = entryFields.deepCopy();
         var children = MAPPER.createArrayNode();
         children.add(takeProfit);
         children.add(stopLoss);
         fullBody.set("Orders", children);
-
-        Precheck pc = precheckBracket(fullBody, UUID.randomUUID().toString());
-        switch (pc.kind()) {
-            case REJECTED:
-                return OrderResult.rejected(pc.rejectMessage(), pc.rejectCode());
-            case SL_TOO_FAR:
-                return submitFarStopFallback(req, ri, ctx, opposite, entryFields);
-            case CLEAN:
-            default:
-                break;
-        }
 
         String requestId = req.clientRef() != null ? req.clientRef() : UUID.randomUUID().toString();
 
@@ -283,6 +269,27 @@ public class SaxoBrokerProvider implements BrokerProvider {
             String orderId = resp == null ? null : resp.path("OrderId").asString(null);
             return withLegIds(orderId, req.clientRef());
         } catch (RestClientResponseException e) {
+            // Reactive far-stop trigger: a 400 here is the atomic reject path — Saxo either
+            // accepts the whole bracket body or rejects it wholesale (this endpoint has no
+            // 200-with-per-leg-errors shape, unlike the old precheck endpoint), so a
+            // TooFarFromEntryOrder reject means NOTHING was placed yet. That makes the full
+            // entry+standalone-stop fallback safe to run from scratch. Any other 400 reject
+            // code is reported as a plain rejection, same as before; non-400 statuses (e.g.
+            // 409 duplicate) are not rejects at all and go straight to writeError untouched.
+            if (e.getStatusCode().value() == 400) {
+                JsonNode errorBody = parseErrorBody(e);
+                String code = errorBody.path("ErrorInfo").path("ErrorCode").asString(null);
+                String message = errorBody.path("ErrorInfo").path("Message").asString(null);
+                if (message == null) message = errorBody.path("Message").asString(null);
+                if (message == null) message = rawBody(e);
+                log.info("saxo bracket rejected [{}]: {} for {}", code, message, req.symbol());
+                if ("TooFarFromEntryOrder".equals(code)) {
+                    log.info("saxo far-stop: bracket rejected TooFarFromEntryOrder for {} (stop {} vs entry {}), "
+                            + "falling back to entry + standalone stop",
+                            req.symbol(), req.stopLossStop(), req.limitPrice());
+                    return submitFarStopFallback(req, ri, ctx, opposite, entryFields);
+                }
+            }
             return writeError(e);
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
@@ -291,9 +298,10 @@ public class SaxoBrokerProvider implements BrokerProvider {
     }
 
     /**
-     * Far-stop fallback (Saxo precheck classified {@link PrecheckOutcome#SL_TOO_FAR}): Saxo's
-     * proximity band rejects a bracket whose stop-loss sits outside it, so instead of a single
-     * bracket POST this places the entry alone, then a standalone {@code StopIfTraded} at the
+     * Far-stop fallback (triggered reactively when the real bracket POST rejects with
+     * {@code TooFarFromEntryOrder}): Saxo's proximity band rejects a bracket whose stop-loss
+     * sits outside it, so instead of a single bracket POST this places the entry alone, then
+     * a standalone {@code StopIfTraded} at the
      * requested stop level — no take-profit leg (Dracul exits such positions via its own
      * trailing chandelier, so a lone entry/stop needs no TP). Two distinct {@code X-Request-ID}s
      * are used (Saxo dedupes by that header) since these are two independent order placements.
@@ -406,91 +414,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
         }
         String cause = stopFailure == null ? "no OrderId in response" : stopFailure.getMessage();
         return OrderResult.rejected("standalone stop placement failed: " + cause, "STOP_PLACEMENT_FAILED");
-    }
-
-    // ---- precheck (standalone far-stop fallback classifier) ----
-
-    /** Outcome of {@link #precheckBracket}: CLEAN can be placed as-is, SL_TOO_FAR needs the
-     * far-stop fallback, REJECTED is any other business-rule reject Saxo would raise on placement. */
-    enum PrecheckOutcome { CLEAN, SL_TOO_FAR, REJECTED }
-
-    /** Package-private result of {@link #precheckBracket} — mirrors OrderResult's reject shape
-     * (message/code) without pulling in the full accepted-order fields precheck has no use for. */
-    record Precheck(PrecheckOutcome kind, String rejectMessage, String rejectCode) {}
-
-    /**
-     * Dry-runs a bracket body against Saxo's precheck endpoint before real placement, so a
-     * too-far stop-loss can be classified ({@link PrecheckOutcome#SL_TOO_FAR}) without ever
-     * placing a live order. Mirrors {@link #submitBracket}'s POST (same Authorization/
-     * Content-Type/X-Request-ID headers). A precheck HTTP failure must never be silently
-     * treated as clean — a transport failure (5xx/timeout) throws UNAVAILABLE so the caller
-     * does not place blind.
-     */
-    Precheck precheckBracket(JsonNode bracketBody, String requestId) {
-        try {
-            JsonNode resp = client.post().uri("/trade/v2/orders/precheck")
-                    .header("Authorization", bearer())
-                    .header("X-Request-ID", requestId)
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(bracketBody)
-                    .retrieve().body(JsonNode.class);
-            return classifyPrecheckResponse(resp);
-        } catch (RestClientResponseException e) {
-            return classifyPrecheckError(e);
-        } catch (Exception e) {
-            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
-                    "saxo precheckBracket failed: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * A 200 OK precheck response: TooFarFromEntryOrder can surface either as the top-level
-     * ErrorInfo or nested under a specific leg in Orders[] (the SL leg, in practice) —
-     * checked first regardless of where it appears, since it needs the caller's fallback
-     * path rather than an outright reject. Any other ErrorInfo (top-level or PreCheckResult
-     * == "Error") is a plain business-rule reject; absent both, the bracket is clean.
-     */
-    private static Precheck classifyPrecheckResponse(JsonNode resp) {
-        if (resp == null) return new Precheck(PrecheckOutcome.CLEAN, null, null);
-        for (JsonNode leg : resp.path("Orders")) {
-            JsonNode legError = leg.path("ErrorInfo");
-            String legCode = legError.path("ErrorCode").asString(null);
-            if ("TooFarFromEntryOrder".equals(legCode)) {
-                return new Precheck(PrecheckOutcome.SL_TOO_FAR, legError.path("Message").asString(null), legCode);
-            }
-        }
-        JsonNode topError = resp.path("ErrorInfo");
-        String topCode = topError.path("ErrorCode").asString(null);
-        String topMessage = topError.path("Message").asString(null);
-        if ("TooFarFromEntryOrder".equals(topCode)) {
-            return new Precheck(PrecheckOutcome.SL_TOO_FAR, topMessage, topCode);
-        }
-        boolean businessRuleError = "Error".equals(resp.path("PreCheckResult").asString(null)) || topCode != null;
-        if (businessRuleError) {
-            return new Precheck(PrecheckOutcome.REJECTED, topMessage, topCode);
-        }
-        return new Precheck(PrecheckOutcome.CLEAN, null, null);
-    }
-
-    /**
-     * A precheck 400 carries the same {@code ErrorInfo} shape as {@link #writeError}'s
-     * submitBracket 400 — reuses its message/code extraction, then classifies TooFar vs any
-     * other reject. Any other status (5xx, 401/403, etc.) is a transport failure and must
-     * throw rather than be treated as a reject — delegated to {@link #readError}.
-     */
-    private static Precheck classifyPrecheckError(RestClientResponseException e) {
-        if (e.getStatusCode().value() != 400) {
-            throw readError(e);
-        }
-        JsonNode errorBody = parseErrorBody(e);
-        String code = errorBody.path("ErrorInfo").path("ErrorCode").asString(null);
-        String message = errorBody.path("ErrorInfo").path("Message").asString(null);
-        if (message == null) message = errorBody.path("Message").asString(null);
-        if (message == null) message = rawBody(e);
-        if ("TooFarFromEntryOrder".equals(code)) {
-            return new Precheck(PrecheckOutcome.SL_TOO_FAR, message, code);
-        }
-        return new Precheck(PrecheckOutcome.REJECTED, message, code);
     }
 
     /**

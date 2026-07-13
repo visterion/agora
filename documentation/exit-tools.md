@@ -181,18 +181,20 @@ though Saxo's own `modify_bracket` works off the parent id (they let Dracul corr
 ### Saxo — far-stop fallback (entry + standalone stop, no take-profit)
 
 Saxo enforces a proximity band on a bracket's stop-loss (`TooFarFromEntryOrder`); a
-requested stop outside that band would otherwise reject the whole bracket. `place_bracket`
-dry-runs every Saxo bracket against Saxo's precheck endpoint first: a clean precheck places
-the bracket exactly as above (unchanged), while a `TooFarFromEntryOrder` result switches to
-placing the entry order alone followed by a **standalone `StopIfTraded`** at the requested
-stop level — with **no take-profit leg** (Dracul manages such positions' exits itself via a
-trailing chandelier, so a lone entry/stop needs no TP). The two placements use distinct
-`X-Request-ID`s (Saxo dedupes by that header) since they are independent orders. **Fail-safe:**
-if the standalone stop cannot be placed, the entry is canceled (or, if it already filled
-before the cancel landed, the resulting position is flattened instead) — an entry is never
-left without a protective stop. The fallback result still uses `stopLegId` for the standalone
-stop's id, with `takeProfitLegId` left null; any other precheck rejection short-circuits to a
-plain `rejected(...)` with no order ever placed.
+requested stop outside that band rejects the whole bracket. `place_bracket` places the
+bracket directly (no dry-run) and the fallback is detected reactively when Saxo rejects the
+bracket with `TooFarFromEntryOrder`: that reject is atomic (Saxo either accepts the whole
+bracket body or rejects it wholesale — nothing is ever placed on this path), so on that
+specific reject `place_bracket` switches to placing the entry order alone followed by a
+**standalone `StopIfTraded`** at the requested stop level — with **no take-profit leg**
+(Dracul manages such positions' exits itself via a trailing chandelier, so a lone entry/stop
+needs no TP). The two placements use distinct `X-Request-ID`s (Saxo dedupes by that header)
+since they are independent orders. **Fail-safe:** if the standalone stop cannot be placed,
+the entry is canceled (or, if it already filled before the cancel landed, the resulting
+position is flattened instead) — an entry is never left without a protective stop. The
+fallback result still uses `stopLegId` for the standalone stop's id, with `takeProfitLegId`
+left null; any other bracket reject short-circuits to a plain `rejected(...)` with no
+further fallback, and every bracket reject (regardless of code) is logged for diagnosis.
 
 ## `get_orders` / `get_order_by_ref` — field list
 
