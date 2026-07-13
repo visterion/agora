@@ -222,18 +222,9 @@ class SaxoBrokerProviderTest {
             """)));
     }
 
-    /** submitBracket now precheck-dry-runs before placing — CLEAN keeps the bracket path
-     *  (below) byte-for-byte unchanged, but every such test needs this stub wired in. */
-    private void stubPrecheckClean() {
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(okJson("""
-            {"PreCheckResult":"Ok"}
-            """)));
-    }
-
     @Test
     void submitBracketPostsEntryWithTwoRelatedOrders() {
         stubInstrument();
-        stubPrecheckClean();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
             {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
             """)));
@@ -258,7 +249,6 @@ class SaxoBrokerProviderTest {
     @Test
     void submitBracketSellSideFlipsChildBuySell() {
         stubInstrument();
-        stubPrecheckClean();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
             {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
             """)));
@@ -282,7 +272,6 @@ class SaxoBrokerProviderTest {
         // 🔶 Saxo semantics: a Market entry with no explicit timeInForce defaults to
         // DayOrder, not GoodTillCancel — see class-level flatten() javadoc / H6 discussion.
         stubInstrument();
-        stubPrecheckClean();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
             {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
             """)));
@@ -303,7 +292,6 @@ class SaxoBrokerProviderTest {
     @Test
     void submitBracketStopLossLimitEmitsStopLimitLeg() {
         stubInstrument();
-        stubPrecheckClean();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
             {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
             """)));
@@ -325,7 +313,6 @@ class SaxoBrokerProviderTest {
     @Test
     void submitBracketFetchesLegIdsFromRelatedOpenOrders() {
         stubInstrument();
-        stubPrecheckClean();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
             {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
             """)));
@@ -352,7 +339,6 @@ class SaxoBrokerProviderTest {
     @Test
     void submitBracketRetriesLegLookupUntilLegsAppear() {
         stubInstrument();
-        stubPrecheckClean();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
             {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
             """)));
@@ -383,7 +369,6 @@ class SaxoBrokerProviderTest {
     @Test
     void submitBracketLegLookupFailureStillReportsAccepted() {
         stubInstrument();
-        stubPrecheckClean();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
             {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
             """)));
@@ -399,7 +384,6 @@ class SaxoBrokerProviderTest {
     @Test
     void submitBracketLegLookupRetryIsCappedWhenLegsNeverAppear() {
         stubInstrument();
-        stubPrecheckClean();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
             {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
             """)));
@@ -425,7 +409,6 @@ class SaxoBrokerProviderTest {
     @Test
     void submitBracket400MapsErrorInfoToRejected() {
         stubInstrument();
-        stubPrecheckClean();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)
                 .withHeader("Content-Type", "application/json")
                 .withBody("""
@@ -440,47 +423,54 @@ class SaxoBrokerProviderTest {
     @Test
     void submitBracket409IsUnavailable() {
         stubInstrument();
-        stubPrecheckClean();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(409)));
         assertThatThrownBy(() -> provider.submitBracket(bracketReq()))
                 .isInstanceOf(BrokerException.class)
                 .hasMessageContaining("duplicate");
     }
 
-    // ---- submitBracket far-stop fallback (SL_TOO_FAR precheck) ----
+    // ---- submitBracket far-stop fallback (REACTIVE: real bracket 400 TooFarFromEntryOrder) ----
 
-    private void stubPrecheckSlTooFar() {
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(okJson("""
-            {"PreCheckResult":"Error","Orders":[
-              {},
-              {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"}}]}
-            """)));
+    /** The atomic 400/writeError path: nothing was placed by this rejected POST — confirmed
+     *  by the fact that the fallback then places a genuinely NEW entry via a second POST. */
+    private void stubBracketRejectTooFar(String scenario) {
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario(scenario)
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(aResponse().withStatus(400)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                            {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"}}
+                            """))
+                .willSetStateTo("toofar-rejected"));
     }
 
     @Test
-    void submitBracketOtherPrecheckRejectionSkipsPlacementEntirely() {
+    void submitBracketOtherRejectionIsRejectedWithoutFallback() {
         stubInstrument();
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(okJson("""
-            {"PreCheckResult":"Error","ErrorInfo":{"ErrorCode":"IllegalInstrumentId","Message":"Instrument not tradable"}}
-            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                    {"ErrorInfo":{"ErrorCode":"IllegalInstrumentId","Message":"Instrument not tradable"}}
+                    """)));
 
         var r = provider.submitBracket(bracketReq());
 
         assertThat(r.accepted()).isFalse();
         assertThat(r.rejectReason()).isEqualTo("Instrument not tradable");
         assertThat(r.rejectCode()).isEqualTo("IllegalInstrumentId");
-        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        // no fallback triggered — exactly the one rejected POST, nothing further
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders")));
     }
 
     @Test
-    void submitBracketFarStopFallbackPlacesEntryThenStandaloneStop() {
+    void submitBracketTooFarRejectTriggersReactiveFallback() {
         stubInstrument();
-        stubPrecheckSlTooFar();
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-ok")
-                .whenScenarioStateIs(Scenario.STARTED)
+        stubBracketRejectTooFar("far-stop-reactive-ok");
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-reactive-ok")
+                .whenScenarioStateIs("toofar-rejected")
                 .willReturn(okJson("{\"OrderId\":\"E1\"}"))
                 .willSetStateTo("entry-placed"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-ok")
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-reactive-ok")
                 .whenScenarioStateIs("entry-placed")
                 .willReturn(okJson("{\"OrderId\":\"S1\"}")));
 
@@ -493,15 +483,18 @@ class SaxoBrokerProviderTest {
         assertThat(r.takeProfitLegId()).isNull();
 
         var posts = wm.findAll(postRequestedFor(urlEqualTo("/trade/v2/orders")));
-        assertThat(posts).hasSize(2);
-        assertThat(posts.get(0).getBodyAsString()).doesNotContain("Orders");
-        String entryReqId = posts.get(0).getHeader("X-Request-ID");
-        String stopReqId = posts.get(1).getHeader("X-Request-ID");
+        assertThat(posts).hasSize(3);
+        // 1st POST: full bracket body (rejected TooFar)
+        assertThat(posts.get(0).getBodyAsString()).contains("Orders");
+        // 2nd POST: entry-only re-placement
+        assertThat(posts.get(1).getBodyAsString()).doesNotContain("Orders");
+        // 3rd POST: standalone stop
+        assertThat(posts.get(2).getBodyAsString()).doesNotContain("Orders");
+        String entryReqId = posts.get(1).getHeader("X-Request-ID");
+        String stopReqId = posts.get(2).getHeader("X-Request-ID");
         assertThat(entryReqId).isNotNull();
         assertThat(stopReqId).isNotNull().isNotEqualTo(entryReqId);
 
-        String stopBody = posts.get(1).getBodyAsString();
-        assertThat(stopBody).doesNotContain("Orders");
         wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
                 .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded")))
                 .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell")))
@@ -514,9 +507,9 @@ class SaxoBrokerProviderTest {
     @Test
     void submitBracketFarStopFallbackFailSafeCancelsEntryWhenStopPlacementFails() {
         stubInstrument();
-        stubPrecheckSlTooFar();
+        stubBracketRejectTooFar("far-stop-cancel");
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel")
-                .whenScenarioStateIs(Scenario.STARTED)
+                .whenScenarioStateIs("toofar-rejected")
                 .willReturn(okJson("{\"OrderId\":\"E1\"}"))
                 .willSetStateTo("entry-placed"));
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel")
@@ -539,16 +532,16 @@ class SaxoBrokerProviderTest {
                 .withQueryParam("AccountKey", equalTo("Acc+Key/1==")));
         wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions")));
         // no position existed (pure unfilled) — flatten's NOT_FOUND is tolerated without a
-        // third order POST (only the entry + the failed stop were placed above)
-        wm.verify(2, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        // fourth order POST (only the rejected bracket + the entry + the failed stop were placed above)
+        wm.verify(3, postRequestedFor(urlEqualTo("/trade/v2/orders")));
     }
 
     @Test
     void submitBracketFarStopFallbackFlattensPartialFillAfterSuccessfulCancel() {
         stubInstrument();
-        stubPrecheckSlTooFar();
+        stubBracketRejectTooFar("far-stop-partial-fill");
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-partial-fill")
-                .whenScenarioStateIs(Scenario.STARTED)
+                .whenScenarioStateIs("toofar-rejected")
                 .willReturn(okJson("{\"OrderId\":\"E1\"}"))
                 .willSetStateTo("entry-placed"));
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-partial-fill")
@@ -583,9 +576,9 @@ class SaxoBrokerProviderTest {
     @Test
     void submitBracketFarStopFallbackFlattensWhenEntryAlreadyFilledBeforeCancel() {
         stubInstrument();
-        stubPrecheckSlTooFar();
+        stubBracketRejectTooFar("far-stop-flatten");
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-flatten")
-                .whenScenarioStateIs(Scenario.STARTED)
+                .whenScenarioStateIs("toofar-rejected")
                 .willReturn(okJson("{\"OrderId\":\"E1\"}"))
                 .willSetStateTo("entry-placed"));
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-flatten")
@@ -617,9 +610,9 @@ class SaxoBrokerProviderTest {
     @Test
     void submitBracketFarStopFallbackFlattensWhenCancelFailsWithNonNotFoundError() {
         stubInstrument();
-        stubPrecheckSlTooFar();
+        stubBracketRejectTooFar("far-stop-cancel-unavailable");
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel-unavailable")
-                .whenScenarioStateIs(Scenario.STARTED)
+                .whenScenarioStateIs("toofar-rejected")
                 .willReturn(okJson("{\"OrderId\":\"E1\"}"))
                 .willSetStateTo("entry-placed"));
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel-unavailable")
@@ -648,111 +641,6 @@ class SaxoBrokerProviderTest {
         wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
                 .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
                 .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell"))));
-    }
-
-    // ---- precheckBracket ----
-
-    private tools.jackson.databind.node.ObjectNode precheckBody() {
-        var body = SaxoBrokerProvider.MAPPER.createObjectNode();
-        body.put("Uic", 211);
-        body.put("AssetType", "Stock");
-        body.put("BuySell", "Buy");
-        body.put("Amount", 1);
-        body.put("OrderType", "Limit");
-        body.put("OrderPrice", 100);
-        var takeProfit = SaxoBrokerProvider.MAPPER.createObjectNode();
-        takeProfit.put("OrderType", "Limit");
-        takeProfit.put("OrderPrice", 110);
-        takeProfit.put("BuySell", "Sell");
-        var stopLoss = SaxoBrokerProvider.MAPPER.createObjectNode();
-        stopLoss.put("OrderType", "StopIfTraded");
-        stopLoss.put("OrderPrice", 90);
-        stopLoss.put("BuySell", "Sell");
-        var children = SaxoBrokerProvider.MAPPER.createArrayNode();
-        children.add(takeProfit);
-        children.add(stopLoss);
-        body.set("Orders", children);
-        return body;
-    }
-
-    @Test
-    void precheckBracketCleanBodyIsClean() {
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(okJson("""
-            {"PreCheckResult":"Ok"}
-            """)));
-
-        var result = provider.precheckBracket(precheckBody(), "req-1");
-
-        assertThat(result.kind()).isEqualTo(SaxoBrokerProvider.PrecheckOutcome.CLEAN);
-        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders/precheck"))
-                .withHeader("X-Request-ID", equalTo("req-1"))
-                .withRequestBody(matchingJsonPath("$.Uic", equalTo("211"))));
-    }
-
-    @Test
-    void precheckBracketSlLegTooFarIsSlTooFar() {
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(okJson("""
-            {"PreCheckResult":"Error","Orders":[
-              {},
-              {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"}}]}
-            """)));
-
-        var result = provider.precheckBracket(precheckBody(), "req-2");
-
-        assertThat(result.kind()).isEqualTo(SaxoBrokerProvider.PrecheckOutcome.SL_TOO_FAR);
-        assertThat(result.rejectCode()).isEqualTo("TooFarFromEntryOrder");
-        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders/precheck"))
-                .withHeader("X-Request-ID", equalTo("req-2")));
-    }
-
-    @Test
-    void precheckBracketOtherErrorInfoIsRejected() {
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(okJson("""
-            {"PreCheckResult":"Error","ErrorInfo":{"ErrorCode":"IllegalInstrumentId","Message":"Instrument not tradable"}}
-            """)));
-
-        var result = provider.precheckBracket(precheckBody(), "req-3");
-
-        assertThat(result.kind()).isEqualTo(SaxoBrokerProvider.PrecheckOutcome.REJECTED);
-        assertThat(result.rejectMessage()).isEqualTo("Instrument not tradable");
-        assertThat(result.rejectCode()).isEqualTo("IllegalInstrumentId");
-    }
-
-    @Test
-    void precheckBracket400WithTooFarErrorInfoIsSlTooFar() {
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(aResponse().withStatus(400)
-                .withHeader("Content-Type", "application/json")
-                .withBody("""
-                    {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"}}
-                    """)));
-
-        var result = provider.precheckBracket(precheckBody(), "req-4");
-
-        assertThat(result.kind()).isEqualTo(SaxoBrokerProvider.PrecheckOutcome.SL_TOO_FAR);
-    }
-
-    @Test
-    void precheckBracket400WithOtherErrorInfoIsRejected() {
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(aResponse().withStatus(400)
-                .withHeader("Content-Type", "application/json")
-                .withBody("""
-                    {"ErrorInfo":{"ErrorCode":"IllegalInstrumentId","Message":"Instrument not tradable"}}
-                    """)));
-
-        var result = provider.precheckBracket(precheckBody(), "req-5");
-
-        assertThat(result.kind()).isEqualTo(SaxoBrokerProvider.PrecheckOutcome.REJECTED);
-        assertThat(result.rejectMessage()).isEqualTo("Instrument not tradable");
-        assertThat(result.rejectCode()).isEqualTo("IllegalInstrumentId");
-    }
-
-    @Test
-    void precheckBracketServerErrorThrowsUnavailable() {
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(aResponse().withStatus(503)));
-
-        assertThatThrownBy(() -> provider.precheckBracket(precheckBody(), "req-6"))
-                .isInstanceOfSatisfying(BrokerException.class,
-                        e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE));
     }
 
     // ---- cancel ----
