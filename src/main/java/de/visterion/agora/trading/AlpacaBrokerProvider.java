@@ -363,11 +363,14 @@ public class AlpacaBrokerProvider implements BrokerProvider {
                 for (JsonNode n : resp) {
                     out.add(new Position(
                             n.path("symbol").asString(""),
+                            null,
                             bd(n.path("qty")),
                             bd(n.path("avg_entry_price")),
                             bd(n.path("market_value")),
                             bd(n.path("unrealized_pl")),
-                            n.path("currency").asString("USD")
+                            n.path("currency").asString("USD"),
+                            n.path("asset_class").asString(null),
+                            null
                     ));
                 }
             }

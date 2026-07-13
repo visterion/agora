@@ -27,8 +27,8 @@ class GetPositionsToolTest {
     @Test void positionsListedCorrectly() {
         var stub = new StubBroker() {
             public List<Position> positions() {
-                return List.of(new Position("AAPL", new BigDecimal("10"), new BigDecimal("150.00"),
-                        new BigDecimal("1510.00"), new BigDecimal("100.00"), "USD"));
+                return List.of(new Position("AAPL", "PriceSmart Inc", new BigDecimal("10"), new BigDecimal("150.00"),
+                        new BigDecimal("1510.00"), new BigDecimal("100.00"), "USD", "Stock", "2026-07-10"));
             }
         };
         var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
@@ -36,9 +36,12 @@ class GetPositionsToolTest {
         var positions = r.output().get("positions");
         assertThat(positions.size()).isEqualTo(1);
         assertThat(positions.get(0).get("symbol").asString()).isEqualTo("AAPL");
+        assertThat(positions.get(0).get("description").asString()).isEqualTo("PriceSmart Inc");
         assertThat(positions.get(0).get("qty").decimalValue()).isEqualByComparingTo("10");
         assertThat(positions.get(0).get("avgEntryPrice").decimalValue()).isEqualByComparingTo("150.00");
         assertThat(positions.get(0).get("currency").asString()).isEqualTo("USD");
+        assertThat(positions.get(0).get("assetType").asString()).isEqualTo("Stock");
+        assertThat(positions.get(0).get("valueDate").asString()).isEqualTo("2026-07-10");
         assertThat(Instant.parse(r.output().get("asOf").asString())).isNotNull();
     }
 

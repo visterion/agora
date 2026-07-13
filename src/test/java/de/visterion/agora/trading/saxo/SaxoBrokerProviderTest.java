@@ -120,20 +120,23 @@ class SaxoBrokerProviderTest {
     void positionsMapNetPositions() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
             {"Data":[{"NetPositionId":"AAPL:xnas__Stock",
-                      "NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock","ValueDate":"2026-07-10"},
                       "NetPositionView":{"AverageOpenPrice":150.0,"Exposure":1510.0,
                                          "ProfitLossOnTrade":100.0,"ExposureCurrency":"USD"},
-                      "DisplayAndFormat":{"Symbol":"AAPL:xnas","Currency":"USD"}}]}
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas","Currency":"USD","Description":"PriceSmart Inc"}}]}
             """)));
         var ps = provider.positions();
         assertThat(ps).hasSize(1);
         assertThat(ps.get(0).symbol()).isEqualTo("AAPL");
+        assertThat(ps.get(0).description()).isEqualTo("PriceSmart Inc");
         assertThat(ps.get(0).qty()).isEqualByComparingTo("10");
         assertThat(ps.get(0).avgEntryPrice()).isEqualByComparingTo("150.0");
         assertThat(ps.get(0).unrealizedPl()).isEqualByComparingTo("100.0");
         // Exposure is live (non-zero) here → used verbatim as market value.
         assertThat(ps.get(0).marketValue()).isEqualByComparingTo("1510.0");
         assertThat(ps.get(0).currency()).isEqualTo("USD");
+        assertThat(ps.get(0).assetType()).isEqualTo("Stock");
+        assertThat(ps.get(0).valueDate()).isEqualTo("2026-07-10");
         wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions"))
                 .withQueryParam("ClientKey", equalTo("Cli+Key/1=="))
                 .withQueryParam("AccountKey", equalTo("Acc+Key/1=="))
