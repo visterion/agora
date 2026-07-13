@@ -118,7 +118,7 @@ public class YahooMarketDataProvider implements MarketDataProvider {
 
         BigDecimal prevClose = bd(meta.path("chartPreviousClose"));
 
-        CurrencyNormalization norm = normalizeCurrency(meta.path("currency").asString("USD"));
+        MinorUnitCurrency norm = MinorUnitCurrency.of(meta.path("currency").asString("USD"));
         price = norm.apply(price);
         prevClose = norm.apply(prevClose);
 
@@ -179,7 +179,7 @@ public class YahooMarketDataProvider implements MarketDataProvider {
 
         JsonNode r0 = result.get(0);
         JsonNode meta = r0.path("meta");
-        CurrencyNormalization norm = normalizeCurrency(meta.path("currency").asString("USD"));
+        MinorUnitCurrency norm = MinorUnitCurrency.of(meta.path("currency").asString("USD"));
         ZoneId zone = resolveZone(meta.path("exchangeTimezoneName"));
 
         JsonNode timestamps = r0.path("timestamp");
@@ -259,22 +259,6 @@ public class YahooMarketDataProvider implements MarketDataProvider {
         return n.isNull() || n.isMissingNode();
     }
 
-    /** Maps a Yahoo currency code to its ISO code + the divisor needed to convert minor units (M-D4). */
-    private record CurrencyNormalization(String currency, BigDecimal divisor) {
-        BigDecimal apply(BigDecimal value) {
-            return divisor.compareTo(BigDecimal.ONE) == 0 ? value : value.divide(divisor);
-        }
-    }
-
-    private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
-
-    private static CurrencyNormalization normalizeCurrency(String raw) {
-        return switch (raw) {
-            case "GBp", "GBX" -> new CurrencyNormalization("GBP", HUNDRED);
-            case "ZAc" -> new CurrencyNormalization("ZAR", HUNDRED);
-            default -> new CurrencyNormalization(raw, BigDecimal.ONE);
-        };
-    }
 
     /** 404 from Yahoo means the symbol doesn't exist there — NOT_FOUND, not UNAVAILABLE. */
     private static MarketDataException.Kind statusKind(RestClientResponseException e) {
