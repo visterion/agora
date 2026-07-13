@@ -84,7 +84,43 @@ public class GlobalMetricsService {
                 if (ni.isPresent() && ni.get().signum()!=0) m.put("peTTM", capRep.divide(ni.get(), MC));
             } catch (MarketDataException ignore) { /* omit cap/pb/pe */ }
         }
+        twoLatest(r, FundamentalConcept.REVENUE)
+            .flatMap(pair -> growthPct(pair[0], pair[1]))
+            .ifPresent(v -> m.put("revenueGrowthTTMYoy", v));
+
+        Optional<BigDecimal[]> niPair = twoLatest(r, FundamentalConcept.NET_INCOME);
+        Optional<BigDecimal[]> shPair = twoLatest(r, FundamentalConcept.SHARES_OUTSTANDING);
+        if (niPair.isPresent() && shPair.isPresent()) {
+            BigDecimal niCur = niPair.get()[0], niPrior = niPair.get()[1];
+            BigDecimal shCur = shPair.get()[0], shPrior = shPair.get()[1];
+            if (niCur != null && niPrior != null && shCur != null && shPrior != null
+                    && shCur.signum() != 0 && shPrior.signum() != 0) {
+                BigDecimal epsCur = niCur.divide(shCur, MC);
+                BigDecimal epsPrior = niPrior.divide(shPrior, MC);
+                growthPct(epsCur, epsPrior).ifPresent(v -> m.put("epsGrowthTTMYoy", v));
+            }
+        }
         return new Fundamentals(inst.displaySymbol(), m);
+    }
+
+    /** {current, prior} values for the two most recent distinct periodEnds (desc). Empty if fewer than 2. */
+    private Optional<BigDecimal[]> twoLatest(SourceResult r, FundamentalConcept c) {
+        List<java.time.LocalDate> periods = r.series(c).datapoints().stream()
+                .map(ConceptDatapoint::periodEnd).distinct()
+                .sorted(Comparator.reverseOrder()).toList();
+        if (periods.size() < 2) return Optional.empty();
+        java.time.LocalDate curEnd = periods.get(0), priorEnd = periods.get(1);
+        Optional<BigDecimal> cur = r.series(c).datapoints().stream()
+                .filter(d -> curEnd.equals(d.periodEnd())).map(ConceptDatapoint::value).findFirst();
+        Optional<BigDecimal> prior = r.series(c).datapoints().stream()
+                .filter(d -> priorEnd.equals(d.periodEnd())).map(ConceptDatapoint::value).findFirst();
+        if (cur.isEmpty() || prior.isEmpty()) return Optional.empty();
+        return Optional.of(new BigDecimal[]{cur.get(), prior.get()});
+    }
+
+    private Optional<BigDecimal> growthPct(BigDecimal cur, BigDecimal prior) {
+        if (cur == null || prior == null || prior.signum() <= 0) return Optional.empty();
+        return Optional.of(cur.subtract(prior).divide(prior, MC).multiply(HUNDRED));
     }
 
     private Optional<BigDecimal> latest(SourceResult r, FundamentalConcept c) {

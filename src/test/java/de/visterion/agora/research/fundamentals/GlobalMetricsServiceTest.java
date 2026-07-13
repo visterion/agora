@@ -16,6 +16,9 @@ import static org.mockito.ArgumentMatchers.any; import static org.mockito.Argume
 class GlobalMetricsServiceTest {
     private ConceptSeries s(String unit, double v){ return new ConceptSeries(unit,
         List.of(new ConceptDatapoint(null, LocalDate.parse("2025-12-31"), BigDecimal.valueOf(v),2025,"FY",null,LocalDate.parse("2025-12-31")))); }
+    private ConceptSeries s2(String unit, double cur, double prior){ return new ConceptSeries(unit,
+        List.of(new ConceptDatapoint(null, LocalDate.parse("2025-12-31"), BigDecimal.valueOf(cur),2025,"FY",null,LocalDate.parse("2025-12-31")),
+                new ConceptDatapoint(null, LocalDate.parse("2024-12-31"), BigDecimal.valueOf(prior),2024,"FY",null,LocalDate.parse("2024-12-31")))); }
 
     @Test void ratioMetricsAtPercentScale() {
         FundamentalsRouter router = mock(FundamentalsRouter.class);
@@ -131,5 +134,50 @@ class GlobalMetricsServiceTest {
         assertThat(m.has("marketCapitalization")).isFalse();
         assertThat(m.has("pbAnnual")).isFalse();
         assertThat(m.has("peTTM")).isFalse();
+    }
+
+    @Test void revenueGrowthTTMYoyFromTwoLatestPoints() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        Map<FundamentalConcept,ConceptSeries> c = Map.of(
+            FundamentalConcept.REVENUE, s2("EUR",550,500));
+        when(router.facts(any())).thenReturn(new SourceResult(c, AbsenceSemantics.SPARSE));
+
+        var svc = new GlobalMetricsService(router, null, null);
+        var m = svc.metrics(Instrument.raw("SAP.DE")).metrics();
+        assertThat(m.path("revenueGrowthTTMYoy").decimalValue()).isEqualByComparingTo("10");
+    }
+
+    @Test void revenueGrowthTTMYoyOmittedWhenPriorNonPositive() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        Map<FundamentalConcept,ConceptSeries> c = Map.of(
+            FundamentalConcept.REVENUE, s2("EUR",550,0));
+        when(router.facts(any())).thenReturn(new SourceResult(c, AbsenceSemantics.SPARSE));
+
+        var svc = new GlobalMetricsService(router, null, null);
+        var m = svc.metrics(Instrument.raw("SAP.DE")).metrics();
+        assertThat(m.has("revenueGrowthTTMYoy")).isFalse();
+    }
+
+    @Test void revenueGrowthTTMYoyOmittedWhenOnlyOnePoint() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        Map<FundamentalConcept,ConceptSeries> c = Map.of(
+            FundamentalConcept.REVENUE, s("EUR",500));
+        when(router.facts(any())).thenReturn(new SourceResult(c, AbsenceSemantics.SPARSE));
+
+        var svc = new GlobalMetricsService(router, null, null);
+        var m = svc.metrics(Instrument.raw("SAP.DE")).metrics();
+        assertThat(m.has("revenueGrowthTTMYoy")).isFalse();
+    }
+
+    @Test void epsGrowthTTMYoyFromNetIncomeAndShares() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        Map<FundamentalConcept,ConceptSeries> c = Map.of(
+            FundamentalConcept.NET_INCOME, s2("EUR",110,100),
+            FundamentalConcept.SHARES_OUTSTANDING, s2("EUR",10,10));
+        when(router.facts(any())).thenReturn(new SourceResult(c, AbsenceSemantics.SPARSE));
+
+        var svc = new GlobalMetricsService(router, null, null);
+        var m = svc.metrics(Instrument.raw("SAP.DE")).metrics();
+        assertThat(m.path("epsGrowthTTMYoy").decimalValue()).isEqualByComparingTo("10");
     }
 }
