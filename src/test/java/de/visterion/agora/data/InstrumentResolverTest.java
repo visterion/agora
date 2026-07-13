@@ -55,11 +55,28 @@ class InstrumentResolverTest {
     @Test void suffixResolvesToUicAndCurrency() {
         wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
                 .withQueryParam("ExchangeId", equalTo("FSE")).willReturn(okJson(SAP_SEARCH)));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126/Stock")).willReturn(okJson("""
+            {"Uic":1126,"ExchangeId":"FSE","CurrencyCode":"EUR","PriceToContractFactor":1.0}""")));
         Instrument i = resolver(true).resolve("SAP.DE");
         assertThat(i.resolved()).isTrue();
         assertThat(i.uic()).isEqualTo(1126L);
         assertThat(i.currencyCode()).isEqualTo("EUR");
         assertThat(i.displaySymbol()).isEqualTo("SAP.DE");   // raw, not SAPG
+    }
+
+    @Test void suffixEnrichesFactorAndSettlementCurrencyFromDetails() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("ExchangeId", equalTo("FSE"))
+                .willReturn(okJson("""
+                  {"Data":[{"AssetType":"Stock","CurrencyCode":"EUR","ExchangeId":"FSE","Identifier":1126,"Symbol":"SAPG:xetr"}]}""")));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126/Stock")).willReturn(okJson("""
+            {"Uic":1126,"ExchangeId":"FSE","CurrencyCode":"EUR","CountryCode":"DE","Mic":"XETR","PriceToContractFactor":1.0}""")));
+        Instrument i = resolver(true).resolve("SAP.DE");
+        assertThat(i.uic()).isEqualTo(1126L);
+        assertThat(i.priceToContractFactor()).isEqualTo(1.0);
+        assertThat(i.mic()).isEqualTo("XETR");
+        assertThat(i.currencyCode()).isEqualTo("EUR");
+        assertThat(i.displaySymbol()).isEqualTo("SAP.DE");
     }
 
     @Test void emptySearchReturnsRawAndIsNegativelyCached() {
@@ -80,8 +97,11 @@ class InstrumentResolverTest {
 
     @Test void resolvedSuffixIsCachedFor24h() {
         wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson(SAP_SEARCH)));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126/Stock")).willReturn(okJson("""
+            {"Uic":1126,"ExchangeId":"FSE","CurrencyCode":"EUR","PriceToContractFactor":1.0}""")));
         SaxoInstrumentResolver r = resolver(true);
-        r.resolve("SAP.DE"); r.resolve("SAP.DE");
+        assertThat(r.resolve("SAP.DE").resolved()).isTrue();
+        assertThat(r.resolve("SAP.DE").resolved()).isTrue();
         wm.verify(1, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));
         clock.set(24 * 3600 * 1000L + 1);
         r.resolve("SAP.DE");
