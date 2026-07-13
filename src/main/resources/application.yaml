@@ -156,6 +156,8 @@ agora:
     indicators-file: ${AGORA_RESEARCH_INDICATORS_FILE:}
     r-atr-multiple: ${AGORA_RESEARCH_R_ATR_MULTIPLE:3.0}
     r-multiples: ${AGORA_RESEARCH_R_MULTIPLES:1,2,3}
+  fundamentals:
+    non-us-suffixes: ${AGORA_FUNDAMENTALS_NON_US_SUFFIXES:DE,MI,TO,L,T,HK,PA,AS,SW,AX,ST,CO,OL,HE,MC,BR,LS,VI,IR,NZ}
 
 management:
   endpoints:
