@@ -18,7 +18,7 @@ class SaxoMarketDataProviderTest {
     @BeforeEach void reset() { wm.resetAll(); }
 
     static final Instrument SAP_XETR = new Instrument(
-            "SAP.DE", "SAP.DE", null, null, "FSE", "EUR", 1126L, null, "Stock", true);
+            "SAP.DE", "SAP.DE", null, null, "FSE", "EUR", 1126L, null, "Stock", true, 1.0);
 
     static final String SAP_XETR_INFOPRICE = """
         {
@@ -197,7 +197,7 @@ class SaxoMarketDataProviderTest {
                 .willReturn(okJson("""
                   {"Quote":{"Mid":100.0,"PriceTypeBid":"Tradable","PriceTypeAsk":"Tradable"},
                    "PriceInfo":{"PercentChange":1.0},"DisplayAndFormat":{"Currency":"EUR"}}""")));
-        Instrument i = new Instrument("SAP.DE","SAP.DE",null,null,"FSE","EUR",1126L,null,"Stock",true);
+        Instrument i = new Instrument("SAP.DE","SAP.DE",null,null,"FSE","EUR",1126L,null,"Stock",true,1.0);
         Quote q = provider().quote(i);
         assertThat(q.price()).isEqualByComparingTo("100.0");
         wm.verify(0, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));   // no re-resolution

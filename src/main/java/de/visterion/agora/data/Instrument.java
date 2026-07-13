@@ -7,10 +7,11 @@ import java.util.Set;
  *  providers use {@link #displaySymbol()} (== rawInput). See the design spec. */
 public record Instrument(
         String rawInput, String displaySymbol, String isin, String mic, String exchangeId,
-        String currencyCode, Long uic, String countryCode, String assetType, boolean resolved) {
+        String currencyCode, Long uic, String countryCode, String assetType, boolean resolved,
+        double priceToContractFactor) {
 
     public static Instrument raw(String input) {
-        return new Instrument(input, input, null, null, null, null, null, null, "Stock", false);
+        return new Instrument(input, input, null, null, null, null, null, null, "Stock", false, 1.0);
     }
 
     public enum InputKind { US_OR_UNMAPPED, SUFFIXED, ISIN }

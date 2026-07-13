@@ -73,7 +73,7 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
             long id = hit.path("Identifier").asLong(0);
             if (id == 0) continue;
             return new Instrument(input, input, null, null, exchangeId,
-                    hit.path("CurrencyCode").asString(null), id, null, "Stock", true);
+                    hit.path("CurrencyCode").asString(null), id, null, "Stock", true, 1.0);
         }
         throw new IllegalStateException("no exchange hit");
     }
@@ -125,6 +125,6 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
         if (d == null) throw new IllegalStateException("no details");
         return new Instrument(isin, isin, d.path("Isin").asString(isin), d.path("Mic").asString(null),
                 d.path("ExchangeId").asString(null), d.path("CurrencyCode").asString(null),
-                uic, d.path("CountryCode").asString(null), "Stock", true);
+                uic, d.path("CountryCode").asString(null), "Stock", true, 1.0);
     }
 }

@@ -28,6 +28,10 @@ class InstrumentTest {
         assertThat(Instrument.isIsin("ABCDEFGHIJK1")).isFalse();
     }
 
+    @Test void rawFactoryDefaultsFactorToOne() {
+        assertThat(Instrument.raw("AAPL").priceToContractFactor()).isEqualTo(1.0);
+    }
+
     @Test void classifyRoutesInputs() {
         assertThat(Instrument.classify("AAPL", SUFFIXES)).isEqualTo(Instrument.InputKind.US_OR_UNMAPPED);
         assertThat(Instrument.classify("BRK.B", SUFFIXES)).isEqualTo(Instrument.InputKind.US_OR_UNMAPPED);
