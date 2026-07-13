@@ -4,6 +4,7 @@ import de.visterion.agora.data.Instrument;
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.MarketDataService;
 import de.visterion.agora.data.FxService;
+import de.visterion.agora.data.OhlcBar;
 import de.visterion.agora.fetch.edgar.ConceptDatapoint;
 import de.visterion.agora.fetch.edgar.EdgarService.ConceptSeries;
 import de.visterion.agora.fetch.finnhub.Fundamentals;
@@ -11,16 +12,16 @@ import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 import java.math.BigDecimal; import java.math.MathContext;
-import java.util.Comparator; import java.util.Optional;
+import java.util.Comparator; import java.util.List; import java.util.Objects; import java.util.Optional;
 
 @Component
 public class GlobalMetricsService {
     private static final MathContext MC = MathContext.DECIMAL64;
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
+    private static final ObjectMapper mapper = new ObjectMapper();
     private final FundamentalsRouter router;
     private final MarketDataService marketData;   // may be exercised in later tasks
     private final FxService fx;
-    private final ObjectMapper mapper = new ObjectMapper();
 
     public GlobalMetricsService(FundamentalsRouter router, MarketDataService marketData, FxService fx) {
         this.router = router; this.marketData = marketData; this.fx = fx;
@@ -44,7 +45,16 @@ public class GlobalMetricsService {
         ratio(m, "currentRatioQuarterly", ca, cl);
         Optional<BigDecimal> equity = (ta.isPresent() && tl.isPresent()) ? Optional.of(ta.get().subtract(tl.get())) : Optional.empty();
         ratio(m, "totalDebt/totalEquityQuarterly", debt, equity);
-        // OHLC/quote/FX-dependent metrics are added in Tasks 4-7.
+
+        if (marketData != null) {
+            try {
+                List<OhlcBar> bars = marketData.ohlc(inst.displaySymbol(), 260);
+                bars.stream().map(OhlcBar::close).filter(Objects::nonNull)
+                    .min(BigDecimal::compareTo).ifPresent(v -> m.put("52WeekLow", v));
+                bars.stream().map(OhlcBar::close).filter(Objects::nonNull)
+                    .max(BigDecimal::compareTo).ifPresent(v -> m.put("52WeekHigh", v));
+            } catch (MarketDataException ignore) { /* omit 52w metrics */ }
+        }
         return new Fundamentals(inst.displaySymbol(), m);
     }
 
@@ -52,7 +62,7 @@ public class GlobalMetricsService {
         return r.series(c).datapoints().stream()
                 .max(Comparator.comparing(ConceptDatapoint::periodEnd)).map(ConceptDatapoint::value);
     }
-    Optional<String> reportingUnit(SourceResult r) {
+    private Optional<String> reportingUnit(SourceResult r) {
         for (FundamentalConcept c : new FundamentalConcept[]{FundamentalConcept.TOTAL_ASSETS,
                 FundamentalConcept.TOTAL_LIABILITIES, FundamentalConcept.REVENUE}) {
             String u = r.series(c).unit(); if (u != null) return Optional.of(u);
