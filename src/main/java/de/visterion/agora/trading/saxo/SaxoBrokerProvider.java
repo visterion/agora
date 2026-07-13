@@ -70,8 +70,11 @@ public class SaxoBrokerProvider implements BrokerProvider {
     @Override
     public void probe() {
         try {
-            client.get().uri("/root/v1/user").header("Authorization", bearer())
+            var resp = client.get().uri("/root/v1/user").header("Authorization", bearer())
                     .retrieve().toBodilessEntity();
+            if (log.isDebugEnabled()) {
+                log.debug("saxo response [GET /root/v1/user]: status={}", resp.getStatusCode());
+            }
         } catch (BrokerException e) {
             throw e;
         } catch (Exception e) {
@@ -123,7 +126,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
         // via build(Object...) template variables are, by contrast, encoded exactly once
         // (strictly, per RFC 3986) — so '+' in ClientKey/AccountKey becomes %2B on the wire
         // instead of round-tripping as a literal '+' (which a server would decode as space).
-        JsonNode n = getJson(b -> b.path("/port/v1/balances")
+        JsonNode n = getJson("GET /port/v1/balances", b -> b.path("/port/v1/balances")
                 .queryParam("ClientKey", "{ck}")
                 .queryParam("AccountKey", "{ak}")
                 .build(ctx.clientKey(), ctx.accountKey()));
@@ -136,7 +139,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
     public List<Position> positions() {
         AccountContext ctx = accountContext();
         // See comment in account() re: TEMPLATE_AND_VALUES encoding.
-        JsonNode resp = followPagination(getJson(b -> b.path("/port/v1/netpositions")
+        JsonNode resp = followPagination(getJson("GET /port/v1/netpositions", b -> b.path("/port/v1/netpositions")
                 .queryParam("ClientKey", "{ck}")
                 .queryParam("AccountKey", "{ak}")
                 .queryParam("FieldGroups", "{fg}")
@@ -266,6 +269,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(fullBody)
                     .retrieve().body(JsonNode.class);
+            log.info("saxo response [POST /trade/v2/orders (bracket)]: status=success body={}", resp);
             String orderId = resp == null ? null : resp.path("OrderId").asString(null);
             return withLegIds(orderId, req.clientRef());
         } catch (RestClientResponseException e) {
@@ -282,7 +286,10 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 String message = errorBody.path("ErrorInfo").path("Message").asString(null);
                 if (message == null) message = errorBody.path("Message").asString(null);
                 if (message == null) message = rawBody(e);
-                log.info("saxo bracket rejected [{}]: {} for {}", code, message, req.symbol());
+                // Single consolidated INFO line: raw response (status/body) + parsed
+                // code/message, so a reject doesn't produce two separate log lines.
+                log.info("saxo response [POST /trade/v2/orders (bracket)]: status=400 body={} — rejected [{}]: {} for {}",
+                        rawBody(e), code, message, req.symbol());
                 if ("TooFarFromEntryOrder".equals(code)) {
                     log.info("saxo far-stop: bracket rejected TooFarFromEntryOrder for {} (stop {} vs entry {}), "
                             + "falling back to entry + standalone stop",
@@ -290,7 +297,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     return submitFarStopFallback(req, ri, ctx, opposite, entryFields);
                 }
             }
-            return writeError(e);
+            return writeError("POST /trade/v2/orders (bracket)", e);
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "saxo submitBracket failed: " + e.getMessage(), e);
@@ -323,11 +330,12 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(entryBody)
                     .retrieve().body(JsonNode.class);
+            log.info("saxo response [POST /trade/v2/orders (far-stop entry)]: status=success body={}", resp);
             entryId = resp == null ? null : resp.path("OrderId").asString(null);
         } catch (RestClientResponseException e) {
             // Nothing has been placed yet — safe to report as a plain reject, same as the
             // CLEAN path's error mapping.
-            return writeError(e);
+            return writeError("POST /trade/v2/orders (far-stop entry)", e);
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "saxo submitBracket (far-stop entry) failed: " + e.getMessage(), e);
@@ -353,8 +361,13 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(standaloneStop)
                     .retrieve().body(JsonNode.class);
+            log.info("saxo response [POST /trade/v2/orders (far-stop stop)]: status=success body={}", resp);
             stopId = resp == null ? null : resp.path("OrderId").asString(null);
         } catch (Exception e) {
+            if (e instanceof RestClientResponseException rce) {
+                log.info("saxo response [POST /trade/v2/orders (far-stop stop)]: status={} body={}",
+                        rce.getStatusCode().value(), rawBody(rce));
+            }
             stopFailure = e;
         }
 
@@ -585,14 +598,15 @@ public class SaxoBrokerProvider implements BrokerProvider {
         body.put("OrderPrice", newPrice);
         body.set("OrderDuration", durationNode(child.path("Duration")));
         try {
-            client.patch().uri("/trade/v2/orders")
+            JsonNode resp = client.patch().uri("/trade/v2/orders")
                     .header("Authorization", bearer())
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve().body(JsonNode.class);
+            log.info("saxo response [PATCH /trade/v2/orders (leg)]: status=success body={}", resp);
             return OrderResult.accepted(null, null, "replaced");
         } catch (RestClientResponseException e) {
-            return writeError(e);
+            return writeError("PATCH /trade/v2/orders (leg)", e);
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "saxo modifyBracket failed: " + e.getMessage(), e);
@@ -651,7 +665,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
             return OrderResult.rejected(e.getMessage(), "SYMBOL");
         }
         AccountContext ctx = accountContext();
-        JsonNode resp = followPagination(getJson(b -> b.path("/port/v1/netpositions")
+        JsonNode resp = followPagination(getJson("GET /port/v1/netpositions (flatten)", b -> b.path("/port/v1/netpositions")
                 .queryParam("ClientKey", "{ck}")
                 .queryParam("AccountKey", "{ak}")
                 .queryParam("FieldGroups", "{fg}")
@@ -749,13 +763,14 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve().body(JsonNode.class);
+            log.info("saxo response [POST /trade/v2/orders (flatten)]: status=success body={}", resp2);
             String orderId = resp2 == null ? null : resp2.path("OrderId").asString(null);
             BigDecimal remainingQty = available.subtract(closeQty);
             String status = related.error() == null ? "accepted"
                     : "accepted (warning: " + related.error() + ")";
             return OrderResult.accepted(orderId, null, status, effectiveCloseQty, remainingQty, null);
         } catch (RestClientResponseException e) {
-            return writeError(e);
+            return writeError("POST /trade/v2/orders (flatten)", e);
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "saxo flatten failed: " + e.getMessage(), e);
@@ -793,16 +808,19 @@ public class SaxoBrokerProvider implements BrokerProvider {
         try {
             // See account()/positions() re: TEMPLATE_AND_VALUES encoding — AccountKey is
             // bound as a build(Object...) template variable, never concatenated/URLEncoder-escaped.
-            client.delete()
+            var resp = client.delete()
                     .uri(b -> b.path("/trade/v2/orders/{id}")
                             .queryParam("AccountKey", "{ak}")
                             .build(brokerOrderId, ctx.accountKey()))
                     .header("Authorization", bearer())
                     .retrieve().toBodilessEntity();
+            log.info("saxo response [DELETE /trade/v2/orders/{}]: status={}", brokerOrderId, resp.getStatusCode());
             return OrderResult.accepted(brokerOrderId, null, "canceled");
         } catch (BrokerException e) {
             throw e;
         } catch (RestClientResponseException e) {
+            log.info("saxo response [DELETE /trade/v2/orders/{}]: status={} body={}",
+                    brokerOrderId, e.getStatusCode().value(), rawBody(e));
             throw readError(e);
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
@@ -855,9 +873,16 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * ErrorInfo → OrderResult.rejected (an order-level rejection, not an outage); 409 →
      * UNAVAILABLE (duplicate X-Request-ID replay); everything else delegates to readError
      * (404 → NOT_FOUND, 401/403 → UNAVAILABLE re-auth hint, else → UNAVAILABLE).
+     *
+     * <p>Also the single consolidation point for write-reject response logging: every write
+     * call site that doesn't already log its own reject (submitBracket's inline
+     * TooFarFromEntryOrder branch logs itself, see above) routes its
+     * {@code RestClientResponseException} here, so the response (status + body) is logged
+     * exactly once per reject, tagged with the caller-supplied endpoint label.
      */
-    private static OrderResult writeError(RestClientResponseException e) {
+    private static OrderResult writeError(String endpoint, RestClientResponseException e) {
         int status = e.getStatusCode().value();
+        log.info("saxo response [{}]: status={} body={}", endpoint, status, rawBody(e));
         if (status == 400) {
             JsonNode errorBody = parseErrorBody(e);
             String message = errorBody.path("ErrorInfo").path("Message").asString(null);
@@ -890,13 +915,29 @@ public class SaxoBrokerProvider implements BrokerProvider {
     // ---- helpers ----
 
     JsonNode getJson(String uri) {
-        return exchange(() -> client.get().uri(uri).header("Authorization", bearer())
+        JsonNode n = exchange(() -> client.get().uri(uri).header("Authorization", bearer())
                 .retrieve().body(JsonNode.class));
+        logRead("GET " + uri, n);
+        return n;
     }
 
-    JsonNode getJson(Function<UriBuilder, URI> uriFn) {
-        return exchange(() -> client.get().uri(uriFn).header("Authorization", bearer())
+    JsonNode getJson(String label, Function<UriBuilder, URI> uriFn) {
+        JsonNode n = exchange(() -> client.get().uri(uriFn).header("Authorization", bearer())
                 .retrieve().body(JsonNode.class));
+        logRead(label, n);
+        return n;
+    }
+
+    /**
+     * High-frequency reads (positions/account/orders/instrument-details/probe) are logged at
+     * DEBUG rather than INFO — reconcile polls hit these constantly, so INFO would spam the
+     * log — and the {@link JsonNode} body is only serialized to a log string when DEBUG is
+     * actually enabled, per the file's convention of guarding non-trivial log-arg work.
+     */
+    private static void logRead(String endpoint, JsonNode body) {
+        if (log.isDebugEnabled()) {
+            log.debug("saxo response [{}]: body={}", endpoint, body);
+        }
     }
 
     private JsonNode exchange(Supplier<JsonNode> call) {
@@ -937,6 +978,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
             if (next == null || next.isBlank()) break;
             current = exchange(() -> client.get().uri(URI.create(next)).header("Authorization", bearer())
                     .retrieve().body(JsonNode.class));
+            logRead("GET " + next + " (pagination continuation)", current);
             current.path("Data").forEach(allData::add);
             pages++;
         }

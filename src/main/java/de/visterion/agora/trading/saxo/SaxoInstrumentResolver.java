@@ -2,6 +2,8 @@ package de.visterion.agora.trading.saxo;
 
 import de.visterion.agora.data.TtlCache;
 import de.visterion.agora.trading.BrokerException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 import tools.jackson.databind.JsonNode;
@@ -21,6 +23,8 @@ import java.util.function.Supplier;
  * typo'd/unsupported symbol must not hammer the Saxo search endpoint every call.
  */
 public class SaxoInstrumentResolver {
+
+    private static final Logger log = LoggerFactory.getLogger(SaxoInstrumentResolver.class);
 
     public record ResolvedInstrument(long uic, String assetType, String saxoSymbol) {}
 
@@ -88,6 +92,9 @@ public class SaxoInstrumentResolver {
                     })
                     .header("Authorization", bearer.get())
                     .retrieve().body(JsonNode.class);
+            if (log.isDebugEnabled()) {
+                log.debug("saxo response [GET /ref/v1/instruments]: body={}", resp);
+            }
         } catch (BrokerException e) {
             throw e;
         } catch (RestClientResponseException e) {
