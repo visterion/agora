@@ -5,6 +5,7 @@ import de.visterion.agora.trading.saxo.SaxoDataAccess;
 import org.junit.jupiter.api.*;
 import org.springframework.web.client.RestClient;
 
+import java.math.BigDecimal;
 import java.util.Optional;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
@@ -231,6 +232,21 @@ class SaxoMarketDataProviderTest {
         Quote q = provider().quote(vod);
         assertThat(q.price()).isEqualByComparingTo("1.147");   // 114.7 × 0.01
         assertThat(q.currency()).isEqualTo("GBP");
+    }
+
+    @Test void factorOnePreservesPriceScale() {
+        // Regression test: multiplying by BigDecimal.valueOf(1.0) adds a trailing zero
+        // (scale 1), turning 137.64 into 137.640. Use BigDecimal.ONE (scale 0) instead
+        // to preserve the input scale.
+        wm.stubFor(get(urlPathEqualTo("/trade/v1/infoprices"))
+                .withQueryParam("Uic", equalTo("1126"))
+                .willReturn(okJson("""
+                  {"Quote":{"Mid":137.64,"PriceTypeBid":"Tradable","PriceTypeAsk":"Tradable"},
+                   "PriceInfo":{"PercentChange":-0.16},"DisplayAndFormat":{"Currency":"EUR"}}""")));
+        Instrument inst = new Instrument("SAP.DE", "SAP.DE", null, null, "FSE", "EUR", 1126L, null, "Stock", true, 1.0);
+        Quote q = provider().quote(inst);
+        // isEqualTo is scale-sensitive; asserting exact match, not just numeric equality
+        assertThat(q.price()).isEqualTo(new BigDecimal("137.64"));
     }
 
     @Test void ohlcAppliesFactorToEveryBar() {
