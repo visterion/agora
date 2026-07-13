@@ -1,7 +1,6 @@
 package de.visterion.agora.research.fundamentals;
 
-import de.visterion.agora.fetch.edgar.EdgarService;
-import de.visterion.agora.fetch.edgar.EdgarService.CompanyFacts;
+import de.visterion.agora.data.InstrumentResolver;
 import de.visterion.agora.fetch.edgar.EdgarService.ConceptSeries;
 import de.visterion.agora.fetch.split.SplitAdjuster;
 import de.visterion.agora.fetch.split.SplitEvent;
@@ -14,7 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Computes the Piotroski (2000) F-score from EDGAR company facts, strict + coverage:
+/** Computes the Piotroski (2000) F-score from routed fundamentals facts, strict + coverage:
  *  a criterion scores 1 only if it is both met and available; unavailable criteria score
  *  0 but are surfaced separately via {@link PiotroskiFScore#criteriaAvailable()}.
  *  Every cross-concept ratio (ROA, leverage, margin, turnover deltas) is only evaluated when
@@ -26,31 +25,33 @@ public class FundamentalScoreService {
 
     private static final MathContext MC = MathContext.DECIMAL64;
 
-    private final EdgarService edgar;
+    private final FundamentalsRouter router;
+    private final InstrumentResolver resolver;
     private final SplitService splitService;
 
-    public FundamentalScoreService(EdgarService edgar, SplitService splitService) {
-        this.edgar = edgar;
+    public FundamentalScoreService(FundamentalsRouter router,
+                                   InstrumentResolver resolver,
+                                   SplitService splitService) {
+        this.router = router;
+        this.resolver = resolver;
         this.splitService = splitService;
     }
 
     public PiotroskiFScore piotroski(String symbol) {
-        CompanyFacts f = edgar.companyFacts(symbol, null);
+        SourceResult r = router.facts(resolver.resolve(symbol));
+        boolean complete = r.semantics() == AbsenceSemantics.COMPLETE;
 
-        AnnualFacts ni = AnnualFacts.of(first(f, "NetIncomeLoss"));
-        AnnualFacts cfo = AnnualFacts.of(first(f, "NetCashProvidedByUsedInOperatingActivities",
-                "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"));
-        AnnualFacts assets = AnnualFacts.ofInstant(first(f, "Assets"));
-        ConceptSeries ltDebtSeries = first(f, "LongTermDebtNoncurrent", "LongTermDebt");
+        AnnualFacts ni = AnnualFacts.of(r.series(FundamentalConcept.NET_INCOME));
+        AnnualFacts cfo = AnnualFacts.of(r.series(FundamentalConcept.OPERATING_CASH_FLOW));
+        AnnualFacts assets = AnnualFacts.ofInstant(r.series(FundamentalConcept.TOTAL_ASSETS));
+        ConceptSeries ltDebtSeries = r.series(FundamentalConcept.LONG_TERM_DEBT);
         AnnualFacts ltDebt = AnnualFacts.ofInstant(ltDebtSeries);
-        boolean debtFree = ltDebtSeries.datapoints().isEmpty();
-        AnnualFacts curA = AnnualFacts.ofInstant(first(f, "AssetsCurrent"));
-        AnnualFacts curL = AnnualFacts.ofInstant(first(f, "LiabilitiesCurrent"));
-        AnnualFacts shares = AnnualFacts.ofInstant(
-                first(f, "CommonStockSharesOutstanding", "WeightedAverageNumberOfSharesOutstandingBasic"));
-        AnnualFacts gross = AnnualFacts.of(first(f, "GrossProfit"));
-        AnnualFacts rev = AnnualFacts.of(
-                first(f, "Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"));
+        boolean debtFree = complete && ltDebtSeries.datapoints().isEmpty();
+        AnnualFacts curA = AnnualFacts.ofInstant(r.series(FundamentalConcept.CURRENT_ASSETS));
+        AnnualFacts curL = AnnualFacts.ofInstant(r.series(FundamentalConcept.CURRENT_LIABILITIES));
+        AnnualFacts shares = AnnualFacts.ofInstant(r.series(FundamentalConcept.SHARES_OUTSTANDING));
+        AnnualFacts gross = AnnualFacts.of(r.series(FundamentalConcept.GROSS_PROFIT));
+        AnnualFacts rev = AnnualFacts.of(r.series(FundamentalConcept.REVENUE));
 
         Map<String, PiotroskiFScore.Criterion> criteria = new LinkedHashMap<>();
 
@@ -76,7 +77,8 @@ public class FundamentalScoreService {
 
         // A company with no LongTermDebt concept at all is debt-free, not "unknown" — that is
         // the best case for this criterion (0 -> 0 debt/assets ratio never increases), so it
-        // scores 1 rather than being docked for missing data.
+        // scores 1 rather than being docked for missing data. Only trustworthy under COMPLETE
+        // semantics: under SPARSE, an absent concept may just mean the source didn't cover it.
         boolean leverageAvail;
         boolean leverageMet;
         if (debtFree) {
@@ -101,17 +103,23 @@ public class FundamentalScoreService {
         if (shares.available()) {
             try {
                 List<SplitEvent> splits = splitService.splits(symbol);
-                // Splits between the prior and current fiscal-year-end inflate the raw share
-                // count without any real issuance; bring the prior count onto the current
-                // (post-split) basis before comparing, using the cumulative forward-split
-                // factor restricted to that window (factor-after-prior / factor-after-current
-                // cancels out splits that happened after the current fiscal-year-end).
-                BigDecimal factorAfterPrior = SplitAdjuster.cumulativeFactorAfter(shares.priorEnd(), splits);
-                BigDecimal factorAfterCurrent = SplitAdjuster.cumulativeFactorAfter(shares.currentEnd(), splits);
-                BigDecimal windowFactor = factorAfterPrior.divide(factorAfterCurrent, MC);
-                BigDecimal adjustedPrior = shares.prior().multiply(windowFactor, MC);
-                noNewSharesAvail = true;
-                noNewSharesMet = shares.current().compareTo(adjustedPrior) <= 0;
+                if (!complete && splits.isEmpty()) {
+                    // SPARSE source: empty split list = unknown coverage, not "no split" -> unavailable.
+                    noNewSharesAvail = false;
+                    noNewSharesMet = false;
+                } else {
+                    // Splits between the prior and current fiscal-year-end inflate the raw share
+                    // count without any real issuance; bring the prior count onto the current
+                    // (post-split) basis before comparing, using the cumulative forward-split
+                    // factor restricted to that window (factor-after-prior / factor-after-current
+                    // cancels out splits that happened after the current fiscal-year-end).
+                    BigDecimal factorAfterPrior = SplitAdjuster.cumulativeFactorAfter(shares.priorEnd(), splits);
+                    BigDecimal factorAfterCurrent = SplitAdjuster.cumulativeFactorAfter(shares.currentEnd(), splits);
+                    BigDecimal windowFactor = factorAfterPrior.divide(factorAfterCurrent, MC);
+                    BigDecimal adjustedPrior = shares.prior().multiply(windowFactor, MC);
+                    noNewSharesAvail = true;
+                    noNewSharesMet = shares.current().compareTo(adjustedPrior) <= 0;
+                }
             } catch (RuntimeException e) {
                 // split data unavailable/unreliable -> do not guess; exclude the criterion
                 // rather than mis-scoring a real split as share issuance (or vice versa).
@@ -176,15 +184,5 @@ public class FundamentalScoreService {
 
     private static BigDecimal divide(BigDecimal numerator, BigDecimal denominator) {
         return numerator.divide(denominator, MC);
-    }
-
-    private static ConceptSeries first(CompanyFacts f, String... tags) {
-        for (String tag : tags) {
-            ConceptSeries series = f.series(tag);
-            if (series != null && series.datapoints() != null && !series.datapoints().isEmpty()) {
-                return series;
-            }
-        }
-        return new ConceptSeries(null, List.of());
     }
 }
