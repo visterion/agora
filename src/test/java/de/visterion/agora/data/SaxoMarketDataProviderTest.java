@@ -17,6 +17,9 @@ class SaxoMarketDataProviderTest {
     @AfterAll static void stop() { wm.stop(); }
     @BeforeEach void reset() { wm.resetAll(); }
 
+    static final Instrument SAP_XETR = new Instrument(
+            "SAP.DE", "SAP.DE", null, null, "FSE", "EUR", 1126L, null, "Stock", true);
+
     static final String SAP_XETR_INFOPRICE = """
         {
           "AssetType": "Stock",
@@ -34,29 +37,22 @@ class SaxoMarketDataProviderTest {
         SaxoDataAccess access = new SaxoDataAccess(
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 () -> withBearer ? Optional.of("Bearer t") : Optional.empty());
-        return new SaxoMarketDataProvider(access, new SaxoDataSymbolResolver(access, () -> 0L));
+        return new SaxoMarketDataProvider(access);
     }
 
     private SaxoMarketDataProvider provider() {
         return provider(true);
     }
 
-    private void stubSapSearch() {
-        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("""
-            {"Data":[{"AssetType":"Stock","CurrencyCode":"EUR","ExchangeId":"FSE","Identifier":1126,"Symbol":"SAPG:xetr"}]}
-            """)));
-    }
-
     @Test void nameIsSaxo() { assertThat(provider(true).name()).isEqualTo("saxo"); }
 
     @Test void quoteMapsMidPercentChangeAndCurrency() {
-        stubSapSearch();
         wm.stubFor(get(urlPathEqualTo("/trade/v1/infoprices"))
                 .withQueryParam("Uic", equalTo("1126"))
                 .withQueryParam("AssetType", equalTo("Stock"))
                 .withQueryParam("FieldGroups", equalTo("Quote,PriceInfo,DisplayAndFormat"))
                 .willReturn(okJson(SAP_XETR_INFOPRICE)));
-        Quote q = provider(true).quote("SAP.DE");
+        Quote q = provider(true).quote(SAP_XETR);
         assertThat(q.symbol()).isEqualTo("SAP.DE");
         assertThat(q.price()).isEqualByComparingTo("137.64");
         assertThat(q.dayChangePercent()).isEqualByComparingTo("-0.16");
@@ -64,46 +60,42 @@ class SaxoMarketDataProviderTest {
     }
 
     @Test void quoteWithoutBearerIsUnavailable() {
-        assertThatThrownBy(() -> provider(false).quote("SAP.DE"))
+        assertThatThrownBy(() -> provider(false).quote(SAP_XETR))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
 
     @Test void quoteNoAccessPriceTypeIsUnavailable() {
-        stubSapSearch();
         wm.stubFor(get(urlPathEqualTo("/trade/v1/infoprices")).willReturn(okJson("""
             {"Quote": {"Mid": 137.64, "PriceTypeAsk": "NoAccess", "PriceTypeBid": "NoAccess"},
              "DisplayAndFormat": {"Currency": "EUR"}, "Uic": 1126}
             """)));
-        assertThatThrownBy(() -> provider(true).quote("SAP.DE"))
+        assertThatThrownBy(() -> provider(true).quote(SAP_XETR))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
 
     @Test void quoteMissingMidIsUnavailable() {
-        stubSapSearch();
         wm.stubFor(get(urlPathEqualTo("/trade/v1/infoprices")).willReturn(okJson("""
             {"Quote": {"ErrorCode": "None"}, "DisplayAndFormat": {"Currency": "EUR"}, "Uic": 1126}
             """)));
-        assertThatThrownBy(() -> provider(true).quote("SAP.DE"))
+        assertThatThrownBy(() -> provider(true).quote(SAP_XETR))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
 
     @Test void quoteMissingCurrencyIsUnavailable() {
-        stubSapSearch();
         wm.stubFor(get(urlPathEqualTo("/trade/v1/infoprices")).willReturn(okJson("""
             {"Quote": {"Mid": 137.64}, "Uic": 1126}
             """)));
-        assertThatThrownBy(() -> provider(true).quote("SAP.DE"))
+        assertThatThrownBy(() -> provider(true).quote(SAP_XETR))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
 
     @Test void quoteHttpErrorIsUnavailable() {
-        stubSapSearch();
         wm.stubFor(get(urlPathEqualTo("/trade/v1/infoprices")).willReturn(status(500)));
-        assertThatThrownBy(() -> provider(true).quote("SAP.DE"))
+        assertThatThrownBy(() -> provider(true).quote(SAP_XETR))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
@@ -123,7 +115,6 @@ class SaxoMarketDataProviderTest {
     }
 
     @Test void ohlcMapsBarsOldestFirst() {
-        stubSapSearch();
         stubAccounts();
         wm.stubFor(get(urlPathEqualTo("/chart/v3/charts"))
                 .withQueryParam("Uic", equalTo("1126"))
@@ -132,7 +123,7 @@ class SaxoMarketDataProviderTest {
                 .withQueryParam("Count", equalTo("3"))
                 .withQueryParam("AccountKey", equalTo("ACC-KEY"))
                 .willReturn(okJson(CHART_BARS)));
-        var bars = provider(true).ohlc("SAP.DE", 3);
+        var bars = provider(true).ohlc(SAP_XETR, 3);
         assertThat(bars).hasSize(3);
         assertThat(bars.get(0).date()).isEqualTo("2026-07-07");
         assertThat(bars.get(0).open()).isEqualByComparingTo("315.18");
@@ -142,29 +133,26 @@ class SaxoMarketDataProviderTest {
     }
 
     @Test void ohlcTrimsToRequestedDays() {
-        stubSapSearch();
         stubAccounts();
         wm.stubFor(get(urlPathEqualTo("/chart/v3/charts")).willReturn(okJson(CHART_BARS)));
-        var bars = provider(true).ohlc("SAP.DE", 2);
+        var bars = provider(true).ohlc(SAP_XETR, 2);
         assertThat(bars).hasSize(2);
         assertThat(bars.get(0).date()).isEqualTo("2026-07-08");   // oldest trimmed away
     }
 
     @Test void ohlcEmptyDataThrowsNotFound() {
-        stubSapSearch();
         stubAccounts();
         wm.stubFor(get(urlPathEqualTo("/chart/v3/charts")).willReturn(okJson("""
             {"Data":[],"DataVersion":1}
             """)));
-        assertThatThrownBy(() -> provider(true).ohlc("SAP.DE", 3))
+        assertThatThrownBy(() -> provider(true).ohlc(SAP_XETR, 3))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
     }
 
     @Test void ohlcWithoutAccountKeyIsUnavailable() {
-        stubSapSearch();
         wm.stubFor(get(urlPathEqualTo("/port/v1/accounts/me")).willReturn(status(401)));
-        assertThatThrownBy(() -> provider(true).ohlc("SAP.DE", 3))
+        assertThatThrownBy(() -> provider(true).ohlc(SAP_XETR, 3))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
@@ -174,7 +162,6 @@ class SaxoMarketDataProviderTest {
         // cap's-worth (1200), must NOT be treated as a silently-truncated success — the
         // caller can't tell that from "we asked for exactly 1200 and got 1200 back" if we
         // return normally, so the fallback chain never gets a chance at a fuller provider.
-        stubSapSearch();
         stubAccounts();
         StringBuilder bars = new StringBuilder("{\"Data\":[");
         for (int i = 0; i < 1200; i++) {
@@ -187,7 +174,7 @@ class SaxoMarketDataProviderTest {
         wm.stubFor(get(urlPathEqualTo("/chart/v3/charts")).withQueryParam("Count", equalTo("1200"))
                 .willReturn(okJson(bars.toString())));
 
-        assertThatThrownBy(() -> provider(true).ohlc("SAP.DE", 2000))
+        assertThatThrownBy(() -> provider(true).ohlc(SAP_XETR, 2000))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.NOT_FOUND));
     }
@@ -196,12 +183,11 @@ class SaxoMarketDataProviderTest {
         // A brand-new/illiquid instrument genuinely has fewer bars than the cap even though
         // >1200 days were requested — that's real data, not truncation, and must still
         // succeed (distinguishing this from the truncation case above is the whole point).
-        stubSapSearch();
         stubAccounts();
         wm.stubFor(get(urlPathEqualTo("/chart/v3/charts")).withQueryParam("Count", equalTo("1200"))
                 .willReturn(okJson(CHART_BARS)));   // only 3 bars available
 
-        var bars = provider(true).ohlc("SAP.DE", 2000);
+        var bars = provider(true).ohlc(SAP_XETR, 2000);
         assertThat(bars).hasSize(3);
     }
 
@@ -225,10 +211,18 @@ class SaxoMarketDataProviderTest {
     }
 
     @Test void ohlcHttpErrorIsUnavailable() {
-        stubSapSearch();
         stubAccounts();
         wm.stubFor(get(urlPathEqualTo("/chart/v3/charts")).willReturn(status(429)));
-        assertThatThrownBy(() -> provider(true).ohlc("SAP.DE", 3))
+        assertThatThrownBy(() -> provider(true).ohlc(SAP_XETR, 3))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+    }
+
+    @Test void quoteStringPathSelfSkips() {
+        // Documents the self-skip contract: the String overload is only reached via the
+        // default-interface batch fallback (bare displaySymbol) — Saxo cannot serve without
+        // an identity-resolved uic, so it throws UNAVAILABLE rather than attempting resolution.
+        assertThatThrownBy(() -> provider().quote("AAPL"))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }

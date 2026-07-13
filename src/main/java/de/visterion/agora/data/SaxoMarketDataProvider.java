@@ -30,11 +30,9 @@ import java.util.List;
 public class SaxoMarketDataProvider implements MarketDataProvider {
 
     private final SaxoDataAccess access;
-    private final SaxoDataSymbolResolver resolver;
 
-    public SaxoMarketDataProvider(SaxoDataAccess access, SaxoDataSymbolResolver resolver) {
+    public SaxoMarketDataProvider(SaxoDataAccess access) {
         this.access = access;
-        this.resolver = resolver;
     }
 
     @Override
@@ -44,8 +42,8 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
 
     @Override
     public Quote quote(String symbol) {
-        long uic = resolver.resolve(symbol);
-        return quoteByUic(uic, symbol);
+        throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                "saxo: string path requires identity resolution", null);
     }
 
     @Override
@@ -100,8 +98,8 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
 
     @Override
     public List<OhlcBar> ohlc(String symbol, int days) {
-        long uic = resolver.resolve(symbol);
-        return ohlcByUic(uic, days, symbol);
+        throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                "saxo: string path requires identity resolution", null);
     }
 
     @Override
