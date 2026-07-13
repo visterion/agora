@@ -11,6 +11,11 @@ public interface MarketDataProvider {
     Quote quote(String symbol);
     List<OhlcBar> ohlc(String symbol, int days);
 
+    /** Identity-aware entry points. Default = today's string path via displaySymbol.
+     *  Only providers that consume the canonical identity (Saxo→UIC) override these. */
+    default Quote quote(Instrument inst) { return quote(inst.displaySymbol()); }
+    default List<OhlcBar> ohlc(Instrument inst, int days) { return ohlc(inst.displaySymbol(), days); }
+
     /** Batch quotes; default resolves per-symbol and omits symbols that fail. */
     default Map<String, Quote> quotes(Collection<String> symbols) {
         Map<String, Quote> out = new LinkedHashMap<>();
