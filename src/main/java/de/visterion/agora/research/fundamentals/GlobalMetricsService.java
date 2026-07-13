@@ -57,10 +57,11 @@ public class GlobalMetricsService {
         }
 
         String quoteCcy = null;
+        Optional<BigDecimal> price = Optional.empty();
         if (marketData != null) {
             try {
                 var q = marketData.quote(inst.displaySymbol());
-                if (q != null) quoteCcy = q.currency();
+                if (q != null) { quoteCcy = q.currency(); price = Optional.ofNullable(q.price()); }
             } catch (MarketDataException ignore) {}
         }
         Optional<BigDecimal> ocf = latest(r, FundamentalConcept.OPERATING_CASH_FLOW),
@@ -72,6 +73,16 @@ public class GlobalMetricsService {
                 BigDecimal inQuote = perShareRep.multiply(fx.rate(repCcy.get(), quoteCcy).rate(), MC);
                 m.put("freeCashFlowPerShareTTM", inQuote);
             } catch (MarketDataException ignore) { /* omit */ }
+        }
+
+        if (price.isPresent() && sh.isPresent() && quoteCcy!=null && repCcy.isPresent()) {
+            try {
+                BigDecimal capQuote = price.get().multiply(sh.get(), MC);
+                BigDecimal capRep = capQuote.multiply(fx.rate(quoteCcy, repCcy.get()).rate(), MC);
+                m.put("marketCapitalization", capRep.divide(BigDecimal.valueOf(1_000_000L), MC));
+                if (equity.isPresent() && equity.get().signum()!=0) m.put("pbAnnual", capRep.divide(equity.get(), MC));
+                if (ni.isPresent() && ni.get().signum()!=0) m.put("peTTM", capRep.divide(ni.get(), MC));
+            } catch (MarketDataException ignore) { /* omit cap/pb/pe */ }
         }
         return new Fundamentals(inst.displaySymbol(), m);
     }
