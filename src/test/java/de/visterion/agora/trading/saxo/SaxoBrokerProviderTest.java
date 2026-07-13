@@ -527,6 +527,9 @@ class SaxoBrokerProviderTest {
                             {"ErrorInfo":{"ErrorCode":"SomeStopRejection","Message":"stop rejected"}}
                             """)));
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/E1")).willReturn(aResponse().withStatus(200)));
+        // entry was purely unfilled: cancel (200) removed the working order, so the
+        // fail-safe's always-on flatten finds no residual position — NOT_FOUND is tolerated.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("{\"Data\":[]}")));
 
         var r = provider.submitBracket(bracketReq());
 
@@ -534,6 +537,47 @@ class SaxoBrokerProviderTest {
         assertThat(r.rejectCode()).isEqualTo("STOP_PLACEMENT_FAILED");
         wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/E1"))
                 .withQueryParam("AccountKey", equalTo("Acc+Key/1==")));
+        wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions")));
+        // no position existed (pure unfilled) — flatten's NOT_FOUND is tolerated without a
+        // third order POST (only the entry + the failed stop were placed above)
+        wm.verify(2, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void submitBracketFarStopFallbackFlattensPartialFillAfterSuccessfulCancel() {
+        stubInstrument();
+        stubPrecheckSlTooFar();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-partial-fill")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
+                .willSetStateTo("entry-placed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-partial-fill")
+                .whenScenarioStateIs("entry-placed")
+                .willReturn(aResponse().withStatus(500))
+                .willSetStateTo("stop-failed"));
+        // flatten's own closing Market order for the residual position left by the partial fill
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-partial-fill")
+                .whenScenarioStateIs("stop-failed")
+                .willReturn(okJson("{\"OrderId\":\"F1\"}")));
+        // cancel succeeds (200) — Saxo cancels only the still-working remainder, but a partial
+        // fill still leaves a live, unprotected position behind that cancel alone cannot see.
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/E1")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":1.0,"Uic":211,"AssetType":"Stock"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("{\"Data\":[]}")));
+
+        var r = provider.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("STOP_PLACEMENT_FAILED");
+        wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/E1")));
+        // this is the previously-uncovered gap: flatten must run even though cancel succeeded
+        wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions")));
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
+                .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell"))));
     }
 
     @Test
