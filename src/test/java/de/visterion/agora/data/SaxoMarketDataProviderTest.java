@@ -85,10 +85,14 @@ class SaxoMarketDataProviderTest {
     }
 
     @Test void quoteMissingCurrencyIsUnavailable() {
+        // No currencyCode on the Instrument (raw/edge case) AND no DisplayAndFormat.Currency
+        // in the response -- the fallback has nothing to fall back to.
         wm.stubFor(get(urlPathEqualTo("/trade/v1/infoprices")).willReturn(okJson("""
             {"Quote": {"Mid": 137.64}, "Uic": 1126}
             """)));
-        assertThatThrownBy(() -> provider(true).quote(SAP_XETR))
+        Instrument noCurrency = new Instrument(
+                "SAP.DE", "SAP.DE", null, null, "FSE", null, 1126L, null, "Stock", true, 1.0);
+        assertThatThrownBy(() -> provider(true).quote(noCurrency))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
@@ -216,6 +220,30 @@ class SaxoMarketDataProviderTest {
         assertThatThrownBy(() -> provider(true).ohlc(SAP_XETR, 3))
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+    }
+
+    @Test void quoteAppliesPriceToContractFactorAndReportsSettlementCurrency() {
+        wm.stubFor(get(urlPathEqualTo("/trade/v1/infoprices")).withQueryParam("Uic", equalTo("899"))
+                .willReturn(okJson("""
+                  {"Quote":{"Mid":114.7,"PriceTypeBid":"Firm","PriceTypeAsk":"Firm"},
+                   "PriceInfo":{"PercentChange":4.18},"DisplayAndFormat":{"Currency":"GBP"}}""")));
+        Instrument vod = new Instrument("VOD.L","VOD.L",null,"XLON","LSE_SETS","GBP",899L,"GB","Stock",true,0.01);
+        Quote q = provider().quote(vod);
+        assertThat(q.price()).isEqualByComparingTo("1.147");   // 114.7 × 0.01
+        assertThat(q.currency()).isEqualTo("GBP");
+    }
+
+    @Test void ohlcAppliesFactorToEveryBar() {
+        stubAccounts();
+        wm.stubFor(get(urlPathEqualTo("/chart/v3/charts")).withQueryParam("Uic", equalTo("899"))
+                .willReturn(okJson("""
+                  {"Data":[{"Time":"2026-07-10T00:00:00Z","Open":110,"High":116,"Low":109,"Close":114.7,"Volume":100}]}""")));
+        Instrument vod = new Instrument("VOD.L","VOD.L",null,"XLON","LSE_SETS","GBP",899L,"GB","Stock",true,0.01);
+        var bars = provider().ohlc(vod, 5);
+        assertThat(bars).singleElement().satisfies(b -> {
+            assertThat(b.close()).isEqualByComparingTo("1.147");
+            assertThat(b.open()).isEqualByComparingTo("1.10");
+        });
     }
 
     @Test void quoteStringPathSelfSkips() {

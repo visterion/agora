@@ -50,11 +50,13 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
     public Quote quote(Instrument inst) {
         if (inst.uic() == null) throw new MarketDataException(
                 MarketDataException.Kind.UNAVAILABLE, "saxo: no uic for " + inst.rawInput(), null);
-        return quoteByUic(inst.uic(), inst.rawInput());
+        return quoteByUic(inst);
     }
 
-    private Quote quoteByUic(long uic, String label) {
+    private Quote quoteByUic(Instrument inst) {
         String bearer = requireBearer();
+        long uic = inst.uic();
+        String label = inst.rawInput();
 
         JsonNode root;
         try {
@@ -81,19 +83,22 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "saxo market data not enabled (NoAccess) for " + label, null);
         }
-        BigDecimal price = bd(q.path("Mid"));
-        if (price.signum() == 0) {
+        BigDecimal rawMid = bd(q.path("Mid"));
+        if (rawMid.signum() == 0) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "saxo infoprice has no Mid for " + label, null);
         }
-        String currency = root.path("DisplayAndFormat").path("Currency").asString("");
+        BigDecimal factor = BigDecimal.valueOf(inst.priceToContractFactor());
+        BigDecimal price = rawMid.multiply(factor);
+        String currency = inst.currencyCode() != null && !inst.currencyCode().isBlank()
+                ? inst.currencyCode()
+                : root.path("DisplayAndFormat").path("Currency").asString("");   // fallback for a raw/edge Instrument
         if (currency.isBlank()) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "saxo infoprice has no currency for " + label, null);
         }
         BigDecimal pct = bd(root.path("PriceInfo").path("PercentChange"));
-        MinorUnitCurrency n = MinorUnitCurrency.of(currency);
-        return new Quote(label, n.apply(price), pct, n.currency());
+        return new Quote(label, price, pct, currency);
     }
 
     @Override
@@ -106,11 +111,14 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
     public List<OhlcBar> ohlc(Instrument inst, int days) {
         if (inst.uic() == null) throw new MarketDataException(
                 MarketDataException.Kind.UNAVAILABLE, "saxo: no uic for " + inst.rawInput(), null);
-        return ohlcByUic(inst.uic(), days, inst.rawInput());
+        return ohlcByUic(inst, days);
     }
 
-    private List<OhlcBar> ohlcByUic(long uic, int days, String label) {
+    private List<OhlcBar> ohlcByUic(Instrument inst, int days) {
         String bearer = requireBearer();
+        long uic = inst.uic();
+        String label = inst.rawInput();
+        BigDecimal factor = BigDecimal.valueOf(inst.priceToContractFactor());
         String accountKey = access.accountKey().orElseThrow(() -> new MarketDataException(
                 MarketDataException.Kind.UNAVAILABLE, "saxo: no account key available", null));
         int count = Math.min(days, 1200);   // Saxo chart max sample count
@@ -145,8 +153,8 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
                 LocalDate date;
                 try { date = LocalDate.parse(t.substring(0, 10)); }
                 catch (Exception e) { continue; }
-                out.add(new OhlcBar(date, bd(b.path("Open")), bd(b.path("High")),
-                        bd(b.path("Low")), bd(b.path("Close")),
+                out.add(new OhlcBar(date, bd(b.path("Open")).multiply(factor), bd(b.path("High")).multiply(factor),
+                        bd(b.path("Low")).multiply(factor), bd(b.path("Close")).multiply(factor),
                         (long) b.path("Volume").asDouble(0)));
             }
         }
