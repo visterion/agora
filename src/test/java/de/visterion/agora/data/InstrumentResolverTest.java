@@ -17,6 +17,12 @@ class InstrumentResolverTest {
     @BeforeEach void reset() { wm.resetAll(); }
     private final AtomicLong clock = new AtomicLong(0);
 
+    static final String SAP_SEARCH = """
+        {"Data":[
+          {"AssetType":"Stock","CurrencyCode":"USD","ExchangeId":"NYSE","Identifier":6218,"Symbol":"SAP:xnys"},
+          {"AssetType":"Stock","CurrencyCode":"EUR","ExchangeId":"FSE","Identifier":1126,"Symbol":"SAPG:xetr"}
+        ]}""";
+
     private SaxoInstrumentResolver resolver(boolean withBearer) {
         SaxoDataAccess access = new SaxoDataAccess(
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
@@ -44,5 +50,41 @@ class InstrumentResolverTest {
     @Test void blankOrNullReturnsRaw() {
         assertThat(resolver(true).resolve("   ").resolved()).isFalse();
         assertThat(resolver(true).resolve(null).resolved()).isFalse();
+    }
+
+    @Test void suffixResolvesToUicAndCurrency() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("ExchangeId", equalTo("FSE")).willReturn(okJson(SAP_SEARCH)));
+        Instrument i = resolver(true).resolve("SAP.DE");
+        assertThat(i.resolved()).isTrue();
+        assertThat(i.uic()).isEqualTo(1126L);
+        assertThat(i.currencyCode()).isEqualTo("EUR");
+        assertThat(i.displaySymbol()).isEqualTo("SAP.DE");   // raw, not SAPG
+    }
+
+    @Test void emptySearchReturnsRawAndIsNegativelyCached() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("{\"Data\":[]}")));
+        SaxoInstrumentResolver r = resolver(true);
+        assertThat(r.resolve("SAP.DE").resolved()).isFalse();
+        assertThat(r.resolve("SAP.DE").resolved()).isFalse();
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));   // 2nd from negative cache
+        clock.set(60_001L);
+        r.resolve("SAP.DE");
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));
+    }
+
+    @Test void httpErrorReturnsRaw() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(status(429)));
+        assertThat(resolver(true).resolve("SAP.DE").resolved()).isFalse();
+    }
+
+    @Test void resolvedSuffixIsCachedFor24h() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson(SAP_SEARCH)));
+        SaxoInstrumentResolver r = resolver(true);
+        r.resolve("SAP.DE"); r.resolve("SAP.DE");
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));
+        clock.set(24 * 3600 * 1000L + 1);
+        r.resolve("SAP.DE");
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));
     }
 }
