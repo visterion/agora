@@ -93,34 +93,38 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
         String country = isin.substring(0, 2);
         Long uic = null;
         for (tools.jackson.databind.JsonNode hit : data) {                 // venue policy: domestic country first
-            tools.jackson.databind.JsonNode d = details(hit.path("Identifier").asLong(0), bearer);
+            long hitUic = hit.path("Identifier").asLong(0);
+            tools.jackson.databind.JsonNode d = details(hitUic, bearer);
             if (d != null && country.equals(d.path("CountryCode").asString(""))) {
-                return build(isin, d);
+                return build(isin, hitUic, d);
             }
-            if (uic == null) uic = hit.path("Identifier").asLong(0);
+            if (uic == null) uic = hitUic;
         }
-        return build(isin, details(uic, bearer));                          // fallback: first hit
+        return build(isin, uic, details(uic, bearer));                          // fallback: first hit
     }
 
     private tools.jackson.databind.JsonNode details(long uic, String bearer) {
         if (uic == 0) return null;
-        return detailsCache.get(uic, () -> {
-            try {
-                return access.http().get()
-                        .uri(uri -> uri.path("/ref/v1/instruments/details/" + uic).build())
-                        .header("Authorization", bearer)
-                        .retrieve().body(tools.jackson.databind.JsonNode.class);
-            } catch (RuntimeException e) {           // one venue's details 404ing must not abort the whole scan
-                log.debug("saxo details lookup failed for uic {}: {}", uic, e.toString());
-                return null;
-            }
-        });
+        var cached = detailsCache.peek(uic);
+        if (cached.isPresent()) return cached.get();
+        tools.jackson.databind.JsonNode d;
+        try {
+            d = access.http().get()
+                    .uri(uri -> uri.path("/ref/v1/instruments/details/" + uic).build())
+                    .header("Authorization", bearer)
+                    .retrieve().body(tools.jackson.databind.JsonNode.class);
+        } catch (RuntimeException e) {           // one venue's details 404ing must not abort the whole scan; transient failure not cached
+            log.debug("saxo details lookup failed for uic {}: {}", uic, e.toString());
+            return null;
+        }
+        if (d != null) detailsCache.put(uic, d);   // cache successes only
+        return d;
     }
 
-    private Instrument build(String isin, tools.jackson.databind.JsonNode d) {
+    private Instrument build(String isin, long uic, tools.jackson.databind.JsonNode d) {
         if (d == null) throw new IllegalStateException("no details");
         return new Instrument(isin, isin, d.path("Isin").asString(isin), d.path("Mic").asString(null),
                 d.path("ExchangeId").asString(null), d.path("CurrencyCode").asString(null),
-                d.path("Uic").asLong(0), d.path("CountryCode").asString(null), "Stock", true);
+                uic, d.path("CountryCode").asString(null), "Stock", true);
     }
 }
