@@ -30,6 +30,26 @@ class PlaceBracketToolTest {
         assertThat(r.output().get("orderId").asString()).isEqualTo("oid-1");
     }
 
+    /** Task 3: the fallback path (Saxo standalone StopIfTraded, no bracket parent) yields an
+     *  OrderResult with a stopLegId but no takeProfitLegId. The tool envelope must be the
+     *  SAME shape as a normal bracket result: accepted/orderId/stopLegId populated, and no
+     *  crash / no bogus "takeProfitLegId" key when that leg is null. */
+    @Test void acceptedShapeUniformForFallbackWithoutTakeProfitLeg() {
+        var r = tool(new StubBroker() {
+            public OrderResult submitBracket(BracketOrderRequest req) {
+                return OrderResult.accepted("entry-id", req.clientRef(), "accepted", "stop-id", null);
+            }
+        }).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy")
+                .put("qty",1).put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110));
+
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("accepted").asBoolean()).isTrue();
+        assertThat(r.output().get("orderId").asString()).isEqualTo("entry-id");
+        assertThat(r.output().get("stopLegId").asString()).isEqualTo("stop-id");
+        assertThat(r.output().has("takeProfitLegId")).isFalse();
+    }
+
     @Test void rejectedShape() {
         var r = tool(new StubBroker(){ public OrderResult submitBracket(BracketOrderRequest req){ return OrderResult.rejected("insufficient buying power","403"); }})
                 .call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110));
