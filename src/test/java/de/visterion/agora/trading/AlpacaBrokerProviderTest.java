@@ -551,7 +551,7 @@ class AlpacaBrokerProviderTest {
                 .willReturn(okJson("""
                     [
                       {"symbol":"AAPL","qty":"10","avg_entry_price":"185.50",
-                       "market_value":"1900.00","unrealized_pl":"145.00"}
+                       "market_value":"1900.00","unrealized_pl":"145.00","asset_class":"us_equity"}
                     ]
                     """)));
 
@@ -560,11 +560,30 @@ class AlpacaBrokerProviderTest {
         assertThat(positions).hasSize(1);
         var p = positions.get(0);
         assertThat(p.symbol()).isEqualTo("AAPL");
+        assertThat(p.description()).isNull();
         assertThat(p.qty()).isEqualByComparingTo("10");
         assertThat(p.avgEntryPrice()).isEqualByComparingTo("185.50");
         assertThat(p.marketValue()).isEqualByComparingTo("1900.00");
         assertThat(p.unrealizedPl()).isEqualByComparingTo("145.00");
         assertThat(p.currency()).isEqualTo("USD");
+        assertThat(p.assetType()).isEqualTo("us_equity");
+        assertThat(p.valueDate()).isNull();
+    }
+
+    @Test
+    void positions_assetTypeNullWhenAssetClassAbsent() {
+        wm.stubFor(get(urlEqualTo("/positions"))
+                .willReturn(okJson("""
+                    [
+                      {"symbol":"AAPL","qty":"10","avg_entry_price":"185.50",
+                       "market_value":"1900.00","unrealized_pl":"145.00"}
+                    ]
+                    """)));
+
+        var positions = provider.positions();
+
+        assertThat(positions).hasSize(1);
+        assertThat(positions.get(0).assetType()).isNull();
     }
 
     // ---- orders() ----

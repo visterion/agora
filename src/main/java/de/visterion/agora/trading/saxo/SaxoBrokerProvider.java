@@ -153,12 +153,15 @@ public class SaxoBrokerProvider implements BrokerProvider {
             BigDecimal unrealizedPl = bd(view.path("ProfitLossOnTrade"));
             out.add(new Position(
                     baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString("")),
+                    textOrNull(n.path("DisplayAndFormat"), "Description"),
                     qty,
                     avgOpen,
                     marketValue(bd(view.path("Exposure")), qty, avgOpen, unrealizedPl),
                     unrealizedPl,
                     view.path("ExposureCurrency").asString(
-                            n.path("DisplayAndFormat").path("Currency").asString("USD"))));
+                            n.path("DisplayAndFormat").path("Currency").asString("USD")),
+                    textOrNull(base, "AssetType"),
+                    textOrNull(base, "ValueDate")));
         }
         return out;
     }
@@ -1062,6 +1065,11 @@ public class SaxoBrokerProvider implements BrokerProvider {
             BigDecimal unrealizedPl) {
         if (exposure != null && exposure.signum() != 0) return exposure;
         return qty.multiply(avgOpen).add(unrealizedPl);
+    }
+
+    /** Reads a string field, returning null (not "") when absent/null — for optional Position fields. */
+    static String textOrNull(JsonNode node, String field) {
+        return node.path(field).asString(null);
     }
 
     static BigDecimal bd(JsonNode node) {
