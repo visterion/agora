@@ -429,6 +429,111 @@ class SaxoBrokerProviderTest {
                 .hasMessageContaining("duplicate");
     }
 
+    // ---- precheckBracket ----
+
+    private tools.jackson.databind.node.ObjectNode precheckBody() {
+        var body = SaxoBrokerProvider.MAPPER.createObjectNode();
+        body.put("Uic", 211);
+        body.put("AssetType", "Stock");
+        body.put("BuySell", "Buy");
+        body.put("Amount", 1);
+        body.put("OrderType", "Limit");
+        body.put("OrderPrice", 100);
+        var takeProfit = SaxoBrokerProvider.MAPPER.createObjectNode();
+        takeProfit.put("OrderType", "Limit");
+        takeProfit.put("OrderPrice", 110);
+        takeProfit.put("BuySell", "Sell");
+        var stopLoss = SaxoBrokerProvider.MAPPER.createObjectNode();
+        stopLoss.put("OrderType", "StopIfTraded");
+        stopLoss.put("OrderPrice", 90);
+        stopLoss.put("BuySell", "Sell");
+        var children = SaxoBrokerProvider.MAPPER.createArrayNode();
+        children.add(takeProfit);
+        children.add(stopLoss);
+        body.set("Orders", children);
+        return body;
+    }
+
+    @Test
+    void precheckBracketCleanBodyIsClean() {
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(okJson("""
+            {"PreCheckResult":"Ok"}
+            """)));
+
+        var result = provider.precheckBracket(precheckBody(), "req-1");
+
+        assertThat(result.kind()).isEqualTo(SaxoBrokerProvider.PrecheckOutcome.CLEAN);
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders/precheck"))
+                .withHeader("X-Request-ID", equalTo("req-1"))
+                .withRequestBody(matchingJsonPath("$.Uic", equalTo("211"))));
+    }
+
+    @Test
+    void precheckBracketSlLegTooFarIsSlTooFar() {
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(okJson("""
+            {"PreCheckResult":"Error","Orders":[
+              {},
+              {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"}}]}
+            """)));
+
+        var result = provider.precheckBracket(precheckBody(), "req-2");
+
+        assertThat(result.kind()).isEqualTo(SaxoBrokerProvider.PrecheckOutcome.SL_TOO_FAR);
+        assertThat(result.rejectCode()).isEqualTo("TooFarFromEntryOrder");
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders/precheck"))
+                .withHeader("X-Request-ID", equalTo("req-2")));
+    }
+
+    @Test
+    void precheckBracketOtherErrorInfoIsRejected() {
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(okJson("""
+            {"PreCheckResult":"Error","ErrorInfo":{"ErrorCode":"IllegalInstrumentId","Message":"Instrument not tradable"}}
+            """)));
+
+        var result = provider.precheckBracket(precheckBody(), "req-3");
+
+        assertThat(result.kind()).isEqualTo(SaxoBrokerProvider.PrecheckOutcome.REJECTED);
+        assertThat(result.rejectMessage()).isEqualTo("Instrument not tradable");
+        assertThat(result.rejectCode()).isEqualTo("IllegalInstrumentId");
+    }
+
+    @Test
+    void precheckBracket400WithTooFarErrorInfoIsSlTooFar() {
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(aResponse().withStatus(400)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                    {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"}}
+                    """)));
+
+        var result = provider.precheckBracket(precheckBody(), "req-4");
+
+        assertThat(result.kind()).isEqualTo(SaxoBrokerProvider.PrecheckOutcome.SL_TOO_FAR);
+    }
+
+    @Test
+    void precheckBracket400WithOtherErrorInfoIsRejected() {
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(aResponse().withStatus(400)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                    {"ErrorInfo":{"ErrorCode":"IllegalInstrumentId","Message":"Instrument not tradable"}}
+                    """)));
+
+        var result = provider.precheckBracket(precheckBody(), "req-5");
+
+        assertThat(result.kind()).isEqualTo(SaxoBrokerProvider.PrecheckOutcome.REJECTED);
+        assertThat(result.rejectMessage()).isEqualTo("Instrument not tradable");
+        assertThat(result.rejectCode()).isEqualTo("IllegalInstrumentId");
+    }
+
+    @Test
+    void precheckBracketServerErrorThrowsUnavailable() {
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders/precheck")).willReturn(aResponse().withStatus(503)));
+
+        assertThatThrownBy(() -> provider.precheckBracket(precheckBody(), "req-6"))
+                .isInstanceOfSatisfying(BrokerException.class,
+                        e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE));
+    }
+
     // ---- cancel ----
 
     @Test
