@@ -72,8 +72,9 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
             if (!exchangeId.equals(hit.path("ExchangeId").asString(""))) continue;
             long id = hit.path("Identifier").asLong(0);
             if (id == 0) continue;
-            return new Instrument(input, input, null, null, exchangeId,
-                    hit.path("CurrencyCode").asString(null), id, null, "Stock", true, 1.0);
+            tools.jackson.databind.JsonNode d = details(id, bearer);
+            if (d == null) throw new IllegalStateException("no details for " + input);
+            return build(input, id, d);        // displaySymbol = input (the suffixed symbol)
         }
         throw new IllegalStateException("no exchange hit");
     }
