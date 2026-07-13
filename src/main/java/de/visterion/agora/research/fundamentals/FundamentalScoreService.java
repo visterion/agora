@@ -102,6 +102,10 @@ public class FundamentalScoreService {
         boolean noNewSharesMet = false;
         if (shares.available()) {
             try {
+                // NOTE: for an ISIN routed to Yahoo, the ticker is resolved inside the Yahoo
+                // source itself, so this call receives the raw ISIN, not the resolved ticker ->
+                // splits(symbol) returns empty; under SPARSE that degrades noNewShares to
+                // unavailable below (safe, never miscomputed).
                 List<SplitEvent> splits = splitService.splits(symbol);
                 if (!complete && splits.isEmpty()) {
                     // SPARSE source: empty split list = unknown coverage, not "no split" -> unavailable.

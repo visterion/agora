@@ -54,12 +54,6 @@ public class YahooCrumbClient {
                 .build();
     }
 
-    /** Convenience 3-arg constructor for callers/tests that don't need to override the
-     *  cookie-bootstrap hosts (they default to the real fc.yahoo.com / finance.yahoo.com). */
-    public YahooCrumbClient(String userAgent, String query1, String query2) {
-        this(userAgent, query1, query2, "https://fc.yahoo.com", "https://finance.yahoo.com");
-    }
-
     public String crumb() {
         String c = crumbRef.get();
         if (c != null) return c;
@@ -76,7 +70,7 @@ public class YahooCrumbClient {
         softGet(financeBaseUrl + "/quote/AAPL");           // sets further cookies (best-effort)
         String fresh = get(query1 + "/v1/test/getcrumb").trim();
         if (fresh.isEmpty() || fresh.length() > 20
-                || fresh.toLowerCase().contains("too many") || fresh.contains("edge") || fresh.contains("<")) {
+                || fresh.toLowerCase().contains("too many") || fresh.toLowerCase().contains("edge") || fresh.contains("<")) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo crumb unavailable", null);
         }
         crumbRef.set(fresh);
@@ -121,8 +115,11 @@ public class YahooCrumbClient {
             HttpRequest req = HttpRequest.newBuilder(URI.create(url))
                     .header("User-Agent", userAgent).timeout(Duration.ofSeconds(15)).GET().build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() == 401 || resp.statusCode() == 403) {
-                throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo " + resp.statusCode(), null);
+            int status = resp.statusCode();
+            if (status == 401 || status == 403 || status == 429 || status >= 500) {
+                // 429/5xx are transient: never let the caller parse a Yahoo error envelope as a
+                // clean empty result (that would get cached as a false SPARSE/success by the TTL cache).
+                throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo " + status, null);
             }
             return resp.body() == null ? "" : resp.body();
         } catch (MarketDataException e) {
