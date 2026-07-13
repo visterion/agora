@@ -300,9 +300,9 @@ public class SaxoBrokerProvider implements BrokerProvider {
      *
      * <p><b>Fail-safe (non-negotiable):</b> once the entry is placed, this position must never
      * be left without a protective stop. If the standalone stop POST fails for any reason
-     * (throws, or the response carries no usable {@code OrderId}), the entry is canceled; if
-     * the cancel itself 404s (the entry already filled before the cancel reached it), the
-     * resulting position is flattened instead. Either way the fallback reports
+     * (throws, or the response carries no usable {@code OrderId}), {@link #protectUnprotectedEntry}
+     * runs a uniform best-effort cancel-then-flatten so the entry is neutralized whether it
+     * ended up unfilled, partially filled, or fully filled. Either way the fallback reports
      * {@code rejected("STOP_PLACEMENT_FAILED")} rather than an accepted-but-unprotected result.
      */
     private OrderResult submitFarStopFallback(BracketOrderRequest req, SaxoInstrumentResolver.ResolvedInstrument ri,
@@ -360,43 +360,55 @@ public class SaxoBrokerProvider implements BrokerProvider {
 
     /**
      * Mandatory fail-safe for {@link #submitFarStopFallback}: an entry must never be left
-     * without a protective stop. Cancels the (presumably still-unfilled) entry; if the cancel
-     * itself comes back {@code NOT_FOUND} (the entry filled before the cancel reached it, so
-     * there's a live position instead of a working order), flattens that position instead. Any
-     * other cancel failure (e.g. UNAVAILABLE on a 5xx/timeout) leaves the entry's state
-     * ambiguous — it may have filled — so this also falls through to a best-effort flatten as
-     * the last resort; a {@code NOT_FOUND} from that flatten (no position existed after all) is
-     * tolerated, but any further failure is escalated loudly since an unprotected position may
-     * now exist with nothing automated left to try.
+     * without a protective stop, whether it ended up unfilled, partially filled, or fully
+     * filled. This runs ONE uniform path that covers all three outcomes identically rather
+     * than branching on the cancel result:
+     *
+     * <ol>
+     *   <li>Best-effort {@link #cancel(String)} of the entry, tolerating ANY
+     *   {@link BrokerException} — cancel may legitimately fail if the entry already filled
+     *   (fully or partially) before the cancel reached it, or on a transient transport error.
+     *   Cancel is purely "remove a still-working remainder if any is left"; its outcome is
+     *   never branched on.</li>
+     *   <li>Always follows with a best-effort {@link #flatten(String, java.math.BigDecimal,
+     *   java.math.BigDecimal)} of the full position, which is the authoritative "close
+     *   whatever position resulted" step — this is what actually protects a partial fill (Saxo
+     *   cancel only pulls the still-working remainder, leaving the filled part as a live,
+     *   unprotected position) just as well as a full fill. A {@code NOT_FOUND} from flatten
+     *   (the entry was purely unfilled and cancel removed it — no position ever existed) is
+     *   tolerated. Any other flatten failure is escalated loudly via {@code log.error} since an
+     *   unprotected position may now exist with nothing automated left to try.</li>
+     *   <li>Always returns {@code rejected("STOP_PLACEMENT_FAILED")} — this method never lets a
+     *   cancel/flatten failure propagate as a thrown {@link BrokerException}.</li>
+     * </ol>
      */
     private OrderResult protectUnprotectedEntry(String entryId, String symbol, Exception stopFailure) {
         try {
             cancel(entryId);
         } catch (BrokerException e) {
-            if (e.kind() == BrokerException.Kind.NOT_FOUND) {
-                flatten(symbol, BigDecimal.ONE, null);
-            } else {
-                // Cancel failed for a reason other than "already gone" (e.g. UNAVAILABLE on a
-                // 5xx/timeout, or a non-404 rejection). The entry's state is now ambiguous — it
-                // may have filled — so fall through to a best-effort flatten as the last resort
-                // rather than leaving a possibly-live position with no protective stop.
-                try {
-                    flatten(symbol, BigDecimal.ONE, null);
-                } catch (BrokerException flattenFailure) {
-                    if (flattenFailure.kind() != BrokerException.Kind.NOT_FOUND) {
-                        log.error("saxo far-stop fail-safe: cancel of unprotected entry {} failed ({}) "
-                                + "AND last-resort flatten of {} also failed ({}); an unprotected "
-                                + "position may exist and needs manual review", entryId, e.getMessage(),
-                                symbol, flattenFailure.getMessage());
-                    }
-                }
+            // Cancel is best-effort only — it may legitimately fail if the entry already
+            // filled (fully or partially) before the cancel reached it, or on a transient
+            // transport error. Either way, flatten below is the authoritative safety net.
+            log.debug("saxo far-stop fail-safe: best-effort cancel of entry {} did not succeed ({}); "
+                    + "falling through to flatten regardless", entryId, e.getMessage());
+        }
+        try {
+            flatten(symbol, BigDecimal.ONE, null);
+        } catch (BrokerException e) {
+            if (e.kind() != BrokerException.Kind.NOT_FOUND) {
+                log.error("saxo far-stop fail-safe: cancel of unprotected entry {} and best-effort "
+                        + "flatten of {} both failed to leave a confirmed clean state ({}); an "
+                        + "unprotected position may exist and needs manual review",
+                        entryId, symbol, e.getMessage());
             }
+            // NOT_FOUND: no position existed — the entry was purely unfilled and cancel
+            // already removed it. Nothing left to protect.
         }
         String cause = stopFailure == null ? "no OrderId in response" : stopFailure.getMessage();
         return OrderResult.rejected("standalone stop placement failed: " + cause, "STOP_PLACEMENT_FAILED");
     }
 
-    // ---- precheck (standalone far-stop fallback classifier; wired in by a later task) ----
+    // ---- precheck (standalone far-stop fallback classifier) ----
 
     /** Outcome of {@link #precheckBracket}: CLEAN can be placed as-is, SL_TOO_FAR needs the
      * far-stop fallback, REJECTED is any other business-rule reject Saxo would raise on placement. */
