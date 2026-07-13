@@ -97,13 +97,23 @@ class InstrumentResolverTest {
     @Test void isinPicksDomesticVenueAndEnrichesFromDetails() {
         wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
                 .withQueryParam("Keywords", equalTo("DE0007164600")).willReturn(okJson(ISIN_SEARCH)));
-        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126")).willReturn(okJson("""
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126/Stock")).willReturn(okJson("""
             {"Uic":1126,"Isin":"DE0007164600","ExchangeId":"FSE","CurrencyCode":"EUR","CountryCode":"DE"}""")));
         Instrument i = resolver(true).resolve("DE0007164600");
         assertThat(i.uic()).isEqualTo(1126L);              // German ISIN → Xetra (EUR), not LSE (GBp)
         assertThat(i.isin()).isEqualTo("DE0007164600");
         assertThat(i.currencyCode()).isEqualTo("EUR");
         assertThat(i.displaySymbol()).isEqualTo("DE0007164600");
+    }
+
+    @Test void isinEnrichesFactorFromDetails() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("Keywords", equalTo("DE0007164600")).willReturn(okJson(ISIN_SEARCH)));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126/Stock")).willReturn(okJson("""
+            {"Uic":1126,"Isin":"DE0007164600","ExchangeId":"FSE","CurrencyCode":"EUR","CountryCode":"DE","PriceToContractFactor":1.0}""")));
+        Instrument i = resolver(true).resolve("DE0007164600");
+        assertThat(i.uic()).isEqualTo(1126L);
+        assertThat(i.priceToContractFactor()).isEqualTo(1.0);
     }
 
     @Test void transientDetailsFailureIsNotCached() {
@@ -113,17 +123,17 @@ class InstrumentResolverTest {
 
         // WireMock scenario: first TWO calls return 500 (within first resolve, then on second resolve),
         // then third call onwards returns 200. This ensures first resolution fails completely.
-        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126"))
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126/Stock"))
                 .inScenario("detailsFailure")
                 .whenScenarioStateIs("Started")
                 .willReturn(status(500))
                 .willSetStateTo("step1"));
-        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126"))
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126/Stock"))
                 .inScenario("detailsFailure")
                 .whenScenarioStateIs("step1")
                 .willReturn(status(500))
                 .willSetStateTo("recovered"));
-        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126"))
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126/Stock"))
                 .inScenario("detailsFailure")
                 .whenScenarioStateIs("recovered")
                 .willReturn(okJson("""
@@ -150,6 +160,6 @@ class InstrumentResolverTest {
         // Verify the details endpoint was called three times:
         // - 2 times in first resolve (both failed)
         // - 1 time in second resolve (succeeded)
-        wm.verify(3, getRequestedFor(urlPathEqualTo("/ref/v1/instruments/details/1126")));
+        wm.verify(3, getRequestedFor(urlPathEqualTo("/ref/v1/instruments/details/1126/Stock")));
     }
 }

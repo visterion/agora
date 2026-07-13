@@ -110,7 +110,7 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
         tools.jackson.databind.JsonNode d;
         try {
             d = access.http().get()
-                    .uri(uri -> uri.path("/ref/v1/instruments/details/" + uic).build())
+                    .uri(uri -> uri.path("/ref/v1/instruments/details/" + uic + "/Stock").build())
                     .header("Authorization", bearer)
                     .retrieve().body(tools.jackson.databind.JsonNode.class);
         } catch (RuntimeException e) {           // one venue's details 404ing must not abort the whole scan; transient failure not cached
@@ -121,10 +121,11 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
         return d;
     }
 
-    private Instrument build(String isin, long uic, tools.jackson.databind.JsonNode d) {
+    private Instrument build(String rawInput, long uic, tools.jackson.databind.JsonNode d) {
         if (d == null) throw new IllegalStateException("no details");
-        return new Instrument(isin, isin, d.path("Isin").asString(isin), d.path("Mic").asString(null),
+        return new Instrument(rawInput, rawInput, d.path("Isin").asString(null), d.path("Mic").asString(null),
                 d.path("ExchangeId").asString(null), d.path("CurrencyCode").asString(null),
-                uic, d.path("CountryCode").asString(null), "Stock", true, 1.0);
+                uic, d.path("CountryCode").asString(null), "Stock", true,
+                d.path("PriceToContractFactor").asDouble(1.0));
     }
 }
