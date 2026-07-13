@@ -27,6 +27,7 @@ public class MarketDataService {
     private static final long NEGATIVE_CACHE_MAX_SIZE = 4096;
 
     private final List<MarketDataProvider> providers;
+    private final InstrumentResolver resolver;
     private final TtlCache<String, List<OhlcBar>> ohlcCache;
     private final TtlCache<String, Quote> quoteCache;
     private final TtlCache<String, Boolean> ohlcNotFoundCache;
@@ -37,22 +38,48 @@ public class MarketDataService {
      *
      * @param providers   ordered list of market-data providers (first success wins)
      * @param ttlSeconds  cache TTL in <strong>seconds</strong> (bound to {@code agora.data.cache.ttl-seconds})
+     * @param resolver    resolves caller input into a canonical {@link Instrument}
      */
     @Autowired
     public MarketDataService(List<MarketDataProvider> providers,
-                             @Value("${agora.data.cache.ttl-seconds:120}") long ttlSeconds) {
-        this(providers, ttlSeconds * 1000L, System::currentTimeMillis);
+                             @Value("${agora.data.cache.ttl-seconds:120}") long ttlSeconds,
+                             InstrumentResolver resolver) {
+        this(providers, ttlSeconds * 1000L, System::currentTimeMillis, resolver);
     }
 
     /**
-     * Test constructor with injectable clock.
+     * Back-compat constructor (no resolver) — defaults to a pass-through resolver so existing
+     * callers/tests keep today's string-in/string-out behaviour.
+     *
+     * @param providers   ordered list of market-data providers (first success wins)
+     * @param ttlSeconds  cache TTL in <strong>seconds</strong>
+     */
+    public MarketDataService(List<MarketDataProvider> providers, long ttlSeconds) {
+        this(providers, ttlSeconds * 1000L, System::currentTimeMillis, Instrument::raw);
+    }
+
+    /**
+     * Test constructor with injectable clock (pass-through resolver).
      *
      * @param providers   ordered list of market-data providers
      * @param ttlMillis   cache TTL in <strong>milliseconds</strong>
      * @param now         time source (injectable for deterministic tests)
      */
     MarketDataService(List<MarketDataProvider> providers, long ttlMillis, LongSupplier now) {
+        this(providers, ttlMillis, now, Instrument::raw);
+    }
+
+    /**
+     * Test constructor with injectable clock and resolver.
+     *
+     * @param providers   ordered list of market-data providers
+     * @param ttlMillis   cache TTL in <strong>milliseconds</strong>
+     * @param now         time source (injectable for deterministic tests)
+     * @param resolver    resolves caller input into a canonical {@link Instrument}
+     */
+    MarketDataService(List<MarketDataProvider> providers, long ttlMillis, LongSupplier now, InstrumentResolver resolver) {
         this.providers = List.copyOf(providers);
+        this.resolver = resolver;
         this.ohlcCache = new TtlCache<>(ttlMillis, 4096, now);
         this.quoteCache = new TtlCache<>(ttlMillis, 4096, now);
         this.ohlcNotFoundCache = new TtlCache<>(NEGATIVE_CACHE_TTL_MILLIS, NEGATIVE_CACHE_MAX_SIZE, now);
@@ -66,8 +93,10 @@ public class MarketDataService {
         }
         boolean[] allNotFound = {true};
         try {
-            return quoteCache.get(key,
-                    () -> firstSuccess(p -> p.quote(symbol), "quote " + symbol, allNotFound));
+            return quoteCache.get(key, () -> {
+                Instrument inst = resolver.resolve(symbol);
+                return firstSuccess(p -> p.quote(inst), "quote " + symbol, allNotFound);
+            });
         } catch (MarketDataException e) {
             cacheNegativeIfApplicable(quoteNotFoundCache, key, allNotFound[0], e);
             throw e;
@@ -81,8 +110,10 @@ public class MarketDataService {
         }
         boolean[] allNotFound = {true};
         try {
-            return ohlcCache.get(key,
-                    () -> firstSuccess(p -> p.ohlc(symbol, days), "ohlc " + symbol, allNotFound));
+            return ohlcCache.get(key, () -> {
+                Instrument inst = resolver.resolve(symbol);
+                return firstSuccess(p -> p.ohlc(inst, days), "ohlc " + symbol, allNotFound);
+            });
         } catch (MarketDataException e) {
             cacheNegativeIfApplicable(ohlcNotFoundCache, key, allNotFound[0], e);
             throw e;
