@@ -1,0 +1,499 @@
+{
+  "timeseries": {
+    "result": [
+      {
+        "meta": {
+          "type": [
+            "annualTotalAssets"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualTotalAssets": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 100000,
+              "fmt": "100000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 110000,
+              "fmt": "110000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 120000,
+              "fmt": "120000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualCurrentAssets"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualCurrentAssets": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 40000,
+              "fmt": "40000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 42000,
+              "fmt": "42000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 45000,
+              "fmt": "45000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualCurrentLiabilities"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualCurrentLiabilities": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 20000,
+              "fmt": "20000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 21000,
+              "fmt": "21000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 22000,
+              "fmt": "22000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualLongTermDebt"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualLongTermDebt": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 15000,
+              "fmt": "15000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 16000,
+              "fmt": "16000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 17000,
+              "fmt": "17000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualTotalLiabilitiesNetMinorityInterest"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualTotalLiabilitiesNetMinorityInterest": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 60000,
+              "fmt": "60000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 63000,
+              "fmt": "63000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 66000,
+              "fmt": "66000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualRetainedEarnings"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualRetainedEarnings": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 30000,
+              "fmt": "30000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 33000,
+              "fmt": "33000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 36000,
+              "fmt": "36000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualOrdinarySharesNumber"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualOrdinarySharesNumber": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 1000,
+              "fmt": "1000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 1000,
+              "fmt": "1000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 1000,
+              "fmt": "1000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualEBIT"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualEBIT": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 8000,
+              "fmt": "8000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 8500,
+              "fmt": "8500"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 9000,
+              "fmt": "9000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualTotalRevenue"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualTotalRevenue": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 50000,
+              "fmt": "50000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 53000,
+              "fmt": "53000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 56000,
+              "fmt": "56000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualGrossProfit"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualGrossProfit": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 25000,
+              "fmt": "25000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 26000,
+              "fmt": "26000"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 27000,
+              "fmt": "27000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualNetIncome"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualNetIncome": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 6000,
+              "fmt": "6000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 6500,
+              "fmt": "6500"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 7000,
+              "fmt": "7000"
+            }
+          }
+        ]
+      },
+      {
+        "meta": {
+          "type": [
+            "annualOperatingCashFlow"
+          ],
+          "symbol": [
+            "DUMMY"
+          ]
+        },
+        "annualOperatingCashFlow": [
+          null,
+          null,
+          {
+            "asOfDate": "2022-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 9000,
+              "fmt": "9000"
+            }
+          },
+          {
+            "asOfDate": "2023-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 9500,
+              "fmt": "9500"
+            }
+          },
+          {
+            "asOfDate": "2024-12-31",
+            "periodType": "12M",
+            "currencyCode": "EUR",
+            "reportedValue": {
+              "raw": 10000,
+              "fmt": "10000"
+            }
+          }
+        ]
+      }
+    ],
+    "error": null
+  }
+}
