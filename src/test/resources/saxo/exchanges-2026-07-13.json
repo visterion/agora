@@ -1,0 +1,12 @@
+{"Data":[
+ {"ExchangeId":"FSE","Mic":"XETR","CountryCode":"DE","Currency":"EUR","Name":"Deutsche Börse (XETRA)"},
+ {"ExchangeId":"MIL","Mic":"XMIL","CountryCode":"IT","Currency":"EUR","Name":"Borsa Italiana/Milan Stock Exchange"},
+ {"ExchangeId":"TSE","Mic":"XTSE","CountryCode":"CA","Currency":"CAD","Name":"Toronto Stock Exchange"},
+ {"ExchangeId":"LSE_SETS","Mic":"XLON","CountryCode":"GB","Currency":"GBP","Name":"London Stock Exchange"},
+ {"ExchangeId":"TYO","Mic":"XTKS","CountryCode":"JP","Currency":"JPY","Name":"Tokyo Stock Exchange"},
+ {"ExchangeId":"HKEX","Mic":"XHKG","CountryCode":"HK","Currency":"HKD","Name":"Hong Kong Exchanges"},
+ {"ExchangeId":"PAR","Mic":"XPAR","CountryCode":"FR","Currency":"EUR","Name":"Euronext Paris"},
+ {"ExchangeId":"AMS","Mic":"XAMS","CountryCode":"NL","Currency":"EUR","Name":"Euronext Amsterdam"},
+ {"ExchangeId":"SWX","Mic":"XSWX","CountryCode":"CH","Currency":"CHF","Name":"SIX Swiss Exchange"},
+ {"ExchangeId":"ASX","Mic":"XASX","CountryCode":"AU","Currency":"AUD","Name":"Australian Securities Exchange"}
+]}
