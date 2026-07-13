@@ -25,6 +25,7 @@ public class YahooTimeseriesFundamentalsSource implements FundamentalsSource {
         TYPE.put("annualCurrentAssets", new Mapping(FundamentalConcept.CURRENT_ASSETS, true));
         TYPE.put("annualCurrentLiabilities", new Mapping(FundamentalConcept.CURRENT_LIABILITIES, true));
         TYPE.put("annualLongTermDebt", new Mapping(FundamentalConcept.LONG_TERM_DEBT, true));
+        TYPE.put("annualTotalDebt", new Mapping(FundamentalConcept.TOTAL_DEBT, true));
         TYPE.put("annualTotalLiabilitiesNetMinorityInterest", new Mapping(FundamentalConcept.TOTAL_LIABILITIES, true));
         TYPE.put("annualRetainedEarnings", new Mapping(FundamentalConcept.RETAINED_EARNINGS, true));
         TYPE.put("annualOrdinarySharesNumber", new Mapping(FundamentalConcept.SHARES_OUTSTANDING, true));

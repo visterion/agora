@@ -95,4 +95,12 @@ class YahooTimeseriesFundamentalsSourceTest {
         assertThat(src.facts(Instrument.raw("SAP.DE")).series(FundamentalConcept.TOTAL_ASSETS).datapoints()).isNotEmpty();
         verify(crumb, times(2)).timeseries(eq("SAP.DE"), anyString()); // proves the throw was not cached
     }
+
+    @Test
+    void mapsAnnualTotalDebt() throws Exception {
+        String json = "{\"timeseries\":{\"result\":[{\"meta\":{\"type\":[\"annualTotalDebt\"]},"
+            + "\"annualTotalDebt\":[{\"asOfDate\":\"2025-12-31\",\"currencyCode\":\"EUR\",\"reportedValue\":{\"raw\":5000}}]}]}}";
+        var r = srcReturning(json).facts(Instrument.raw("X.DE"));
+        assertThat(r.series(FundamentalConcept.TOTAL_DEBT).datapoints()).hasSize(1);
+    }
 }
