@@ -1,7 +1,11 @@
 package de.visterion.agora.research.fundamentals;
+import de.visterion.agora.data.FxRate;
+import de.visterion.agora.data.FxService;
 import de.visterion.agora.data.Instrument;
+import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.MarketDataService;
 import de.visterion.agora.data.OhlcBar;
+import de.visterion.agora.data.Quote;
 import de.visterion.agora.fetch.edgar.ConceptDatapoint;
 import de.visterion.agora.fetch.edgar.EdgarService.ConceptSeries;
 import org.junit.jupiter.api.Test;
@@ -52,5 +56,39 @@ class GlobalMetricsServiceTest {
         var m = svc.metrics(Instrument.raw("SAP.DE")).metrics();
         assertThat(m.path("52WeekLow").decimalValue()).isEqualByComparingTo("7");
         assertThat(m.path("52WeekHigh").decimalValue()).isEqualByComparingTo("25");
+    }
+
+    @Test void freeCashFlowPerShareTTMConvertedToQuoteCurrency() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        Map<FundamentalConcept,ConceptSeries> c = Map.of(
+            FundamentalConcept.TOTAL_ASSETS, s("CNY",1000), FundamentalConcept.TOTAL_LIABILITIES, s("CNY",400),
+            FundamentalConcept.OPERATING_CASH_FLOW, s("CNY",1000), FundamentalConcept.SHARES_OUTSTANDING, s("CNY",100));
+        when(router.facts(any())).thenReturn(new SourceResult(c, AbsenceSemantics.SPARSE));
+
+        MarketDataService marketData = mock(MarketDataService.class);
+        when(marketData.quote("0700.HK")).thenReturn(new Quote("0700.HK", BigDecimal.TEN, BigDecimal.ZERO, "HKD"));
+        FxService fx = mock(FxService.class);
+        when(fx.rate("CNY","HKD")).thenReturn(new FxRate("CNY","HKD", BigDecimal.valueOf(1.1)));
+
+        var svc = new GlobalMetricsService(router, marketData, fx);
+        var m = svc.metrics(Instrument.raw("0700.HK")).metrics();
+        assertThat(m.path("freeCashFlowPerShareTTM").decimalValue()).isEqualByComparingTo("11");
+    }
+
+    @Test void freeCashFlowPerShareTTMOmittedWhenFxMissing() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        Map<FundamentalConcept,ConceptSeries> c = Map.of(
+            FundamentalConcept.TOTAL_ASSETS, s("CNY",1000), FundamentalConcept.TOTAL_LIABILITIES, s("CNY",400),
+            FundamentalConcept.OPERATING_CASH_FLOW, s("CNY",1000), FundamentalConcept.SHARES_OUTSTANDING, s("CNY",100));
+        when(router.facts(any())).thenReturn(new SourceResult(c, AbsenceSemantics.SPARSE));
+
+        MarketDataService marketData = mock(MarketDataService.class);
+        when(marketData.quote("0700.HK")).thenReturn(new Quote("0700.HK", BigDecimal.TEN, BigDecimal.ZERO, "HKD"));
+        FxService fx = mock(FxService.class);
+        when(fx.rate("CNY","HKD")).thenThrow(new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "no rate", null));
+
+        var svc = new GlobalMetricsService(router, marketData, fx);
+        var m = svc.metrics(Instrument.raw("0700.HK")).metrics();
+        assertThat(m.has("freeCashFlowPerShareTTM")).isFalse();
     }
 }

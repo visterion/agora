@@ -55,6 +55,24 @@ public class GlobalMetricsService {
                     .max(BigDecimal::compareTo).ifPresent(v -> m.put("52WeekHigh", v));
             } catch (MarketDataException ignore) { /* omit 52w metrics */ }
         }
+
+        String quoteCcy = null;
+        if (marketData != null) {
+            try {
+                var q = marketData.quote(inst.displaySymbol());
+                if (q != null) quoteCcy = q.currency();
+            } catch (MarketDataException ignore) {}
+        }
+        Optional<BigDecimal> ocf = latest(r, FundamentalConcept.OPERATING_CASH_FLOW),
+                             sh  = latest(r, FundamentalConcept.SHARES_OUTSTANDING);
+        Optional<String> repCcy = reportingUnit(r);
+        if (ocf.isPresent() && sh.isPresent() && sh.get().signum()!=0 && quoteCcy!=null && repCcy.isPresent()) {
+            try {
+                BigDecimal perShareRep = ocf.get().divide(sh.get(), MC);
+                BigDecimal inQuote = perShareRep.multiply(fx.rate(repCcy.get(), quoteCcy).rate(), MC);
+                m.put("freeCashFlowPerShareTTM", inQuote);
+            } catch (MarketDataException ignore) { /* omit */ }
+        }
         return new Fundamentals(inst.displaySymbol(), m);
     }
 
