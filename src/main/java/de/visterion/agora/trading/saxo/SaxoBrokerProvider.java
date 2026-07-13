@@ -148,28 +148,15 @@ public class SaxoBrokerProvider implements BrokerProvider {
         for (JsonNode n : resp.path("Data")) {
             JsonNode base = n.path("NetPositionBase");
             JsonNode view = n.path("NetPositionView");
-            String sym = baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString(""));
-            // TEMP diagnostic (branch diag-saxo-netposition-fields): dump the RAW candidate
-            // value fields to see which are populated in the SIM/paper feed — Exposure reads
-            // 0 there, but CurrentPrice may carry the real (delayed) mark-to-market. All read
-            // from NetPositionView, which is already requested (the NetPositionDetails field
-            // group is single-position only — adding it here 400s the list endpoint). Logged
-            // at INFO on purpose so it shows without a DEBUG toggle; REVERT once confirmed.
-            log.info("saxo netposition diag [{}]: Amount={} AverageOpenPrice={} Exposure={} "
-                            + "CurrentPrice={} CurrentPriceType={} CurrentPriceDelayMinutes={} "
-                            + "ProfitLossOnTrade={} InstrumentPriceDayPercentChange={}",
-                    sym,
-                    base.path("Amount"), view.path("AverageOpenPrice"), view.path("Exposure"),
-                    view.path("CurrentPrice"), view.path("CurrentPriceType"),
-                    view.path("CurrentPriceDelayMinutes"), view.path("ProfitLossOnTrade"),
-                    view.path("InstrumentPriceDayPercentChange"));
-            // Saxo has no CurrentMarketValue; Exposure = mark-to-market when price feed is live (0 with delayed SIM data)
+            BigDecimal qty = bd(base.path("Amount"));
+            BigDecimal avgOpen = bd(view.path("AverageOpenPrice"));
+            BigDecimal unrealizedPl = bd(view.path("ProfitLossOnTrade"));
             out.add(new Position(
-                    sym,
-                    bd(base.path("Amount")),
-                    bd(view.path("AverageOpenPrice")),
-                    bd(view.path("Exposure")),
-                    bd(view.path("ProfitLossOnTrade")),
+                    baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString("")),
+                    qty,
+                    avgOpen,
+                    marketValue(bd(view.path("Exposure")), qty, avgOpen, unrealizedPl),
+                    unrealizedPl,
                     view.path("ExposureCurrency").asString(
                             n.path("DisplayAndFormat").path("Currency").asString("USD"))));
         }
@@ -1061,6 +1048,20 @@ public class SaxoBrokerProvider implements BrokerProvider {
     static String baseSymbol(String saxoSymbol) {
         int i = saxoSymbol.indexOf(':');
         return i < 0 ? saxoSymbol : saxoSymbol.substring(0, i);
+    }
+
+    /**
+     * Position market value. Saxo's {@code Exposure} is the live mark-to-market, but on the
+     * delayed SIM/paper feed it — and {@code CurrentPrice} — read 0 (CurrentPriceType "None";
+     * confirmed empirically 2026-07-13 for PSMT), while {@code AverageOpenPrice} and
+     * {@code ProfitLossOnTrade} are populated. So when Exposure carries no live value,
+     * reconstruct it as cost basis + P/L: {@code qty*avgOpen + unrealizedPl}, which equals
+     * {@code qty*currentPrice} by definition. Exposure is preferred whenever it is non-zero.
+     */
+    static BigDecimal marketValue(BigDecimal exposure, BigDecimal qty, BigDecimal avgOpen,
+            BigDecimal unrealizedPl) {
+        if (exposure != null && exposure.signum() != 0) return exposure;
+        return qty.multiply(avgOpen).add(unrealizedPl);
     }
 
     static BigDecimal bd(JsonNode node) {
