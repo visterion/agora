@@ -105,4 +105,51 @@ class InstrumentResolverTest {
         assertThat(i.currencyCode()).isEqualTo("EUR");
         assertThat(i.displaySymbol()).isEqualTo("DE0007164600");
     }
+
+    @Test void transientDetailsFailureIsNotCached() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("Keywords", equalTo("DE0007164600")).willReturn(okJson("""
+            {"Data":[{"AssetType":"Stock","CurrencyCode":"EUR","ExchangeId":"FSE","Identifier":1126,"Symbol":"SAPG:xetr"}]}""")));
+
+        // WireMock scenario: first TWO calls return 500 (within first resolve, then on second resolve),
+        // then third call onwards returns 200. This ensures first resolution fails completely.
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126"))
+                .inScenario("detailsFailure")
+                .whenScenarioStateIs("Started")
+                .willReturn(status(500))
+                .willSetStateTo("step1"));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126"))
+                .inScenario("detailsFailure")
+                .whenScenarioStateIs("step1")
+                .willReturn(status(500))
+                .willSetStateTo("recovered"));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/1126"))
+                .inScenario("detailsFailure")
+                .whenScenarioStateIs("recovered")
+                .willReturn(okJson("""
+            {"Uic":1126,"Isin":"DE0007164600","ExchangeId":"FSE","CurrencyCode":"EUR","CountryCode":"DE"}""")));
+
+        SaxoInstrumentResolver r = resolver(true);
+
+        // First call: details fails with 500 (twice within lookupIsin: once in loop, once in fallback),
+        // so ISIN resolution fails and returns raw
+        Instrument i1 = r.resolve("DE0007164600");
+        assertThat(i1.resolved()).isFalse();
+        assertThat(i1.displaySymbol()).isEqualTo("DE0007164600");
+
+        // Advance clock past the negative cache TTL (60 seconds) to clear failure cache
+        clock.set(61_000L);
+
+        // Second call: details now succeeds, and ISIN resolves because the details failure was NOT cached
+        // (only the resolution failure was cached in failureCache, which we just cleared)
+        Instrument i2 = r.resolve("DE0007164600");
+        assertThat(i2.resolved()).isTrue();
+        assertThat(i2.uic()).isEqualTo(1126L);
+        assertThat(i2.currencyCode()).isEqualTo("EUR");
+
+        // Verify the details endpoint was called three times:
+        // - 2 times in first resolve (both failed)
+        // - 1 time in second resolve (succeeded)
+        wm.verify(3, getRequestedFor(urlPathEqualTo("/ref/v1/instruments/details/1126")));
+    }
 }
