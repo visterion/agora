@@ -8,7 +8,11 @@ This reference currently covers the fundamentals tools; other Agora tools are se
 
 ### `get_fundamentals`
 
-Fundamental metrics (P/E, ROE, Debt/Equity, Free Cash Flow, etc.) for a symbol. **Note:** this is distinct from `get_fundamental_concepts` — use `get_fundamentals` for summary metrics via Finnhub, or `get_fundamental_concepts` for raw XBRL-backed line items from SEC EDGAR or Yahoo.
+Fundamental metrics (P/E, ROE, Debt/Equity, Free Cash Flow, etc.) for a symbol. **Note:** this is distinct from `get_fundamental_concepts` — use `get_fundamentals` for summary metrics via Finnhub (US) or computed from concepts+OHLC+quote (non-US), or `get_fundamental_concepts` for raw XBRL-backed line items from SEC EDGAR or Yahoo.
+
+**Global routing** (gated by `agora.fundamentals.global-metrics-enabled`, default `false`):
+- **US ticker:** Finnhub (unchanged behavior)
+- **Non-US ticker (suffixed symbols):** computed from SEC EDGAR / Yahoo concepts, OHLC, and current price. Metrics like `marketCapitalization`, `pbAnnual`, `peTTM` are in reporting currency; price-relative metrics like `freeCashFlowPerShareTTM` are in quote currency. Fails gracefully (omits unavailable fields) if upstream data is missing.
 
 **Input:**
 ```json
