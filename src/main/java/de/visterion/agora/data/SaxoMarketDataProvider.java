@@ -44,8 +44,19 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
 
     @Override
     public Quote quote(String symbol) {
-        String bearer = requireBearer();
         long uic = resolver.resolve(symbol);
+        return quoteByUic(uic, symbol);
+    }
+
+    @Override
+    public Quote quote(Instrument inst) {
+        if (inst.uic() == null) throw new MarketDataException(
+                MarketDataException.Kind.UNAVAILABLE, "saxo: no uic for " + inst.rawInput(), null);
+        return quoteByUic(inst.uic(), inst.rawInput());
+    }
+
+    private Quote quoteByUic(long uic, String label) {
+        String bearer = requireBearer();
 
         JsonNode root;
         try {
@@ -59,37 +70,48 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
                     .retrieve().body(JsonNode.class);
         } catch (Exception e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "saxo infoprices failed for " + symbol + ": " + e.getMessage(), e);
+                    "saxo infoprices failed for " + label + ": " + e.getMessage(), e);
         }
         if (root == null) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "saxo returned empty infoprice for " + symbol, null);
+                    "saxo returned empty infoprice for " + label, null);
         }
 
         JsonNode q = root.path("Quote");
         if ("NoAccess".equals(q.path("PriceTypeBid").asString(""))
                 || "NoAccess".equals(q.path("PriceTypeAsk").asString(""))) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "saxo market data not enabled (NoAccess) for " + symbol, null);
+                    "saxo market data not enabled (NoAccess) for " + label, null);
         }
         BigDecimal price = bd(q.path("Mid"));
         if (price.signum() == 0) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "saxo infoprice has no Mid for " + symbol, null);
+                    "saxo infoprice has no Mid for " + label, null);
         }
         String currency = root.path("DisplayAndFormat").path("Currency").asString("");
         if (currency.isBlank()) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "saxo infoprice has no currency for " + symbol, null);
+                    "saxo infoprice has no currency for " + label, null);
         }
         BigDecimal pct = bd(root.path("PriceInfo").path("PercentChange"));
-        return new Quote(symbol, price, pct, currency);
+        return new Quote(label, price, pct, currency);
     }
 
     @Override
     public List<OhlcBar> ohlc(String symbol, int days) {
-        String bearer = requireBearer();
         long uic = resolver.resolve(symbol);
+        return ohlcByUic(uic, days, symbol);
+    }
+
+    @Override
+    public List<OhlcBar> ohlc(Instrument inst, int days) {
+        if (inst.uic() == null) throw new MarketDataException(
+                MarketDataException.Kind.UNAVAILABLE, "saxo: no uic for " + inst.rawInput(), null);
+        return ohlcByUic(inst.uic(), days, inst.rawInput());
+    }
+
+    private List<OhlcBar> ohlcByUic(long uic, int days, String label) {
+        String bearer = requireBearer();
         String accountKey = access.accountKey().orElseThrow(() -> new MarketDataException(
                 MarketDataException.Kind.UNAVAILABLE, "saxo: no account key available", null));
         int count = Math.min(days, 1200);   // Saxo chart max sample count
@@ -108,11 +130,11 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
                     .retrieve().body(JsonNode.class);
         } catch (Exception e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "saxo charts failed for " + symbol + ": " + e.getMessage(), e);
+                    "saxo charts failed for " + label + ": " + e.getMessage(), e);
         }
         if (root == null) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "saxo returned empty chart for " + symbol, null);
+                    "saxo returned empty chart for " + label, null);
         }
 
         List<OhlcBar> out = new ArrayList<>();
@@ -133,7 +155,7 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
         // NOT_FOUND rather than caching an empty success, so the chain can still fall through.
         if (out.isEmpty()) {
             throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
-                    "Symbol " + symbol + " has no bars at Saxo", null);
+                    "Symbol " + label + " has no bars at Saxo", null);
         }
         // M-D7: Saxo's chart endpoint caps Count at 1200. If more bars were requested than
         // that cap and Saxo returned a full cap's worth, we cannot tell whether that's
@@ -144,7 +166,7 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
         // is returned normally.
         if (days > count && out.size() >= count) {
             throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
-                    "Saxo ohlc capped at " + count + " bars for " + symbol + " (" + days
+                    "Saxo ohlc capped at " + count + " bars for " + label + " (" + days
                             + " requested) — falling through to a fuller provider", null);
         }
         if (out.size() > days) {

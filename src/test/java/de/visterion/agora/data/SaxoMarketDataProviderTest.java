@@ -37,6 +37,10 @@ class SaxoMarketDataProviderTest {
         return new SaxoMarketDataProvider(access, new SaxoDataSymbolResolver(access, () -> 0L));
     }
 
+    private SaxoMarketDataProvider provider() {
+        return provider(true);
+    }
+
     private void stubSapSearch() {
         wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("""
             {"Data":[{"AssetType":"Stock","CurrencyCode":"EUR","ExchangeId":"FSE","Identifier":1126,"Symbol":"SAPG:xetr"}]}
@@ -199,6 +203,25 @@ class SaxoMarketDataProviderTest {
 
         var bars = provider(true).ohlc("SAP.DE", 2000);
         assertThat(bars).hasSize(3);
+    }
+
+    @Test void quoteByInstrumentUsesUicWithoutRefV1() {
+        wm.stubFor(get(urlPathEqualTo("/trade/v1/infoprices"))
+                .withQueryParam("Uic", equalTo("1126"))
+                .willReturn(okJson("""
+                  {"Quote":{"Mid":100.0,"PriceTypeBid":"Tradable","PriceTypeAsk":"Tradable"},
+                   "PriceInfo":{"PercentChange":1.0},"DisplayAndFormat":{"Currency":"EUR"}}""")));
+        Instrument i = new Instrument("SAP.DE","SAP.DE",null,null,"FSE","EUR",1126L,null,"Stock",true);
+        Quote q = provider().quote(i);
+        assertThat(q.price()).isEqualByComparingTo("100.0");
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));   // no re-resolution
+    }
+
+    @Test void quoteByInstrumentWithNullUicSelfSkips() {
+        Instrument raw = Instrument.raw("AAPL");
+        assertThatThrownBy(() -> provider().quote(raw))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
 
     @Test void ohlcHttpErrorIsUnavailable() {
