@@ -286,11 +286,13 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 String message = errorBody.path("ErrorInfo").path("Message").asString(null);
                 if (message == null) message = errorBody.path("Message").asString(null);
                 if (message == null) message = rawBody(e);
-                // Single consolidated INFO line: raw response (status/body) + parsed
-                // code/message, so a reject doesn't produce two separate log lines.
-                log.info("saxo response [POST /trade/v2/orders (bracket)]: status=400 body={} — rejected [{}]: {} for {}",
-                        rawBody(e), code, message, req.symbol());
                 if ("TooFarFromEntryOrder".equals(code)) {
+                    // Single consolidated INFO line: raw response (status/body) + parsed
+                    // code/message, so this reject doesn't produce two separate log lines.
+                    // Only this branch logs itself — every other 400 reject falls through to
+                    // writeError below, which owns the logging for those.
+                    log.info("saxo response [POST /trade/v2/orders (bracket)]: status=400 body={} — rejected [{}]: {} for {}",
+                            rawBody(e), code, message, req.symbol());
                     log.info("saxo far-stop: bracket rejected TooFarFromEntryOrder for {} (stop {} vs entry {}), "
                             + "falling back to entry + standalone stop",
                             req.symbol(), req.stopLossStop(), req.limitPrice());
@@ -326,7 +328,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
         try {
             JsonNode resp = client.post().uri("/trade/v2/orders")
                     .header("Authorization", bearer())
-                    .header("X-Request-ID", req.clientRef() != null ? req.clientRef() : UUID.randomUUID().toString())
+                    .header("X-Request-ID", UUID.randomUUID().toString())
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(entryBody)
                     .retrieve().body(JsonNode.class);

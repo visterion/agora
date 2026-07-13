@@ -493,7 +493,14 @@ class SaxoBrokerProviderTest {
         String entryReqId = posts.get(1).getHeader("X-Request-ID");
         String stopReqId = posts.get(2).getHeader("X-Request-ID");
         assertThat(entryReqId).isNotNull();
+        // Fallback entry gets a FRESH X-Request-ID, distinct from the clientRef the rejected
+        // bracket already consumed under that dedupe key — otherwise Saxo could replay/409
+        // the rejected bracket's cached response instead of placing the entry.
+        assertThat(entryReqId).isNotEqualTo("ref-1");
         assertThat(stopReqId).isNotNull().isNotEqualTo(entryReqId);
+        // ExternalReference on the entry body still carries the clientRef for order
+        // tracking / orderByClientRef reconcile matching — only the header changed.
+        assertThat(posts.get(1).getBodyAsString()).contains("\"ExternalReference\":\"ref-1\"");
 
         wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
                 .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded")))
