@@ -143,14 +143,32 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 .queryParam("ClientKey", "{ck}")
                 .queryParam("AccountKey", "{ak}")
                 .queryParam("FieldGroups", "{fg}")
-                .build(ctx.clientKey(), ctx.accountKey(), "NetPositionBase,NetPositionView,DisplayAndFormat")));
+                .build(ctx.clientKey(), ctx.accountKey(),
+                        "NetPositionBase,NetPositionView,NetPositionDetails,DisplayAndFormat")));
         List<Position> out = new ArrayList<>();
         for (JsonNode n : resp.path("Data")) {
             JsonNode base = n.path("NetPositionBase");
             JsonNode view = n.path("NetPositionView");
+            JsonNode details = n.path("NetPositionDetails");
+            String sym = baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString(""));
+            // TEMP diagnostic (branch diag-saxo-netposition-fields): dump the RAW candidate
+            // value fields so we can see which are populated in the SIM/paper feed —
+            // Exposure reads 0 there, but CurrentPrice / NetPositionDetails.MarketValue may
+            // carry the real mark-to-market. Logged at INFO on purpose so it shows without a
+            // DEBUG toggle; REVERT once the correct source field is confirmed.
+            log.info("saxo netposition diag [{}]: Amount={} AverageOpenPrice={} Exposure={} "
+                            + "CurrentPrice={} CurrentPriceType={} CurrentPriceDelayMinutes={} "
+                            + "ProfitLossOnTrade={} InstrumentPriceDayPercentChange={} "
+                            + "Details.MarketValue={} Details.MarketValueInBaseCurrency={}",
+                    sym,
+                    base.path("Amount"), view.path("AverageOpenPrice"), view.path("Exposure"),
+                    view.path("CurrentPrice"), view.path("CurrentPriceType"),
+                    view.path("CurrentPriceDelayMinutes"), view.path("ProfitLossOnTrade"),
+                    view.path("InstrumentPriceDayPercentChange"),
+                    details.path("MarketValue"), details.path("MarketValueInBaseCurrency"));
             // Saxo has no CurrentMarketValue; Exposure = mark-to-market when price feed is live (0 with delayed SIM data)
             out.add(new Position(
-                    baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString("")),
+                    sym,
                     bd(base.path("Amount")),
                     bd(view.path("AverageOpenPrice")),
                     bd(view.path("Exposure")),

@@ -135,7 +135,7 @@ class SaxoBrokerProviderTest {
         wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions"))
                 .withQueryParam("ClientKey", equalTo("Cli+Key/1=="))
                 .withQueryParam("AccountKey", equalTo("Acc+Key/1=="))
-                .withQueryParam("FieldGroups", equalTo("NetPositionBase,NetPositionView,DisplayAndFormat")));
+                .withQueryParam("FieldGroups", equalTo("NetPositionBase,NetPositionView,NetPositionDetails,DisplayAndFormat")));
     }
 
     @Test
