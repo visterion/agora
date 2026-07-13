@@ -17,7 +17,7 @@ class MarketDataServiceIdentityTest {
             public Quote quote(Instrument i) { seen.add(i); return new Quote(i.rawInput(),
                     java.math.BigDecimal.ONE, java.math.BigDecimal.ZERO, "EUR"); }
         };
-        InstrumentResolver stub = s -> new Instrument(s, s, null, null, "FSE", "EUR", 1126L, null, "Stock", true);
+        InstrumentResolver stub = s -> new Instrument(s, s, null, null, "FSE", "EUR", 1126L, null, "Stock", true, 1.0);
         MarketDataService svc = new MarketDataService(List.of(fake), 120_000L, () -> 0L, stub);
         Quote q = svc.quote("SAP.DE");
         assertThat(q.symbol()).isEqualTo("SAP.DE");
