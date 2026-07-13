@@ -131,11 +131,34 @@ class SaxoBrokerProviderTest {
         assertThat(ps.get(0).qty()).isEqualByComparingTo("10");
         assertThat(ps.get(0).avgEntryPrice()).isEqualByComparingTo("150.0");
         assertThat(ps.get(0).unrealizedPl()).isEqualByComparingTo("100.0");
+        // Exposure is live (non-zero) here → used verbatim as market value.
+        assertThat(ps.get(0).marketValue()).isEqualByComparingTo("1510.0");
         assertThat(ps.get(0).currency()).isEqualTo("USD");
         wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions"))
                 .withQueryParam("ClientKey", equalTo("Cli+Key/1=="))
                 .withQueryParam("AccountKey", equalTo("Acc+Key/1=="))
                 .withQueryParam("FieldGroups", equalTo("NetPositionBase,NetPositionView,DisplayAndFormat")));
+    }
+
+    @Test
+    void positionsDeriveMarketValueWhenExposureZero() {
+        // Delayed SIM/paper feed: Exposure and CurrentPrice read 0 (CurrentPriceType "None"),
+        // but AverageOpenPrice and ProfitLossOnTrade are populated. Market value is
+        // reconstructed as qty*avgOpen + P/L = 5*193.87 + (-6.55) = 962.80 — the real PSMT
+        // case observed in prod 2026-07-13.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionId":"PSMT:xnas__Stock",
+                      "NetPositionBase":{"Amount":5.0,"Uic":123,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":193.87,"Exposure":0.0,"CurrentPrice":0.0,
+                                         "CurrentPriceType":"None","ProfitLossOnTrade":-6.55,
+                                         "ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"PSMT:xnas","Currency":"USD"}}]}
+            """)));
+        var ps = provider.positions();
+        assertThat(ps).hasSize(1);
+        assertThat(ps.get(0).symbol()).isEqualTo("PSMT");
+        assertThat(ps.get(0).marketValue()).isEqualByComparingTo("962.80");
+        assertThat(ps.get(0).unrealizedPl()).isEqualByComparingTo("-6.55");
     }
 
     @Test
