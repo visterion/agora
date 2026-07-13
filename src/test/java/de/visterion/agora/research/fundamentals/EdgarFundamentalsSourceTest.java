@@ -45,4 +45,24 @@ class EdgarFundamentalsSourceTest {
         assertThat(r.series(FundamentalConcept.LONG_TERM_DEBT).datapoints()).isEmpty();
         assertThat(r.semantics()).isEqualTo(AbsenceSemantics.COMPLETE);
     }
+
+    @Test
+    void cfoRecognizesContinuingOperationsTag() {
+        // Ported from the deleted FundamentalScoreServiceTest (pre-router refactor, commit
+        // 5241fcd): when the primary NetCashProvidedByUsedInOperatingActivities tag is absent,
+        // the ContinuingOperations synonym must still be picked up wholesale.
+        EdgarService edgar = mock(EdgarService.class);
+        CompanyFacts f = new CompanyFacts(Map.of(
+            "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+                new ConceptSeries("USD", List.of(dp("2025-09-30", 150), dp("2024-09-30", 100)))));
+        when(edgar.companyFacts("CFOTAG", null)).thenReturn(f);
+
+        EdgarFundamentalsSource src = new EdgarFundamentalsSource(edgar);
+        SourceResult r = src.facts(Instrument.raw("CFOTAG"));
+
+        assertThat(r.semantics()).isEqualTo(AbsenceSemantics.COMPLETE);
+        ConceptSeries cfo = r.series(FundamentalConcept.OPERATING_CASH_FLOW);
+        assertThat(cfo.datapoints()).extracting(ConceptDatapoint::value)
+            .containsExactly(BigDecimal.valueOf(150.0), BigDecimal.valueOf(100.0));
+    }
 }
