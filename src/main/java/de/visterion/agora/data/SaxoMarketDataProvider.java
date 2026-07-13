@@ -94,7 +94,8 @@ public class SaxoMarketDataProvider implements MarketDataProvider {
                     "saxo infoprice has no currency for " + label, null);
         }
         BigDecimal pct = bd(root.path("PriceInfo").path("PercentChange"));
-        return new Quote(label, price, pct, currency);
+        MinorUnitCurrency n = MinorUnitCurrency.of(currency);
+        return new Quote(label, n.apply(price), pct, n.currency());
     }
 
     @Override
