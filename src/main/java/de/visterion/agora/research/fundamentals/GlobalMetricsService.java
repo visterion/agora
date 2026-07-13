@@ -6,7 +6,6 @@ import de.visterion.agora.data.MarketDataService;
 import de.visterion.agora.data.FxService;
 import de.visterion.agora.data.OhlcBar;
 import de.visterion.agora.fetch.edgar.ConceptDatapoint;
-import de.visterion.agora.fetch.edgar.EdgarService.ConceptSeries;
 import de.visterion.agora.fetch.finnhub.Fundamentals;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
@@ -20,7 +19,7 @@ public class GlobalMetricsService {
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
     private static final ObjectMapper mapper = new ObjectMapper();
     private final FundamentalsRouter router;
-    private final MarketDataService marketData;   // may be exercised in later tasks
+    private final MarketDataService marketData;
     private final FxService fx;
 
     public GlobalMetricsService(FundamentalsRouter router, MarketDataService marketData, FxService fx) {
@@ -111,9 +110,9 @@ public class GlobalMetricsService {
         if (periods.size() < 2) return Optional.empty();
         java.time.LocalDate curEnd = periods.get(0), priorEnd = periods.get(1);
         Optional<BigDecimal> cur = r.series(c).datapoints().stream()
-                .filter(d -> curEnd.equals(d.periodEnd())).map(ConceptDatapoint::value).findFirst();
+                .filter(d -> curEnd.equals(d.periodEnd())).map(ConceptDatapoint::value).filter(Objects::nonNull).findFirst();
         Optional<BigDecimal> prior = r.series(c).datapoints().stream()
-                .filter(d -> priorEnd.equals(d.periodEnd())).map(ConceptDatapoint::value).findFirst();
+                .filter(d -> priorEnd.equals(d.periodEnd())).map(ConceptDatapoint::value).filter(Objects::nonNull).findFirst();
         if (cur.isEmpty() || prior.isEmpty()) return Optional.empty();
         return Optional.of(new BigDecimal[]{cur.get(), prior.get()});
     }
@@ -125,6 +124,7 @@ public class GlobalMetricsService {
 
     private Optional<BigDecimal> latest(SourceResult r, FundamentalConcept c) {
         return r.series(c).datapoints().stream()
+                .filter(d -> Objects.nonNull(d.value()))
                 .max(Comparator.comparing(ConceptDatapoint::periodEnd)).map(ConceptDatapoint::value);
     }
     private Optional<String> reportingUnit(SourceResult r) {
