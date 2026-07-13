@@ -67,6 +67,39 @@ class YahooCrumbClientTest {
     }
 
     @Test
+    void timeseriesRateLimitedThrowsInsteadOfReturningErrorEnvelope() throws Exception {
+        stubBootstrap();
+        wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
+                .willReturn(aResponse().withStatus(200).withBody("tok12345")));
+        // Yahoo's real 429 response is a JSON error envelope that would otherwise parse
+        // cleanly as "zero series" if not mapped to a thrown exception (see FIX 1).
+        wm.stubFor(get(urlPathMatching("/ws/fundamentals-timeseries/.*"))
+                .willReturn(aResponse().withStatus(429)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"finance\":{\"error\":{\"code\":\"Too Many Requests\"}}}")));
+
+        YahooCrumbClient c = client();
+        // Never silently swallowed into a parseable empty envelope: every call throws.
+        assertThatThrownBy(() -> c.timeseries("SAP.DE", "annualTotalAssets"))
+                .isInstanceOf(MarketDataException.class);
+        assertThatThrownBy(() -> c.timeseries("SAP.DE", "annualTotalAssets"))
+                .isInstanceOf(MarketDataException.class);
+    }
+
+    @Test
+    void timeseries5xxThrowsInsteadOfReturningErrorEnvelope() throws Exception {
+        stubBootstrap();
+        wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
+                .willReturn(aResponse().withStatus(200).withBody("tok12345")));
+        wm.stubFor(get(urlPathMatching("/ws/fundamentals-timeseries/.*"))
+                .willReturn(aResponse().withStatus(503)));
+
+        YahooCrumbClient c = client();
+        assertThatThrownBy(() -> c.timeseries("SAP.DE", "annualTotalAssets"))
+                .isInstanceOf(MarketDataException.class);
+    }
+
+    @Test
     void invalidCrumbTriggersOneReHandshake() throws Exception {
         stubBootstrap();
         wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
