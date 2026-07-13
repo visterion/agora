@@ -23,7 +23,7 @@ public class GetFundamentalScoreTool implements AgoraTool {
 
     public String name() { return "get_fundamental_score"; }
     public String description() {
-        return "Standardized fundamental-health scores (Piotroski F-score) computed from SEC XBRL company facts.";
+        return "Standardized fundamental-health scores (Piotroski F-score), routed US→SEC EDGAR / non-US→Yahoo.";
     }
 
     public ObjectNode inputSchema() {
