@@ -37,6 +37,18 @@ class GlobalMetricsServiceTest {
         assertThat(m.path("totalDebt/totalEquityQuarterly").decimalValue()).isEqualByComparingTo("0.5"); // 300/(1000-400)
     }
 
+    @Test void exposesReportingCurrencyFromReportingUnit() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        // Non-US company: reporting unit is EUR (first non-null of TOTAL_ASSETS->TOTAL_LIABILITIES->REVENUE).
+        Map<FundamentalConcept,ConceptSeries> c = Map.of(
+            FundamentalConcept.TOTAL_ASSETS, s("EUR",1000),
+            FundamentalConcept.REVENUE, s("EUR",500));
+        when(router.facts(any())).thenReturn(new SourceResult(c, AbsenceSemantics.SPARSE));
+        var svc = new GlobalMetricsService(router, null, null);
+        var m = svc.metrics(Instrument.raw("SAP.DE")).metrics();
+        assertThat(m.path("reportingCurrency").asString("")).isEqualTo("EUR");
+    }
+
     @Test void fiftyTwoWeekLowHighFromOhlc() {
         FundamentalsRouter router = mock(FundamentalsRouter.class);
         Map<FundamentalConcept,ConceptSeries> c = Map.of(
