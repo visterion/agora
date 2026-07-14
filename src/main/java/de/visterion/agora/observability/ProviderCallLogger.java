@@ -43,11 +43,16 @@ public final class ProviderCallLogger implements ClientHttpRequestInterceptor {
         ClientHttpResponse response = execution.execute(request, body);
         try {
             byte[] respBytes = readAll(response.getBody());
-            long durMs = (System.nanoTime() - start) / 1_000_000L;
-            emit(cfg, request.getMethod().name(), request.getURI(), request.getHeaders(),
-                    new String(body, StandardCharsets.UTF_8),
-                    response.getStatusCode().value(), respBytes, durMs);
-            return new BufferedClientHttpResponse(response, respBytes);
+            ClientHttpResponse buffered = new BufferedClientHttpResponse(response, respBytes);
+            try {
+                long durMs = (System.nanoTime() - start) / 1_000_000L;
+                emit(cfg, request.getMethod().name(), request.getURI(), request.getHeaders(),
+                        new String(body, StandardCharsets.UTF_8),
+                        response.getStatusCode().value(), respBytes, durMs);
+            } catch (Exception ex) {
+                log.warn("provider_call logging failed: {}", ex.toString());
+            }
+            return buffered;
         } catch (Exception ex) {
             log.warn("provider_call logging failed: {}", ex.toString());
             return response;
@@ -77,21 +82,38 @@ public final class ProviderCallLogger implements ClientHttpRequestInterceptor {
         String symbol = symbol(uri);
         String statusStr = status < 0 ? "ERR" : String.valueOf(status);
         int reqBytes = reqBody == null ? 0 : reqBody.getBytes(StandardCharsets.UTF_8).length;
+        String headers = redactedHeaders(reqHeaders);
         String respStr = capped(ProviderLogRedactor.redactBody(new String(respBytes, StandardCharsets.UTF_8)),
-                respBytes.length, cfg.maxBodyChars());
+                cfg.maxBodyChars());
         String reqStr = reqBody == null || reqBody.isEmpty() ? "-"
-                : capped(ProviderLogRedactor.redactBody(reqBody), reqBytes, cfg.maxBodyChars());
-        log.info("provider_call provider={} method={} host={} path={} query={} status={} dur_ms={} "
+                : capped(ProviderLogRedactor.redactBody(reqBody), cfg.maxBodyChars());
+        log.info("provider_call provider={} method={} host={} path={} query={} headers={} status={} dur_ms={} "
                         + "symbol={} req_bytes={} resp_bytes={} req_body={} resp_body={}",
-                provider, method, host, uri.getPath(), query == null ? "-" : query, statusStr, durMs,
+                provider, method, host, uri.getPath(), query == null ? "-" : query, headers, statusStr, durMs,
                 symbol, reqBytes, respBytes.length, reqStr, respStr);
     }
 
-    private static String capped(String s, int originalBytes, int max) {
+    private static String redactedHeaders(HttpHeaders reqHeaders) {
+        if (reqHeaders == null || reqHeaders.isEmpty()) return "[]";
+        StringBuilder sb = new StringBuilder("[");
+        boolean[] first = {true};
+        reqHeaders.forEach((name, values) -> {
+            for (String value : values) {
+                if (!first[0]) sb.append("; ");
+                first[0] = false;
+                sb.append(name).append('=').append(ProviderLogRedactor.redactHeaderValue(name, value));
+            }
+        });
+        sb.append(']');
+        return sb.toString();
+    }
+
+    private static String capped(String s, int max) {
         if (s == null) return "-";
         if (s.length() <= max) return s;
-        int dropped = originalBytes - s.substring(0, max).getBytes(StandardCharsets.UTF_8).length;
-        return s.substring(0, max) + "…[+" + Math.max(dropped, 0) + "b]";
+        int total = s.getBytes(StandardCharsets.UTF_8).length;
+        int kept = s.substring(0, max).getBytes(StandardCharsets.UTF_8).length;
+        return s.substring(0, max) + "…[+" + Math.max(total - kept, 0) + "b]";
     }
 
     private static String provider(String host) {

@@ -61,6 +61,7 @@ class ProviderCallLoggerTest {
         exec(req, resp);
         String line = appender.list.get(0).getFormattedMessage();
         assertThat(line).doesNotContain("SEKRET");
+        assertThat(line).contains("X-Finnhub-Token=***");
         assertThat(line).contains("resp_bytes=16");     // original size
         assertThat(line).contains("[+8b]");              // 16 - 8 = 8 dropped
     }
@@ -74,6 +75,47 @@ class ProviderCallLoggerTest {
         String consumed = new String(out.getBody().readAllBytes(), StandardCharsets.UTF_8);
         assertThat(consumed).isEqualTo("BODY");        // buffering did not eat the stream
         assertThat(appender.list.get(0).getFormattedMessage()).contains("provider=edgar");
+    }
+
+    @Test
+    void postEmitFailureStillReturnsReadableBody() throws Exception {
+        MockClientHttpRequest req = new MockClientHttpRequest(org.springframework.http.HttpMethod.GET,
+                URI.create("https://data.sec.gov/submissions/CIK0000320193.json"));
+        byte[] respBytes = "FULL BODY".getBytes(StandardCharsets.UTF_8);
+        ClientHttpResponse throwingResp = new MockClientHttpResponse(respBytes, HttpStatus.OK) {
+            @Override
+            public org.springframework.http.HttpStatusCode getStatusCode() {
+                throw new IllegalStateException("boom during emit");
+            }
+        };
+        ClientHttpResponse out = ProviderCallLogger.INSTANCE.intercept(req, new byte[0], (r, b) -> throwingResp);
+        String consumed = new String(out.getBody().readAllBytes(), StandardCharsets.UTF_8);
+        assertThat(consumed).isEqualTo("FULL BODY");   // buffered bytes served despite emit failure
+        // emit failed before producing a provider_call INFO line; only the WARN fallback was logged
+        assertThat(appender.list).noneMatch(e -> e.getLevel() == Level.INFO);
+        assertThat(appender.list).anyMatch(e -> e.getLevel() == Level.WARN
+                && e.getFormattedMessage().contains("provider_call logging failed"));
+    }
+
+    @Test
+    void capReportsCorrectDropCountWhenBodyAlsoRedacted() throws Exception {
+        ProviderCallLogger.configure(true, 20);
+        MockClientHttpRequest req = new MockClientHttpRequest(org.springframework.http.HttpMethod.GET,
+                URI.create("https://finnhub.io/api/v1/quote?symbol=AAPL"));
+        // "token" gets redacted to "***" (post-redaction string is what gets capped)
+        String respBody = "{\"token\":\"abcdefghijklmnopqrstuvwxyz\",\"extra\":\"padding-padding-padding\"}";
+        MockClientHttpResponse resp = new MockClientHttpResponse(respBody.getBytes(StandardCharsets.UTF_8), HttpStatus.OK);
+        exec(req, resp);
+        String line = appender.list.get(0).getFormattedMessage();
+        String redacted = ProviderLogRedactor.redactBody(respBody);
+        int max = 20;
+        int totalBytes = redacted.getBytes(StandardCharsets.UTF_8).length;
+        int keptBytes = redacted.substring(0, max).getBytes(StandardCharsets.UTF_8).length;
+        int expectedDropped = totalBytes - keptBytes;
+        assertThat(line).contains("[+" + expectedDropped + "b]");
+        // sanity: this must NOT equal a naive pre-redaction-baseline calculation
+        int wrongDropped = respBody.getBytes(StandardCharsets.UTF_8).length - keptBytes;
+        assertThat(expectedDropped).isNotEqualTo(wrongDropped);
     }
 
     @Test
