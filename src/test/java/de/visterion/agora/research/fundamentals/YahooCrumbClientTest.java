@@ -125,6 +125,26 @@ class YahooCrumbClientTest {
     }
 
     @Test
+    void malformedUrlSurfacesMarketDataExceptionNotIllegalArgument() {
+        // Regression for the finally-block bug: `get(url)` used to re-parse `url` a second
+        // time inside the finally (as an arg to ProviderCallLogger.record), OUTSIDE the
+        // try/catch that wraps the URI.create() used for the actual request. A malformed
+        // base url (e.g. a misconfigured query1) would make URI.create() throw once inside
+        // the try — correctly wrapped into a MarketDataException — but then the finally's
+        // re-parse would throw IllegalArgumentException again, and per Java finally
+        // semantics that REPLACES the in-flight MarketDataException with the raw
+        // IllegalArgumentException. Point query1 at a syntactically invalid URI while
+        // keeping the cookie-bootstrap hosts (fcBaseUrl/financeBaseUrl) valid, so the
+        // crumb handshake's softGet(...) calls succeed harmlessly and only the final
+        // get(query1 + "/v1/test/getcrumb") call hits the malformed url.
+        stubBootstrap();
+        YahooCrumbClient c = new YahooCrumbClient("TestAgent/1.0", "ht!tp://bad", wm.baseUrl(), wm.baseUrl(), wm.baseUrl());
+
+        assertThatThrownBy(c::crumb)
+                .isInstanceOf(MarketDataException.class);
+    }
+
+    @Test
     void logsProviderCallWithCrumbRedacted() throws Exception {
         stubBootstrap();
         wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
