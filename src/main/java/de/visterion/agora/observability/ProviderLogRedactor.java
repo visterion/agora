@@ -49,8 +49,8 @@ public final class ProviderLogRedactor {
         for (String f : SECRET_BODY_FIELDS) {
             // JSON: "field":"value"
             out = out.replaceAll("(\"" + Pattern.quote(f) + "\"\\s*:\\s*\")[^\"]*(\")", "$1" + MASK + "$2");
-            // form: field=value  (value = up to & or end)
-            out = out.replaceAll("(" + Pattern.quote(f) + "=)[^&]*", "$1" + MASK);
+            // form: field=value  (value = up to & or end); field must be at start-of-string or after &
+            out = out.replaceAll("(^|&)(" + Pattern.quote(f) + "=)[^&]*", "$1$2" + MASK);
         }
         return out;
     }
