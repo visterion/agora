@@ -1,11 +1,13 @@
 package de.visterion.agora.trading;
 
+import de.visterion.agora.observability.ProviderCallLogger;
 import org.apache.hc.client5.http.config.RequestConfig;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
 import org.apache.hc.core5.util.Timeout;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
+import org.springframework.web.client.RestClient;
 
 /**
  * HTTP plumbing shared by broker providers: Apache client with automatic retries
@@ -48,5 +50,12 @@ public final class TradingHttp {
                         .setConnectionRequestTimeout(CONNECTION_REQUEST_TIMEOUT)
                         .build())
                 .build());
+    }
+
+    /** RestClient.Builder pre-wired with the retries-disabled Apache factory AND the provider-call logging interceptor. */
+    public static RestClient.Builder clientBuilder(long responseTimeoutMs) {
+        return RestClient.builder()
+                .requestFactory(requestFactory(responseTimeoutMs))
+                .requestInterceptor(ProviderCallLogger.INSTANCE);
     }
 }
