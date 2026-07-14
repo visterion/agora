@@ -12,7 +12,7 @@ Fundamental metrics (P/E, ROE, Debt/Equity, Free Cash Flow, etc.) for a symbol. 
 
 **Global routing** (gated by `agora.fundamentals.global-metrics-enabled`, default `false`):
 - **US ticker:** Finnhub (unchanged behavior)
-- **Non-US ticker (suffixed symbols):** computed from SEC EDGAR / Yahoo concepts, OHLC, and current price. Metrics like `marketCapitalization`, `pbAnnual`, `peTTM` are in reporting currency; price-relative metrics like `freeCashFlowPerShareTTM` are in quote currency. Fails gracefully (omits unavailable fields) if upstream data is missing.
+- **Non-US ticker (suffixed symbols):** computed from SEC EDGAR / Yahoo concepts, OHLC, and current price. Metrics like `marketCapitalization`, `pbAnnual`, `peTTM` are in reporting currency; price-relative metrics like `freeCashFlowPerShareTTM` are in quote currency. The non-US output carries `reportingCurrency` (the reporting-currency code that `marketCapitalization` and the other reporting-currency metrics are expressed in) so consumers can check currency consistency against `get_fundamental_concepts`. Fails gracefully (omits unavailable fields) if upstream data is missing.
 
 **Input:**
 ```json
@@ -52,14 +52,14 @@ Raw normalized company-fundamentals line items (neutral accounting concepts + re
     "Assets": {
       "unit": "USD",
       "datapoints": [
-        { "periodEnd": "2026-09-30", "value": 352000000000 },
-        { "periodEnd": "2026-06-30", "value": 346000000000 }
+        { "periodStart": null, "periodEnd": "2026-09-30", "value": 352000000000, "filed": "2026-11-01" },
+        { "periodStart": null, "periodEnd": "2026-06-30", "value": 346000000000, "filed": "2026-08-02" }
       ]
     },
     "Liabilities": {
       "unit": "USD",
       "datapoints": [
-        { "periodEnd": "2026-09-30", "value": 120000000000 }
+        { "periodStart": null, "periodEnd": "2026-09-30", "value": 120000000000, "filed": "2026-11-01" }
       ]
     }
   }
@@ -72,8 +72,10 @@ Raw normalized company-fundamentals line items (neutral accounting concepts + re
 
 **Output notes:**
 - `unit` is the reporting currency (may differ from listing currency; e.g., a company trading in HKD may report in CNY or USD)
+- each datapoint carries `periodStart` (null for instant/balance-sheet facts, set for duration facts), `periodEnd`, `value`, and `filed` (the filing date, null if unknown) — consumers use `periodStart` to tell instant vs duration facts apart and `filed` for restatement dedup
 - datapoint order is not guaranteed and differs by source; sort by `periodEnd` if you need a specific order
 - Empty concepts are omitted (only concepts with data are included)
+- an unknown symbol (NOT_FOUND) returns `available:true` with an empty `concepts` object — "ran fine, no data" — not an error envelope; a genuine source outage returns `available:false`
 
 **Availability:** MCP, webhook, catalog
 
@@ -128,7 +130,7 @@ Standardized fundamental-health scores (Piotroski F-score, 0–9). **Global rout
 - `criteriaAvailable`: 0–9, number of criteria for which data was available (a criterion only counts as available if it can be strictly evaluated; met criteria require verifiable evidence, otherwise score 0)
 - `criteria.<name>.met`: whether the criterion was met (always false if `available` is false)
 - `raw`: underlying figures used for score computation, in reporting currency
-- Returns `unavailable` on upstream errors or insufficient data
+- an unknown symbol (NOT_FOUND) returns `available:true` with `score:null` and empty criteria — not an error; a genuine source outage returns `available:false`
 
 **Availability:** MCP, webhook, catalog
 
@@ -163,5 +165,8 @@ Multiple XBRL `us-gaap` concepts for one company in a single fetch (cheaper than
   }
 }
 ```
+
+**Output notes:**
+- an unknown symbol (NOT_FOUND) returns `available:true` with empty `datapoints` per requested tag (`cik:null`) — not an error; a genuine source outage returns `available:false`
 
 **Availability:** MCP, webhook, catalog
