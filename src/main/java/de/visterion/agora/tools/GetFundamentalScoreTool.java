@@ -65,6 +65,17 @@ public class GetFundamentalScoreTool implements AgoraTool {
 
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
+            if (e.kind() == MarketDataException.Kind.NOT_FOUND) {
+                // Company exists nowhere upstream: "ran fine, no data" — unknown score, no criteria.
+                ObjectNode out = mapper.createObjectNode();
+                out.put("symbol", symbol);
+                ObjectNode piotroskiF = out.putObject("scores").putObject("piotroskiF");
+                piotroskiF.putNull("score");
+                piotroskiF.put("criteriaAvailable", 0);
+                piotroskiF.putObject("criteria");
+                piotroskiF.putObject("raw");
+                return ToolResult.ok(out);
+            }
             return ToolResult.unavailable(e.getMessage());
         }
     }
