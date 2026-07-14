@@ -1,11 +1,16 @@
 package de.visterion.agora.trading.saxo;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import de.visterion.agora.trading.BrokerException;
 import de.visterion.agora.trading.ConnectionConfig;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.client.RestClient;
 
 import java.nio.file.Path;
@@ -453,6 +458,61 @@ class SaxoBrokerProviderTest {
         assertThatThrownBy(() -> provider.submitBracket(bracketReq()))
                 .isInstanceOf(BrokerException.class)
                 .hasMessageContaining("duplicate");
+    }
+
+    // ---- provider-call interceptor dedup: bespoke body logs must not duplicate it ----
+
+    @Test
+    void submitBracketSuccessDoesNotLogBespokeBodyLine() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
+            """)));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(SaxoBrokerProvider.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.INFO);
+        try {
+            var r = provider.submitBracket(bracketReq());
+            assertThat(r.accepted()).isTrue();
+            // The provider-call interceptor (agora.providercall) now logs this response
+            // uniformly — SaxoBrokerProvider must not also emit its own success body line.
+            assertThat(appender.list).noneMatch(e ->
+                    e.getFormattedMessage().contains("saxo response [POST /trade/v2/orders (bracket)]: status=success"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void submitBracketRejectLogsRedactedBodyViaWriteError() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                    {"ErrorInfo":{"ErrorCode":"IllegalInstrumentId","Message":"Instrument not tradable"},"token":"SEKRET123"}
+                    """)));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(SaxoBrokerProvider.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.INFO);
+        try {
+            var r = provider.submitBracket(bracketReq());
+            assertThat(r.accepted()).isFalse();
+            var writeErrorLines = appender.list.stream()
+                    .filter(e -> e.getFormattedMessage().contains("saxo response [POST /trade/v2/orders (bracket)]: status=400"))
+                    .toList();
+            assertThat(writeErrorLines).hasSize(1);
+            String line = writeErrorLines.get(0).getFormattedMessage();
+            assertThat(line).doesNotContain("SEKRET123");
+            assertThat(line).contains("\"token\":\"***\"");
+        } finally {
+            logger.detachAppender(appender);
+        }
     }
 
     // ---- submitBracket far-stop fallback (REACTIVE: real bracket 400 TooFarFromEntryOrder) ----

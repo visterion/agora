@@ -5,7 +5,6 @@ import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.TtlCache;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -64,9 +63,7 @@ public class EdgarService {
     }
 
     private static RestClient buildHttp(String userAgent, long timeoutMs) {
-        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
-        return RestClient.builder()
-                .requestFactory(rf)
+        return DataHttp.clientBuilder(timeoutMs)
                 .baseUrl("https://data.sec.gov")
                 .defaultHeader("User-Agent", userAgent)
                 .build();

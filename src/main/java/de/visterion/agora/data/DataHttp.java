@@ -1,6 +1,8 @@
 package de.visterion.agora.data;
 
+import de.visterion.agora.observability.ProviderCallLogger;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
+import org.springframework.web.client.RestClient;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
@@ -26,5 +28,12 @@ public final class DataHttp {
         JdkClientHttpRequestFactory rf = new JdkClientHttpRequestFactory(httpClient);
         rf.setReadTimeout(Duration.ofMillis(readTimeoutMs));
         return rf;
+    }
+
+    /** RestClient.Builder pre-wired with the 3s-connect/read-timeout factory AND the provider-call logging interceptor. */
+    public static RestClient.Builder clientBuilder(long readTimeoutMs) {
+        return RestClient.builder()
+                .requestFactory(requestFactory(readTimeoutMs))
+                .requestInterceptor(ProviderCallLogger.INSTANCE);
     }
 }

@@ -23,8 +23,7 @@ public class AlpacaBrokerProvider implements BrokerProvider {
 
     /** Instances are built by AlpacaBrokerProviderFactory, one per active connection. */
     AlpacaBrokerProvider(String baseUrl, String keyId, String secret, long timeoutMs) {
-        this.client = RestClient.builder()
-                .requestFactory(TradingHttp.requestFactory(timeoutMs))
+        this.client = TradingHttp.clientBuilder(timeoutMs)
                 .baseUrl(baseUrl)
                 .defaultHeader("APCA-API-KEY-ID", keyId)
                 .defaultHeader("APCA-API-SECRET-KEY", secret)
