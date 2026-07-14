@@ -60,6 +60,31 @@ class GetFundamentalConceptsToolTest {
     }
 
     @Test
+    void notFoundReturnsOkEmpty() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        InstrumentResolver resolver = mock(InstrumentResolver.class);
+        when(resolver.resolve("ZZZ")).thenReturn(Instrument.raw("ZZZ"));
+        when(router.facts(any())).thenThrow(new de.visterion.agora.data.MarketDataException(
+            de.visterion.agora.data.MarketDataException.Kind.NOT_FOUND, "no CIK for ZZZ", null));
+        var r = new GetFundamentalConceptsTool(router, resolver).call(new ObjectMapper().readTree("{\"symbol\":\"ZZZ\"}"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().path("symbol").asString("")).isEqualTo("ZZZ");
+        assertThat(r.output().path("concepts").isObject()).isTrue();
+        assertThat(r.output().path("concepts").isEmpty()).isTrue();
+    }
+
+    @Test
+    void unavailableReturnsUnavailable() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        InstrumentResolver resolver = mock(InstrumentResolver.class);
+        when(resolver.resolve("SAP.DE")).thenReturn(Instrument.raw("SAP.DE"));
+        when(router.facts(any())).thenThrow(new de.visterion.agora.data.MarketDataException(
+            de.visterion.agora.data.MarketDataException.Kind.UNAVAILABLE, "EDGAR down", null));
+        var r = new GetFundamentalConceptsTool(router, resolver).call(new ObjectMapper().readTree("{\"symbol\":\"SAP.DE\"}"));
+        assertThat(r.available()).isFalse();
+    }
+
+    @Test
     void blankSymbolUnavailable() {
         var tool = new GetFundamentalConceptsTool(mock(FundamentalsRouter.class), mock(InstrumentResolver.class));
         assertThat(tool.call(new ObjectMapper().readTree("{}")).available()).isFalse();

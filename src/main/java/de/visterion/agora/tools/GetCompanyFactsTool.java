@@ -93,6 +93,20 @@ public class GetCompanyFactsTool implements AgoraTool {
             }
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
+            if (e.kind() == MarketDataException.Kind.NOT_FOUND) {
+                // Company exists nowhere upstream: "ran fine, no data" — each requested tag
+                // gets an empty, well-formed series (same shape as an unfiled concept).
+                ObjectNode out = mapper.createObjectNode();
+                out.putNull("cik");
+                out.put("taxonomy", "us-gaap");
+                ObjectNode byTag = out.putObject("facts");
+                for (String tag : tags) {
+                    ObjectNode tagNode = byTag.putObject(tag);
+                    tagNode.putNull("unit");
+                    tagNode.putArray("datapoints");
+                }
+                return ToolResult.ok(out);
+            }
             return ToolResult.unavailable(e.getMessage());
         }
     }

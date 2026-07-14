@@ -142,6 +142,26 @@ class GetCompanyFactsToolTest {
         assertThat(new GetCompanyFactsTool(svc).call(args).available()).isFalse();
     }
 
+    @Test void notFoundReturnsOkEmptyPerTag() {
+        EdgarService svc = Mockito.mock(EdgarService.class);
+        when(svc.resolveCik(any(), any()))
+                .thenThrow(new MarketDataException(MarketDataException.Kind.NOT_FOUND, "no CIK for ZZZ", null));
+        var args = mapper.createObjectNode();
+        args.put("symbol", "ZZZ");
+        args.putArray("tags").add("Assets").add("LiabilitiesCurrent");
+
+        var r = new GetCompanyFactsTool(svc).call(args);
+
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("taxonomy").asString()).isEqualTo("us-gaap");
+        JsonNode facts = r.output().get("facts");
+        // Every requested tag present with an empty, well-formed series — "ran fine, no data".
+        assertThat(facts.propertyNames()).containsExactlyInAnyOrder("Assets", "LiabilitiesCurrent");
+        assertThat(facts.get("Assets").get("unit").isNull()).isTrue();
+        assertThat(facts.get("Assets").get("datapoints")).isEmpty();
+        assertThat(facts.get("LiabilitiesCurrent").get("datapoints")).isEmpty();
+    }
+
     @Test void missingSymbolAndCikUnavailable() {
         var args = mapper.createObjectNode();
         args.putArray("tags").add("Assets");

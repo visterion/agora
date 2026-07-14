@@ -63,6 +63,13 @@ public class GetFundamentalConceptsTool implements AgoraTool {
             }
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
+            if (e.kind() == MarketDataException.Kind.NOT_FOUND) {
+                // Company exists nowhere upstream: "ran fine, no data" — empty concepts, no source.
+                ObjectNode out = mapper.createObjectNode();
+                out.put("symbol", symbol);
+                out.putObject("concepts");
+                return ToolResult.ok(out);
+            }
             return ToolResult.unavailable(e.getMessage());
         }
     }

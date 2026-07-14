@@ -43,6 +43,21 @@ class GetFundamentalScoreToolTest {
         assertThat(piotroskiF.get("raw").get("roa").decimalValue()).isEqualByComparingTo("0.12");
     }
 
+    @Test void notFoundReturnsOkEmpty() {
+        FundamentalScoreService svc = Mockito.mock(FundamentalScoreService.class);
+        when(svc.piotroski(anyString()))
+                .thenThrow(new MarketDataException(MarketDataException.Kind.NOT_FOUND, "no CIK for ZZZ", null));
+        var r = new GetFundamentalScoreTool(svc).call(mapper.createObjectNode().put("symbol", "ZZZ"));
+        assertThat(r.available()).isTrue();
+        var out = r.output();
+        assertThat(out.get("symbol").asString()).isEqualTo("ZZZ");
+        var piotroskiF = out.get("scores").get("piotroskiF");
+        assertThat(piotroskiF.get("score").isNull()).isTrue();
+        assertThat(piotroskiF.get("criteriaAvailable").asInt()).isEqualTo(0);
+        assertThat(piotroskiF.get("criteria").isEmpty()).isTrue();
+        assertThat(piotroskiF.get("raw").isEmpty()).isTrue();
+    }
+
     @Test void blankSymbolUnavailable() {
         var r = new GetFundamentalScoreTool(Mockito.mock(FundamentalScoreService.class))
                 .call(mapper.createObjectNode().put("symbol", ""));
