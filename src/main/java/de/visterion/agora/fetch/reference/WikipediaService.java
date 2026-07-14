@@ -7,7 +7,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.JsonNode;
@@ -49,9 +48,7 @@ public class WikipediaService {
     }
 
     private static RestClient buildHttp(String baseUrl, String userAgent, long timeoutMs) {
-        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
-        return RestClient.builder()
-                .requestFactory(rf)
+        return DataHttp.clientBuilder(timeoutMs)
                 .baseUrl(baseUrl)
                 .defaultHeader("User-Agent", userAgent)
                 .build();

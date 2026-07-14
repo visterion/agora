@@ -5,7 +5,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -41,10 +40,8 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
             @Value("${agora.data.twelvedata.base-url}") String baseUrl,
             @Value("${agora.data.twelvedata.key}") String key,
             @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
-        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
-        this.client = RestClient.builder()
+        this.client = DataHttp.clientBuilder(timeoutMs)
                 .baseUrl(baseUrl)
-                .requestFactory(rf)
                 .build();
         this.key = key;
     }

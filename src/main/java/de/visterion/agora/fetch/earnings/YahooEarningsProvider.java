@@ -5,7 +5,6 @@ import de.visterion.agora.data.MarketDataException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -39,9 +38,7 @@ public class YahooEarningsProvider implements EarningsProvider {
             @Value("${agora.data.yahoo.base-url}") String baseUrl,
             @Value("${agora.data.yahoo.user-agent}") String userAgent,
             @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
-        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
-        this.client = RestClient.builder()
-                .requestFactory(rf)
+        this.client = DataHttp.clientBuilder(timeoutMs)
                 .baseUrl(baseUrl)
                 .defaultHeader("User-Agent", userAgent)
                 .build();
