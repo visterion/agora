@@ -118,8 +118,10 @@ public class YahooCrumbClient {
         long start = System.nanoTime();
         int status = -1;
         String bodyStr = "";
+        URI target = null;
         try {
-            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+            target = URI.create(url);
+            HttpRequest req = HttpRequest.newBuilder(target)
                     .header("User-Agent", userAgent).timeout(Duration.ofSeconds(15)).GET().build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             status = resp.statusCode();
@@ -135,8 +137,14 @@ public class YahooCrumbClient {
         } catch (Exception e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo unreachable: " + e.getMessage(), e);
         } finally {
-            ProviderCallLogger.record("GET", URI.create(url),
-                    java.util.Map.of("User-Agent", userAgent), null,
+            // Reuse the already-parsed URI (never re-parse `url` here): re-parsing a malformed
+            // url inside this finally would throw IllegalArgumentException, which — per Java
+            // finally semantics — would REPLACE any MarketDataException in flight from the catch
+            // above. `target` is null only when URI.create(url) itself failed inside the try;
+            // ProviderCallLogger.record is fully try/catch-guarded and tolerates a null uri
+            // (emits a WARN, never throws), so nothing can escape from here.
+            ProviderCallLogger.record("GET", target,
+                    userAgent == null ? java.util.Map.of() : java.util.Map.of("User-Agent", userAgent), null,
                     status, bodyStr, (System.nanoTime() - start) / 1_000_000L);
         }
     }
