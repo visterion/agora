@@ -55,8 +55,10 @@ public class GetFundamentalConceptsTool implements AgoraTool {
                 var dps = cn.putArray("datapoints");
                 for (ConceptDatapoint p : s.datapoints()) {
                     ObjectNode dn = dps.addObject();
+                    dn.put("periodStart", p.periodStart() == null ? null : p.periodStart().toString());
                     dn.put("periodEnd", p.periodEnd() == null ? null : p.periodEnd().toString());
                     dn.put("value", p.value());
+                    dn.put("filed", p.filed() == null ? null : p.filed().toString());
                 }
             }
             return ToolResult.ok(out);

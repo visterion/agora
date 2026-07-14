@@ -37,6 +37,29 @@ class GetFundamentalConceptsToolTest {
     }
 
     @Test
+    void datapointsCarryPeriodStartAndFiled() {
+        FundamentalsRouter router = mock(FundamentalsRouter.class);
+        InstrumentResolver resolver = mock(InstrumentResolver.class);
+        when(resolver.resolve("AAPL")).thenReturn(Instrument.raw("AAPL"));
+        // Instant fact (periodStart null) + duration fact (periodStart set); both carry a filed date.
+        when(router.facts(any())).thenReturn(new SourceResult(Map.of(
+            FundamentalConcept.TOTAL_ASSETS, new ConceptSeries("USD", List.of(
+                new ConceptDatapoint(null, LocalDate.parse("2023-09-30"), BigDecimal.valueOf(352583000000L), 2023, "FY", "10-K", LocalDate.parse("2023-11-03")),
+                new ConceptDatapoint(LocalDate.parse("2023-01-01"), LocalDate.parse("2023-09-30"), BigDecimal.valueOf(383285000000L), 2023, "FY", "10-K", LocalDate.parse("2023-11-03"))))),
+            AbsenceSemantics.SPARSE));
+        var tool = new GetFundamentalConceptsTool(router, resolver);
+        JsonNode dps = tool.call(new ObjectMapper().readTree("{\"symbol\":\"AAPL\"}"))
+            .output().path("concepts").path("TOTAL_ASSETS").path("datapoints");
+        // Instant fact: periodStart is JSON null, filed carries the date string.
+        assertThat(dps.get(0).has("periodStart")).isTrue();
+        assertThat(dps.get(0).path("periodStart").isNull()).isTrue();
+        assertThat(dps.get(0).path("filed").asString("")).isEqualTo("2023-11-03");
+        // Duration fact: periodStart carries the date string.
+        assertThat(dps.get(1).path("periodStart").asString("")).isEqualTo("2023-01-01");
+        assertThat(dps.get(1).path("filed").asString("")).isEqualTo("2023-11-03");
+    }
+
+    @Test
     void blankSymbolUnavailable() {
         var tool = new GetFundamentalConceptsTool(mock(FundamentalsRouter.class), mock(InstrumentResolver.class));
         assertThat(tool.call(new ObjectMapper().readTree("{}")).available()).isFalse();
