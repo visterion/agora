@@ -3,7 +3,6 @@ package de.visterion.agora.fetch.finnhub;
 import de.visterion.agora.data.DataHttp;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
@@ -18,9 +17,7 @@ public class FinnhubClient {
     public FinnhubClient(@Value("${agora.data.finnhub.base-url:https://finnhub.io/api/v1}") String baseUrl,
                          @Value("${agora.data.finnhub.key:}") String apiKey,
                          @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
-        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
-        this.http = RestClient.builder()
-                .requestFactory(rf)
+        this.http = DataHttp.clientBuilder(timeoutMs)
                 .baseUrl(baseUrl)
                 .build();
         this.apiKey = apiKey;

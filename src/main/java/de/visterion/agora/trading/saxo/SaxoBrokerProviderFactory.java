@@ -33,8 +33,7 @@ public class SaxoBrokerProviderFactory implements BrokerProviderFactory {
 
     @Override
     public BrokerProvider create(String connectionId, ConnectionConfig cfg) {
-        RestClient client = RestClient.builder()
-                .requestFactory(TradingHttp.requestFactory(timeoutMs))
+        RestClient client = TradingHttp.clientBuilder(timeoutMs)
                 .baseUrl(cfg.getBaseUrl())
                 .build();
         SaxoTokenStore store = stores.forConnection(connectionId);

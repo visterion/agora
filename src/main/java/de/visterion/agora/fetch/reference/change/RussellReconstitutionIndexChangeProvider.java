@@ -128,8 +128,7 @@ public class RussellReconstitutionIndexChangeProvider implements IndexChangeProv
     }
 
     private static RestClient buildHttp(String baseUrl, String userAgent, long timeoutMs) {
-        return RestClient.builder()
-                .requestFactory(DataHttp.requestFactory(timeoutMs))
+        return DataHttp.clientBuilder(timeoutMs)
                 .baseUrl(baseUrl)
                 .defaultHeader("User-Agent", userAgent)
                 .build();
