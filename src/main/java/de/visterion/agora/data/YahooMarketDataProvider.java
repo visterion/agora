@@ -4,7 +4,6 @@ import tools.jackson.databind.JsonNode;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
@@ -49,9 +48,7 @@ public class YahooMarketDataProvider implements MarketDataProvider {
             @Value("${agora.data.yahoo.user-agent}") String userAgent,
             @Value("${agora.data.yahoo.retry-base-ms:500}") long retryBaseMs,
             @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
-        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
-        this.client = RestClient.builder()
-                .requestFactory(rf)
+        this.client = DataHttp.clientBuilder(timeoutMs)
                 .baseUrl(baseUrl)
                 .defaultHeader("User-Agent", userAgent)
                 .build();

@@ -64,6 +64,9 @@ agora:
         secret: ${AGORA_TRADING_SAXO_LIVE_APP_SECRET:}
         extra:
           redirect-uri: ${AGORA_TRADING_SAXO_LIVE_REDIRECT_URI:}
+  provider-logging:
+    enabled: ${AGORA_PROVIDER_LOGGING_ENABLED:true}
+    max-body-chars: ${AGORA_PROVIDER_LOGGING_MAX_BODY_CHARS:4096}
   fetch:
     # per-request read timeout for reference/fundamentals fetch clients; generous because
     # EDGAR company-facts / filing-text responses are multi-MB. The JDK HttpClient request

@@ -3,7 +3,6 @@ package de.visterion.agora.fetch.alpaca;
 import de.visterion.agora.data.DataHttp;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
@@ -23,9 +22,7 @@ public class AlpacaDataClient {
             @Value("${agora.data.alpaca.secret:}") String secret,
             @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
         this.configured = keyId != null && !keyId.isBlank() && secret != null && !secret.isBlank();
-        JdkClientHttpRequestFactory rf = DataHttp.requestFactory(timeoutMs);
-        this.http = RestClient.builder()
-                .requestFactory(rf)
+        this.http = DataHttp.clientBuilder(timeoutMs)
                 .baseUrl(baseUrl)
                 .defaultHeader("APCA-API-KEY-ID", keyId)
                 .defaultHeader("APCA-API-SECRET-KEY", secret)

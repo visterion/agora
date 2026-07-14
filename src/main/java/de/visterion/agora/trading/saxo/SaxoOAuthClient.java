@@ -1,5 +1,6 @@
 package de.visterion.agora.trading.saxo;
 
+import de.visterion.agora.observability.ProviderCallLogger;
 import de.visterion.agora.trading.ConnectionConfig;
 import de.visterion.agora.trading.TradingHttp;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -63,7 +64,10 @@ public class SaxoOAuthClient {
 
     private SaxoTokens post(ConnectionConfig cfg, MultiValueMap<String, String> form) {
         try {
-            JsonNode n = RestClient.builder().baseUrl(authBaseUrl(cfg)).requestFactory(requestFactory).build()
+            JsonNode n = RestClient.builder().baseUrl(authBaseUrl(cfg))
+                    .requestFactory(requestFactory)
+                    .requestInterceptor(ProviderCallLogger.INSTANCE)
+                    .build()
                     .post().uri("/token")
                     .headers(h -> h.setBasicAuth(cfg.getKeyId(), cfg.getSecret()))
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
