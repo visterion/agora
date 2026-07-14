@@ -1,6 +1,10 @@
 package de.visterion.agora.trading.saxo;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.github.tomakehurst.wiremock.WireMockServer;
+import de.visterion.agora.observability.ProviderCallLogger;
 import de.visterion.agora.trading.ConnectionConfig;
 import org.junit.jupiter.api.*;
 
@@ -119,5 +123,39 @@ class SaxoOAuthClientTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("unreachable");
         assertThat((System.nanoTime() - t0) / 1_000_000L).isLessThan(2_500L);
+    }
+
+    @Test
+    void logsProviderCallWithRefreshTokenAndBasicAuthRedacted() {
+        wm.stubFor(post(urlEqualTo("/token")).willReturn(okJson(
+                "{\"access_token\":\"a\",\"expires_in\":1200,\"refresh_token\":\"NEWSEKRET\"}")));
+
+        ProviderCallLogger.configure(true, 4096);
+        Logger l = (Logger) org.slf4j.LoggerFactory.getLogger("agora.providercall");
+        ListAppender<ILoggingEvent> app = new ListAppender<>();
+        app.start();
+        l.addAppender(app);
+        try {
+            client.refresh(cfg, "OLDSEKRET");
+            // NOTE: WireMock always serves as host "localhost", so provider=saxo (which is
+            // derived from the real hostname in production, e.g. sim.logonvalidation.net)
+            // cannot be asserted against this harness — filter on the /token path instead
+            // and verify redaction, which is the behavior under test here.
+            var tokenLines = app.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(m -> m.contains("path=/token"))
+                    .toList();
+            assertThat(tokenLines).isNotEmpty();
+            assertThat(tokenLines).allSatisfy(m -> assertThat(m)
+                    .startsWith("provider_call")
+                    .contains("method=POST")
+                    .contains("status=200")
+                    .doesNotContain("OLDSEKRET")
+                    .doesNotContain("NEWSEKRET")
+                    .contains("refresh_token=***")
+                    .contains("Authorization=***"));
+        } finally {
+            l.detachAppender(app);
+        }
     }
 }

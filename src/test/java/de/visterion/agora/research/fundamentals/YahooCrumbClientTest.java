@@ -1,7 +1,11 @@
 package de.visterion.agora.research.fundamentals;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import de.visterion.agora.data.MarketDataException;
+import de.visterion.agora.observability.ProviderCallLogger;
 import org.junit.jupiter.api.*;
 
 import java.util.concurrent.CountDownLatch;
@@ -118,5 +122,41 @@ class YahooCrumbClientTest {
         var node = c.timeseries("SAP.DE", "annualTotalAssets");
         assertThat(node.path("timeseries").path("result").isArray()).isTrue();
         wm.verify(2, getRequestedFor(urlEqualTo("/v1/test/getcrumb")));
+    }
+
+    @Test
+    void logsProviderCallWithCrumbRedacted() throws Exception {
+        stubBootstrap();
+        wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
+                .willReturn(aResponse().withStatus(200).withBody("REALCRUMB123")));
+        wm.stubFor(get(urlPathMatching("/ws/fundamentals-timeseries/.*"))
+                .willReturn(okJson("{\"timeseries\":{\"result\":[]}}")));
+
+        ProviderCallLogger.configure(true, 4096);
+        Logger l = (Logger) org.slf4j.LoggerFactory.getLogger("agora.providercall");
+        ListAppender<ILoggingEvent> app = new ListAppender<>();
+        app.start();
+        l.addAppender(app);
+        try {
+            YahooCrumbClient c = client();
+            c.timeseries("AAPL", "annualEbit");
+            // NOTE: WireMock always serves as host "localhost", so provider=yahoo (which is
+            // derived from the real hostname in production) cannot be asserted against this
+            // harness — filter on the timeseries path instead and verify redaction, which is
+            // the behavior under test here.
+            var timeseriesLines = app.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(m -> m.contains("/ws/fundamentals-timeseries/"))
+                    .toList();
+            assertThat(timeseriesLines).isNotEmpty();
+            assertThat(timeseriesLines).allSatisfy(m -> assertThat(m)
+                    .startsWith("provider_call")
+                    .contains("method=GET")
+                    .contains("status=200")
+                    .contains("crumb=***")
+                    .doesNotContain("crumb=REALCRUMB123"));
+        } finally {
+            l.detachAppender(app);
+        }
     }
 }

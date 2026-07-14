@@ -1,6 +1,7 @@
 package de.visterion.agora.research.fundamentals;
 
 import de.visterion.agora.data.MarketDataException;
+import de.visterion.agora.observability.ProviderCallLogger;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -114,21 +115,29 @@ public class YahooCrumbClient {
     }
 
     private String get(String url) {
+        long start = System.nanoTime();
+        int status = -1;
+        String bodyStr = "";
         try {
             HttpRequest req = HttpRequest.newBuilder(URI.create(url))
                     .header("User-Agent", userAgent).timeout(Duration.ofSeconds(15)).GET().build();
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            int status = resp.statusCode();
+            status = resp.statusCode();
+            bodyStr = resp.body() == null ? "" : resp.body();
             if (status == 401 || status == 403 || status == 429 || status >= 500) {
                 // 429/5xx are transient: never let the caller parse a Yahoo error envelope as a
                 // clean empty result (that would get cached as a false SPARSE/success by the TTL cache).
                 throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo " + status, null);
             }
-            return resp.body() == null ? "" : resp.body();
+            return bodyStr;
         } catch (MarketDataException e) {
             throw e;
         } catch (Exception e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo unreachable: " + e.getMessage(), e);
+        } finally {
+            ProviderCallLogger.record("GET", URI.create(url),
+                    java.util.Map.of("User-Agent", userAgent), null,
+                    status, bodyStr, (System.nanoTime() - start) / 1_000_000L);
         }
     }
 
