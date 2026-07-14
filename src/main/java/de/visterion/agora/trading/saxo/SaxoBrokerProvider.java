@@ -1,5 +1,6 @@
 package de.visterion.agora.trading.saxo;
 
+import de.visterion.agora.observability.ProviderLogRedactor;
 import de.visterion.agora.trading.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -274,7 +275,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(fullBody)
                     .retrieve().body(JsonNode.class);
-            log.info("saxo response [POST /trade/v2/orders (bracket)]: status=success body={}", resp);
             String orderId = resp == null ? null : resp.path("OrderId").asString(null);
             return withLegIds(orderId, req.clientRef());
         } catch (RestClientResponseException e) {
@@ -297,7 +297,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     // Only this branch logs itself — every other 400 reject falls through to
                     // writeError below, which owns the logging for those.
                     log.info("saxo response [POST /trade/v2/orders (bracket)]: status=400 body={} — rejected [{}]: {} for {}",
-                            rawBody(e), code, message, req.symbol());
+                            ProviderLogRedactor.redactBody(rawBody(e)), code, message, req.symbol());
                     log.info("saxo far-stop: bracket rejected TooFarFromEntryOrder for {} (stop {} vs entry {}), "
                             + "falling back to entry + standalone stop",
                             req.symbol(), req.stopLossStop(), req.limitPrice());
@@ -889,7 +889,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
      */
     private static OrderResult writeError(String endpoint, RestClientResponseException e) {
         int status = e.getStatusCode().value();
-        log.info("saxo response [{}]: status={} body={}", endpoint, status, rawBody(e));
+        log.info("saxo response [{}]: status={} body={}", endpoint, status, ProviderLogRedactor.redactBody(rawBody(e)));
         if (status == 400) {
             JsonNode errorBody = parseErrorBody(e);
             String message = errorBody.path("ErrorInfo").path("Message").asString(null);
@@ -922,29 +922,13 @@ public class SaxoBrokerProvider implements BrokerProvider {
     // ---- helpers ----
 
     JsonNode getJson(String uri) {
-        JsonNode n = exchange(() -> client.get().uri(uri).header("Authorization", bearer())
+        return exchange(() -> client.get().uri(uri).header("Authorization", bearer())
                 .retrieve().body(JsonNode.class));
-        logRead("GET " + uri, n);
-        return n;
     }
 
     JsonNode getJson(String label, Function<UriBuilder, URI> uriFn) {
-        JsonNode n = exchange(() -> client.get().uri(uriFn).header("Authorization", bearer())
+        return exchange(() -> client.get().uri(uriFn).header("Authorization", bearer())
                 .retrieve().body(JsonNode.class));
-        logRead(label, n);
-        return n;
-    }
-
-    /**
-     * High-frequency reads (positions/account/orders/instrument-details/probe) are logged at
-     * DEBUG rather than INFO — reconcile polls hit these constantly, so INFO would spam the
-     * log — and the {@link JsonNode} body is only serialized to a log string when DEBUG is
-     * actually enabled, per the file's convention of guarding non-trivial log-arg work.
-     */
-    private static void logRead(String endpoint, JsonNode body) {
-        if (log.isDebugEnabled()) {
-            log.debug("saxo response [{}]: body={}", endpoint, body);
-        }
     }
 
     private JsonNode exchange(Supplier<JsonNode> call) {
@@ -985,7 +969,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
             if (next == null || next.isBlank()) break;
             current = exchange(() -> client.get().uri(URI.create(next)).header("Authorization", bearer())
                     .retrieve().body(JsonNode.class));
-            logRead("GET " + next + " (pagination continuation)", current);
             current.path("Data").forEach(allData::add);
             pages++;
         }
