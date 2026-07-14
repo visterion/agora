@@ -55,6 +55,7 @@ public class SaxoDataAccess {
         this.http = RestClient.builder()
                 .baseUrl(rc.get().config().getBaseUrl())
                 .requestFactory(rf)
+                .requestInterceptor(de.visterion.agora.observability.ProviderCallLogger.INSTANCE)
                 .build();
         SaxoTokenStore store = stores.forConnection(connectionId);
         this.bearer = () -> store.validAccessToken().map(t -> "Bearer " + t);

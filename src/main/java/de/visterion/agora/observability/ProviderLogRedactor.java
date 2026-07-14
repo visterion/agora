@@ -38,6 +38,7 @@ public final class ProviderLogRedactor {
     public static String redactHeaderValue(String name, String value) {
         if (name == null || value == null) return value;
         if (SECRET_HEADERS.contains(name.toLowerCase())) return MASK;
+        if ("user-agent".equals(name.toLowerCase())) return redactUserAgent(value);
         String v = value.trim();
         if (v.startsWith("Bearer ") || v.startsWith("Basic ") || v.startsWith("apikey ")) return MASK;
         return value;

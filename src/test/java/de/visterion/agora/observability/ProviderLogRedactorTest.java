@@ -63,6 +63,23 @@ class ProviderLogRedactorTest {
     }
 
     @Test
+    void redactHeaderValueMasksEmailInUserAgentHeader() {
+        // EDGAR's User-Agent carries a real contact email (SEC requirement); it must never
+        // reach the provider_call log unredacted -- redactHeaderValue is the single choke
+        // point the interceptor calls for every header, so the UA email masking must happen
+        // there, not just in the untested-in-practice redactUserAgent() helper.
+        String redacted = ProviderLogRedactor.redactHeaderValue("User-Agent", "agora agora@visterion.de");
+        assertThat(redacted).isEqualTo("agora ***@***");
+        assertThat(redacted).doesNotContain("agora@visterion.de");
+    }
+
+    @Test
+    void redactHeaderValueLowercaseUserAgentAlsoMasksEmail() {
+        assertThat(ProviderLogRedactor.redactHeaderValue("user-agent", "agora agora@visterion.de"))
+                .isEqualTo("agora ***@***");
+    }
+
+    @Test
     void nullSafe() {
         assertThat(ProviderLogRedactor.redactQuery(null)).isNull();
         assertThat(ProviderLogRedactor.redactBody(null)).isNull();
