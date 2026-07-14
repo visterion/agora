@@ -337,7 +337,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(entryBody)
                     .retrieve().body(JsonNode.class);
-            log.info("saxo response [POST /trade/v2/orders (far-stop entry)]: status=success body={}", resp);
             entryId = resp == null ? null : resp.path("OrderId").asString(null);
         } catch (RestClientResponseException e) {
             // Nothing has been placed yet — safe to report as a plain reject, same as the
@@ -368,7 +367,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(standaloneStop)
                     .retrieve().body(JsonNode.class);
-            log.info("saxo response [POST /trade/v2/orders (far-stop stop)]: status=success body={}", resp);
             stopId = resp == null ? null : resp.path("OrderId").asString(null);
         } catch (Exception e) {
             if (e instanceof RestClientResponseException rce) {
@@ -610,7 +608,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve().body(JsonNode.class);
-            log.info("saxo response [PATCH /trade/v2/orders (leg)]: status=success body={}", resp);
             return OrderResult.accepted(null, null, "replaced");
         } catch (RestClientResponseException e) {
             return writeError("PATCH /trade/v2/orders (leg)", e);
@@ -770,7 +767,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(body)
                     .retrieve().body(JsonNode.class);
-            log.info("saxo response [POST /trade/v2/orders (flatten)]: status=success body={}", resp2);
             String orderId = resp2 == null ? null : resp2.path("OrderId").asString(null);
             BigDecimal remainingQty = available.subtract(closeQty);
             String status = related.error() == null ? "accepted"
