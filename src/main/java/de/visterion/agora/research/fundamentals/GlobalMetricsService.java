@@ -66,6 +66,7 @@ public class GlobalMetricsService {
         Optional<BigDecimal> ocf = latest(r, FundamentalConcept.OPERATING_CASH_FLOW),
                              sh  = latest(r, FundamentalConcept.SHARES_OUTSTANDING);
         Optional<String> repCcy = reportingUnit(r);
+        repCcy.ifPresent(u -> m.put("reportingCurrency", u));  // currency of the concept line items (e.g. liabilities)
         if (ocf.isPresent() && sh.isPresent() && sh.get().signum()!=0 && quoteCcy!=null && repCcy.isPresent()) {
             try {
                 BigDecimal perShareRep = ocf.get().divide(sh.get(), MC);
