@@ -32,6 +32,31 @@ class ProviderLogRedactorTest {
     }
 
     @Test
+    void doesNotOverRedactFieldNameThatIsASuffixOfATargetField() {
+        // "token" is a redaction target, but "access_token" is NOT -- the field-name
+        // boundary check must not match "token=" inside "access_token=".
+        assertThat(ProviderLogRedactor.redactBody("access_token=abc123"))
+                .isEqualTo("access_token=abc123");
+    }
+
+    @Test
+    void redactsMixedCaseQueryParam() {
+        assertThat(ProviderLogRedactor.redactQuery("apiKey=K")).isEqualTo("apiKey=***");
+    }
+
+    @Test
+    void redactsApcaApiKeyIdHeader() {
+        assertThat(ProviderLogRedactor.redactHeaderValue("APCA-API-KEY-ID", "K")).isEqualTo("***");
+    }
+
+    @Test
+    void redactsFormBodySecretFields() {
+        assertThat(ProviderLogRedactor.redactBody("client_secret=S")).isEqualTo("client_secret=***");
+        assertThat(ProviderLogRedactor.redactBody("password=P")).isEqualTo("password=***");
+        assertThat(ProviderLogRedactor.redactBody("crumb=C")).isEqualTo("crumb=***");
+    }
+
+    @Test
     void redactsEmailInUserAgent() {
         assertThat(ProviderLogRedactor.redactUserAgent("Agora research bot ops@example.com"))
                 .isEqualTo("Agora research bot ***@***");
