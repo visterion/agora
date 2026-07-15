@@ -7,7 +7,7 @@ Agora's data tools resolve through provider plugins with fallback, so consumers 
 | Domain | Provider chain | Coverage | Cache TTL |
 |---|---|---|---|
 | Quotes, OHLC, intraday | Alpaca (broker feed, IEX), then Saxo (non-US via `saxo-live` session, Yahoo-suffix symbols), then TwelveData, Finnhub, then Yahoo (keyless fallback) | Equities globally, with 15-min delay on Saxo non-US | 120s (prices) |
-| FX rates | Alpaca (broker pair rates), then Saxo FX | Major pairs and crosses | 120s |
+| FX rates | Yahoo FX pairs (optional scheduled warmer) | Major pairs and crosses | 120s |
 
 ## Company data
 
@@ -23,7 +23,7 @@ Agora's data tools resolve through provider plugins with fallback, so consumers 
 | Domain | Provider | Coverage | Semantics | Notes |
 |---|---|---|---|---|
 | Company fundamentals — screener metrics | **US:** Finnhub / **Non-US (suffixed):** computed from SEC EDGAR + Yahoo concepts, OHLC, quote | US (Finnhub's universe), non-US (suffixed symbols like SAP.DE, 7203.T, 0700.HK) | Metrics in reporting currency (cap/P-B/P-E) or quote currency (price-relative). Config-gated by `agora.fundamentals.global-metrics-enabled` (default off); fails gracefully if data unavailable. | Accessed via `get_fundamentals` (global routing) |
-| Company fundamentals — raw line items | **US:** SEC EDGAR (XBRL `us-gaap`) / **Non-US:** Yahoo `fundamentals-timeseries` | **US:** COMPLETE (all reported concepts) / **Non-US:** SPARSE (curated subset) | Reporting currency (may differ from listing currency) | Non-US is free, unofficial, and fail-soft; EODHD planned as future reliability upgrade |
+| Company fundamentals — raw line items (`get_fundamental_concepts`) | **US:** SEC EDGAR (XBRL `us-gaap`) / **Non-US:** Yahoo `fundamentals-timeseries` | **US:** COMPLETE (all reported concepts) / **Non-US:** SPARSE (curated subset) | Reporting currency (may differ from listing currency) | Non-US is free, unofficial, and fail-soft; EODHD planned as future reliability upgrade |
 | SEC filings (by symbol/CIK), filterable by form | SEC EDGAR | US-listed and foreign-filers (form 20-F, 20-F/A, 40-F) | Raw EDGAR archive | Public filings only; Form-4 available via separate tool |
 | SEC filing full text (primary doc extraction) | SEC EDGAR | US-listed and foreign-filers | Text extraction, summary/term-sheet section detection, ~24k char limit, SSRF-guarded | Passthrough for non-EDGAR forms |
 | XBRL company-concept (full reported history) | SEC EDGAR (XBRL `us-gaap`, `ifrs-full`, `invest` taxonomies) | US-listed, foreign-filers, mutual funds, investment companies | Per-concept values, units, datapoints | `get_company_concept` for one concept; `get_company_facts` for multiple in one fetch |
@@ -53,7 +53,7 @@ Concept units reflect the reporting currency (not listing currency), so a compan
 | Broker | Environments | Auth | Coverage | Notes |
 |---|---|---|---|---|
 | Alpaca | `alpaca-paper` (default), `alpaca-live` | Headless API key/secret | US and some international equities | IEX market data included; broker-fed quotes are first in the data provider chain |
-| Saxo | `depot-1` (SIM/developer), `saxo-live` | Developer app OAuth, per-environment separate app credentials | Global equities, forex, indices, bonds | 15-min delayed on non-US via `saxo-live` session; fallback after Alpaca and TwelveData in pricing chain |
+| Saxo | `depot-1` (SIM/developer), `saxo-live` | Developer app OAuth, per-environment separate app credentials | Global equities, forex, indices, bonds | 15-min delayed on non-US via `saxo-live` session; second in pricing chain after Alpaca (before TwelveData, Finnhub, Yahoo) |
 
 Both brokers support headless self-contained OAuth that refreshes without interactive login, required for Agora's deployment model.
 

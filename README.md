@@ -112,8 +112,9 @@ design spec:
 
 ## Tool catalog
 
-35 tools today. `general` tools are on MCP, webhook, and catalog; `trading` tools are
-webhook-only and require a trading token.
+36 tools today. One-page inventory: [`documentation/capabilities.md`](documentation/capabilities.md).
+`general` tools are on MCP, webhook, and catalog; `trading` tools are webhook-only and
+require a trading token.
 
 ### Market data (`agora-data`)
 
@@ -125,8 +126,9 @@ webhook-only and require a trading token.
 | `get_fx_rate` | Current FX conversion rate (1 unit of `from` in `to` currency) |
 | `get_company_profile` | Company profile: name, industry, exchange, market cap |
 | `get_company_news` | Recent company news headlines |
-| `get_fundamentals` | Fundamental metrics for a symbol |
-| `get_analyst_estimates` | Analyst recommendation trend |
+| `get_fundamentals` | Fundamental metrics for a symbol (US: Finnhub; non-US: computed when global metrics enabled — see [`documentation/api.md`](documentation/api.md)) |
+| `get_fundamental_concepts` | Raw normalized fundamentals line items (US → SEC EDGAR XBRL, non-US → Yahoo). Values are in reporting currency (`unit`), which may differ from listing currency |
+| `get_analyst_estimates` | Analyst recommendation trend (buy/hold/sell counts — not EPS/revenue estimates) |
 | `get_earnings_estimates` | Reported EPS vs. estimate per period with the raw surprise delta (actual − estimate) — raw passthrough, no scoring |
 | `get_index_constituents` | Constituents of a stock index (default S&P 500) |
 | `get_index_constituent_changes` | Pending and recent constituent changes for a stock index (add/remove, announcement + effective dates). Aggregates ordered providers: `sp_press` (S&P press-release RSS, for `sp500`) and `russell_reconstitution` (FTSE Russell reconstitution PDFs + iShares IWB/IWM bucket resolution, for `russell1000`/`russell2000`) |
@@ -145,7 +147,7 @@ webhook-only and require a trading token.
 | `get_form4_owner_history` | Multi-year Form-4 transaction history for ONE company (by symbol or CIK; `years` back from today, default 3, max 5), grouped per reporting owner (`name`, `cik`, `role` on the owner object — no per-transaction ticker/filer fields). Transactions per owner are newest-first, each with `transactionDate`, `code`, `acquiredDisposedCode`, `form`, `shares`, `price`, `dollarValue`, `sharesOwnedFollowing`, `aff10b5One` (same semantics as `get_form4_transactions`). Long histories can hit the EDGAR fetch deadline or the transaction `limit` — `truncated: true` marks a partial result |
 | `get_earnings_calendar` | Recent and upcoming earnings events for a symbol |
 | `get_earnings_window` | Market-wide earnings events reported in a date window (one row per company) |
-| `get_fundamental_score` | Standardized fundamental-health scores computed from SEC XBRL company facts. Input: `symbol`. Output: a `scores` object; today `piotroskiF` (Piotroski F-score) with `score` (0-9), `criteriaAvailable` (0-9 — a criterion counts as available only if it could be strictly evaluated; met criteria still require verifiable evidence, otherwise they score 0), per-criterion `criteria.<name>.{met, available}`, and `raw` underlying figures (`roa`, `cfo`, `netIncome`, `accrualRatio`, `currentRatio`, `grossMargin`, `assetTurnover`). Degrades to `unavailable` on EDGAR errors. `scores` is extensible — future scores will be added as siblings of `piotroskiF`. |
+| `get_fundamental_score` | Standardized fundamental-health scores. Input: `symbol`. Output: a `scores` object; today `piotroskiF` (Piotroski F-score) with `score` (0-9), `criteriaAvailable` (0-9 — a criterion counts as available only if it could be strictly evaluated; met criteria still require verifiable evidence, otherwise they score 0), per-criterion `criteria.<name>.{met, available}`, and `raw` underlying figures (`roa`, `cfo`, `netIncome`, `accrualRatio`, `currentRatio`, `grossMargin`, `assetTurnover`). **US** via SEC EDGAR XBRL; **non-US** via Yahoo fundamentals timeseries. Degrades to `unavailable` on upstream/routing errors. `scores` is extensible — future scores will be added as siblings of `piotroskiF`. |
 
 ### Research / technical indicators (`agora-research`)
 
@@ -239,10 +241,14 @@ provider.
 
 | Domain | Plugins |
 |---|---|
-| Quotes / OHLC / intraday | Alpaca (broker feed, IEX) first, then Saxo (non-US exchanges via the `saxo-live` session, Yahoo-suffix symbols like `SAP.DE`, 15-min delayed), then TwelveData, Finnhub, then keyless Yahoo Finance as last-resort fallback |
-| Company profile / news / fundamentals / estimates | Finnhub |
+| Quotes / OHLC | Alpaca (broker feed, IEX) first, then Saxo (non-US via `saxo-live`, Yahoo-suffix symbols like `SAP.DE`, 15-min delayed), then TwelveData, Finnhub, then keyless Yahoo Finance as last-resort fallback |
+| Intraday / FX | Yahoo (FX pairs; optional scheduled warmer) |
+| Company profile / news / analyst estimates | Finnhub |
+| Fundamentals metrics (`get_fundamentals`) | US: Finnhub; non-US: computed from concepts + OHLC + quote when `agora.fundamentals.global-metrics-enabled` is on |
+| Fundamentals raw concepts / scores | US: SEC EDGAR XBRL; non-US: Yahoo `fundamentals-timeseries` (`get_fundamental_concepts`, `get_fundamental_score`) |
 | Filings / XBRL concepts / EPS / Form-4 | SEC EDGAR |
 | Earnings calendar | Finnhub, Yahoo |
+| Corporate-action splits (internal) | Alpaca, Finnhub — used for share-count adjustment in scoring, no dedicated tool |
 | Index constituents | Wikipedia (S&P 500) |
 | Index constituent changes | S&P Dow Jones Indices press-release RSS (S&P 500 add/remove); FTSE Russell reconstitution PDFs + iShares IWB/IWM holdings for the Russell 1000/2000 bucket split |
 | Execution | Alpaca and Saxo, selected per named connection (`alpaca-paper`, `alpaca-live`, `depot-1`, `saxo-live`) |
@@ -391,6 +397,19 @@ A new tool is one new class and no consumer changes.
 
 The `ToolRegistry` picks it up automatically and it appears on `/mcp`, `/tools`, and
 `/tools/{name}` on the next start. No consumer rebuild.
+
+---
+
+## Documentation
+
+| Doc | Contents |
+|---|---|
+| [`documentation/capabilities.md`](documentation/capabilities.md) | Full tool inventory (36 tools) + internal capabilities |
+| [`documentation/hunting-grounds.md`](documentation/hunting-grounds.md) | Provider chains, coverage, cache TTLs |
+| [`documentation/api.md`](documentation/api.md) | Fundamentals tool contracts |
+| [`documentation/exit-tools.md`](documentation/exit-tools.md) | Trading exit contracts (bracket / flatten) |
+| [`documentation/observability.md`](documentation/observability.md) | Provider-call logging |
+| [`documentation/arc42/`](documentation/arc42/) | Architecture (arc42-light) |
 
 ---
 

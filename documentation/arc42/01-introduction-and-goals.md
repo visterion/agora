@@ -1,8 +1,5 @@
 # 01 — Introduction and Goals
 
-> [!NOTE]
-> **AI-Generated** — inferred from code and README analysis; needs human review.
-
 ## What Agora is
 
 Agora is a broker- and provider-agnostic **MCP tool suite** for market data, quant
