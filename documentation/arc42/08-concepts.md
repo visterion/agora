@@ -1,8 +1,5 @@
 # 08 — Crosscutting Concepts
 
-> [!NOTE]
-> **AI-Generated** — inferred from code analysis; needs human review.
-
 ## Plugin extension model
 
 Data and broker sources are ordered plugins (`MarketDataProvider`, `BrokerProvider`),
