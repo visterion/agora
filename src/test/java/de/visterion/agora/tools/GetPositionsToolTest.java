@@ -27,8 +27,9 @@ class GetPositionsToolTest {
     @Test void positionsListedCorrectly() {
         var stub = new StubBroker() {
             public List<Position> positions() {
-                return List.of(new Position("AAPL", "PriceSmart Inc", new BigDecimal("10"), new BigDecimal("150.00"),
-                        new BigDecimal("1510.00"), new BigDecimal("100.00"), "USD", "Stock", "2026-07-10"));
+                return List.of(new Position("AAPL", "PriceSmart Inc", new BigDecimal("10"),
+                        new BigDecimal("150.00"), new BigDecimal("151.00"), new BigDecimal("1510.00"),
+                        new BigDecimal("100.00"), "USD", "Stock", "2026-07-10", 1));
             }
         };
         var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
@@ -39,10 +40,26 @@ class GetPositionsToolTest {
         assertThat(positions.get(0).get("description").asString()).isEqualTo("PriceSmart Inc");
         assertThat(positions.get(0).get("qty").decimalValue()).isEqualByComparingTo("10");
         assertThat(positions.get(0).get("avgEntryPrice").decimalValue()).isEqualByComparingTo("150.00");
+        assertThat(positions.get(0).get("marketPrice").decimalValue()).isEqualByComparingTo("151.00");
+        assertThat(positions.get(0).get("marketValue").decimalValue()).isEqualByComparingTo("1510.00");
         assertThat(positions.get(0).get("currency").asString()).isEqualTo("USD");
         assertThat(positions.get(0).get("assetType").asString()).isEqualTo("Stock");
         assertThat(positions.get(0).get("valueDate").asString()).isEqualTo("2026-07-10");
+        assertThat(positions.get(0).get("openOrdersCount").asInt()).isEqualTo(1);
         assertThat(Instant.parse(r.output().get("asOf").asString())).isNotNull();
+    }
+
+    @Test void nullMarketPriceSerializedAsNull() {
+        var stub = new StubBroker() {
+            public List<Position> positions() {
+                return List.of(new Position("AAPL", null, BigDecimal.ZERO, new BigDecimal("150.00"),
+                        null, new BigDecimal("0"), BigDecimal.ZERO, "USD", "Stock", null, 0));
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
+        var p0 = r.output().get("positions").get(0);
+        assertThat(p0.get("marketPrice").isNull()).isTrue();
+        assertThat(p0.get("openOrdersCount").asInt()).isEqualTo(0);
     }
 
     @Test void unavailableOnBrokerException() {

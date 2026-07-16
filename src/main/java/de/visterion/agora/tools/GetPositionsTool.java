@@ -55,11 +55,14 @@ public class GetPositionsTool implements AgoraTool {
                 node.put("description", p.description());
                 node.put("qty", p.qty());
                 node.put("avgEntryPrice", p.avgEntryPrice());
+                if (p.marketPrice() != null) node.put("marketPrice", p.marketPrice());
+                else node.putNull("marketPrice");
                 node.put("marketValue", p.marketValue());
                 node.put("unrealizedPl", p.unrealizedPl());
                 node.put("currency", p.currency());
                 node.put("assetType", p.assetType());
                 node.put("valueDate", p.valueDate());
+                node.put("openOrdersCount", p.openOrdersCount());
             }
             out.put("asOf", java.time.Instant.now().toString());
             return ToolResult.ok(out);
