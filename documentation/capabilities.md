@@ -37,12 +37,14 @@ consumer. Agora only passes through an opaque `client_ref` on orders.
 | Tool | Description |
 |---|---|
 | `get_company_profile` | Name, industry, exchange, market cap |
-| `get_company_news` | Recent company news headlines |
+| `get_company_news` | Company news headlines merged from multiple sources (Finnhub + configured RSS/Atom feeds); per-item `sourceType` (`news`|`social`), partial-failure `warnings`, optional `sourceTypes` filter |
 | `get_fundamentals` | Screener-style metrics (US: Finnhub; non-US: computed when global metrics enabled) |
 | `get_fundamental_concepts` | Raw normalized line items (US → SEC EDGAR, non-US → Yahoo) |
 | `get_fundamental_score` | Standardized health scores; today Piotroski F-score 0–9 + criteria + raw |
 | `get_analyst_estimates` | Recommendation trend (buy/hold/sell counts — not EPS/revenue estimates) |
 | `get_earnings_estimates` | Reported EPS vs. estimate per period + raw surprise delta |
+
+**News fan-out:** finnhub + RSS/Atom feeds from `agora.data.news.feeds` (default: Yahoo RSS, two Reddit searches tagged `social`), fetched in parallel, deduped (URL, then title), sorted newest-first, capped at `agora.data.news.max-items` (200). Failed feeds degrade to warnings; only total failure is `unavailable`.
 
 ---
 
