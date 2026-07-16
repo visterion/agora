@@ -365,11 +365,13 @@ public class AlpacaBrokerProvider implements BrokerProvider {
                             null,
                             bd(n.path("qty")),
                             bd(n.path("avg_entry_price")),
+                            nullableBd(n.path("current_price")),
                             bd(n.path("market_value")),
                             bd(n.path("unrealized_pl")),
                             n.path("currency").asString("USD"),
                             n.path("asset_class").asString(null),
-                            null
+                            null,
+                            0  // Alpaca positions carry no open-order count; consumers gate on this for Saxo connections only (see A4 spec).
                     ));
                 }
             }
@@ -649,5 +651,11 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         if (node == null || node.isNull() || node.isMissingNode()) return BigDecimal.ZERO;
         try { return new BigDecimal(node.asString("0")); }
         catch (NumberFormatException e) { return BigDecimal.ZERO; }
+    }
+
+    private static BigDecimal nullableBd(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) return null;
+        try { return new BigDecimal(node.asString()); }
+        catch (NumberFormatException e) { return null; }
     }
 }

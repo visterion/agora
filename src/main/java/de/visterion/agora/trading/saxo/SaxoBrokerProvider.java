@@ -13,6 +13,7 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
@@ -152,17 +153,20 @@ public class SaxoBrokerProvider implements BrokerProvider {
             BigDecimal qty = bd(base.path("Amount"));
             BigDecimal avgOpen = bd(view.path("AverageOpenPrice"));
             BigDecimal unrealizedPl = bd(view.path("ProfitLossOnTrade"));
+            BigDecimal marketValue = marketValue(bd(view.path("Exposure")), qty, avgOpen, unrealizedPl);
             out.add(new Position(
                     baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString("")),
                     textOrNull(n.path("DisplayAndFormat"), "Description"),
                     qty,
                     avgOpen,
-                    marketValue(bd(view.path("Exposure")), qty, avgOpen, unrealizedPl),
+                    perUnitPrice(marketValue, qty),
+                    marketValue,
                     unrealizedPl,
                     view.path("ExposureCurrency").asString(
                             n.path("DisplayAndFormat").path("Currency").asString("USD")),
                     textOrNull(base, "AssetType"),
-                    textOrNull(base, "ValueDate")));
+                    textOrNull(base, "ValueDate"),
+                    base.path("OpenOrdersCount").asInt(0)));
         }
         return out;
     }
@@ -1044,6 +1048,16 @@ public class SaxoBrokerProvider implements BrokerProvider {
             BigDecimal unrealizedPl) {
         if (exposure != null && exposure.signum() != 0) return exposure;
         return qty.multiply(avgOpen).add(unrealizedPl);
+    }
+
+    /**
+     * Per-unit market price. Saxo's NetPositionView.CurrentPrice reads 0 on the delayed
+     * SIM/paper feed (CurrentPriceType "None"; confirmed 2026-07-13 for PSMT), so derive
+     * from the already-reconstructed total: marketValue / qty. Null when qty is 0.
+     */
+    static BigDecimal perUnitPrice(BigDecimal marketValue, BigDecimal qty) {
+        if (marketValue == null || qty == null || qty.signum() == 0) return null;
+        return marketValue.divide(qty, 12, RoundingMode.HALF_UP).stripTrailingZeros();
     }
 
     /** Reads a string field, returning null (not "") when absent/null — for optional Position fields. */
