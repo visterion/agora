@@ -1,8 +1,9 @@
-package de.visterion.agora.fetch.finnhub;
+package de.visterion.agora.fetch.news;
 
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.ProviderErrors;
 import de.visterion.agora.data.TtlCache;
+import de.visterion.agora.fetch.finnhub.FinnhubClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,27 +17,34 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.function.LongSupplier;
 
-/** Company news headlines via Finnhub, cached per-family (news TTL). */
+/** Company news headlines via Finnhub, cached per-family (news TTL). sourceType is always "news". */
 @Component
-public class NewsService {
+public class FinnhubNewsProvider implements NewsProvider {
 
-    private static final Logger log = LoggerFactory.getLogger(NewsService.class);
+    private static final Logger log = LoggerFactory.getLogger(FinnhubNewsProvider.class);
 
     private final FinnhubClient client;
     private final TtlCache<String, List<NewsItem>> cache;
 
     @Autowired
-    public NewsService(FinnhubClient client,
-                       @Value("${agora.data.cache.ttl.news-seconds:900}") long ttlSeconds) {
+    public FinnhubNewsProvider(FinnhubClient client,
+                               @Value("${agora.data.cache.ttl.news-seconds:900}") long ttlSeconds) {
         this(client, ttlSeconds, System::currentTimeMillis);
     }
 
-    NewsService(FinnhubClient client, long ttlSeconds, LongSupplier now) {
+    FinnhubNewsProvider(FinnhubClient client, long ttlSeconds, LongSupplier now) {
         this.client = client;
         // Keyed by symbol+date-range, so cardinality grows with distinct windows queried.
         this.cache = new TtlCache<>(ttlSeconds * 1000L, 2048, now);
     }
 
+    @Override
+    public String id() { return "finnhub"; }
+
+    @Override
+    public boolean configured() { return client.configured(); }
+
+    @Override
     public List<NewsItem> companyNews(String symbol, LocalDate from, LocalDate to) {
         if (!client.configured())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "finnhub: no api key", null);
@@ -70,6 +78,7 @@ public class NewsService {
                     headline,
                     n.path("summary").asString(""),
                     n.path("source").asString(""),
+                    "news",
                     epochSeconds(n.path("datetime")),
                     n.path("url").asString("")));
         }

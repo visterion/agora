@@ -125,7 +125,7 @@ require a trading token.
 | `get_intraday` | Intraday OHLCV candles at a given interval/range |
 | `get_fx_rate` | Current FX conversion rate (1 unit of `from` in `to` currency) |
 | `get_company_profile` | Company profile: name, industry, exchange, market cap |
-| `get_company_news` | Recent company news headlines |
+| `get_company_news` | Company news headlines merged from multiple sources (Finnhub + configured RSS/Atom feeds); per-item `sourceType` (`news`|`social`), `warnings` on partial failure, optional `sourceTypes` filter |
 | `get_fundamentals` | Fundamental metrics for a symbol (US: Finnhub; non-US: computed when global metrics enabled — see [`documentation/api.md`](documentation/api.md)) |
 | `get_fundamental_concepts` | Raw normalized fundamentals line items (US → SEC EDGAR XBRL, non-US → Yahoo). Values are in reporting currency (`unit`), which may differ from listing currency |
 | `get_analyst_estimates` | Analyst recommendation trend (buy/hold/sell counts — not EPS/revenue estimates) |
