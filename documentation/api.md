@@ -1,4 +1,4 @@
-# API Reference: Fundamentals Tools
+# API Reference
 
 This reference currently covers the fundamentals tools; other Agora tools are self-describing via their MCP inputSchema.
 
@@ -168,6 +168,44 @@ Multiple XBRL `us-gaap` concepts for one company in a single fetch (cheaper than
 
 **Output notes:**
 - an unknown symbol (NOT_FOUND) returns `available:true` with empty `datapoints` per requested tag (`cik:null`) — not an error; a genuine source outage returns `available:false`
+
+**Availability:** MCP, webhook, catalog
+
+---
+
+## Market data
+
+### `get_company_news`
+
+Company news headlines for a symbol, merged from multiple sources: Finnhub plus every
+RSS/Atom feed configured under `agora.data.news.feeds` (default: Yahoo RSS and two Reddit
+searches tagged `social`). Providers are fetched in parallel under a fixed total budget;
+a failing or slow provider degrades to a `warnings` entry instead of failing the call.
+
+**Input**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `symbol` | string | yes | ticker symbol |
+| `from` | string | no | start date ISO (YYYY-MM-DD); default 7 days ago |
+| `to` | string | no | end date ISO (YYYY-MM-DD); default today |
+| `sourceTypes` | string[] | no | filter by media type: `news` and/or `social`; case-insensitive; unknown values are ignored with a warning; empty/omitted = all. Applied before the item cap. |
+
+**Output**
+
+```json
+{ "symbol": "AAPL",
+  "news": [ { "headline": "...", "summary": "...", "source": "yahoo-rss",
+              "sourceType": "news", "datetime": "2026-07-16T20:35:00Z", "url": "..." } ],
+  "warnings": ["rss:reddit-stocks: timeout"] }
+```
+
+- `sourceType` is a media-type label: `news` (editorial/wire) or `social` (user-generated).
+- `datetime` is `null` when the source carried no parseable timestamp; such items sort last.
+- `warnings` is omitted when empty; one sanitized entry per degraded provider.
+- Items are deduplicated (normalized URL first, then normalized title; first source wins),
+  sorted by `datetime` descending, and capped at `agora.data.news.max-items` (default 200).
+- The call is `unavailable` only when every configured provider fails.
 
 **Availability:** MCP, webhook, catalog
 
