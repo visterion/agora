@@ -170,3 +170,56 @@ Multiple XBRL `us-gaap` concepts for one company in a single fetch (cheaper than
 - an unknown symbol (NOT_FOUND) returns `available:true` with empty `datapoints` per requested tag (`cik:null`) — not an error; a genuine source outage returns `available:false`
 
 **Availability:** MCP, webhook, catalog
+
+---
+
+## Trading / execution
+
+### `get_positions`
+
+All open positions held by the account on the named connection.
+
+**Input:**
+```json
+{
+  "connection": "alpaca-paper"
+}
+```
+
+**Output:**
+```json
+{
+  "positions": [
+    {
+      "symbol": "AAPL",
+      "description": "Apple Inc.",
+      "qty": 100,
+      "avgEntryPrice": 150.25,
+      "marketPrice": 155.30,
+      "marketValue": 15530.00,
+      "unrealizedPl": 505.00,
+      "currency": "USD",
+      "assetType": "US_EQUITY",
+      "valueDate": "2026-07-16",
+      "openOrdersCount": 1
+    }
+  ],
+  "asOf": "2026-07-16T14:30:00Z"
+}
+```
+
+**Response fields:**
+- `symbol`: ticker symbol
+- `description`: asset description
+- `qty`: quantity held
+- `avgEntryPrice`: average entry price per unit
+- `marketPrice`: current per-unit market price; may be `null` (e.g., when qty is 0). Saxo derives this from `marketValue/qty` because the SIM feed reports `CurrentPrice=0`; Alpaca maps native `current_price`.
+- `marketValue`: total market value of the position
+- `unrealizedPl`: unrealized profit or loss
+- `currency`: currency code
+- `assetType`: asset type (e.g., `US_EQUITY`)
+- `valueDate`: valuation date
+- `openOrdersCount`: number of open orders for this instrument. Saxo: `NetPositionBase.OpenOrdersCount`; Alpaca: always `0` (endpoint carries no count).
+- `asOf`: ISO-8601 instant when the data was fetched
+
+**Availability:** webhook only (requires trading token)

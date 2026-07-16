@@ -170,6 +170,34 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void positionsDerivePerUnitMarketPriceAndOpenOrders() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"__count":1,"Data":[{
+              "DisplayAndFormat":{"Currency":"USD","Description":"PricesSmart Inc.","Symbol":"PSMT:xnas"},
+              "NetPositionBase":{"Amount":5.0,"AssetType":"Stock","OpenOrdersCount":1,"ValueDate":"2026-07-14"},
+              "NetPositionView":{"AverageOpenPrice":193.87,"CurrentPrice":0.0,"Exposure":962.80,
+                                 "ExposureCurrency":"USD","ProfitLossOnTrade":-13.20}}]}
+            """)));
+        var out = provider.positions();
+        assertThat(out.get(0).marketValue()).isEqualByComparingTo("962.80");
+        // total must NEVER leak into the per-unit field:
+        assertThat(out.get(0).marketPrice()).isEqualByComparingTo("192.56");
+        assertThat(out.get(0).openOrdersCount()).isEqualTo(1);
+    }
+
+    @Test
+    void zeroQtyYieldsNullMarketPrice() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"__count":1,"Data":[{
+              "DisplayAndFormat":{"Currency":"USD","Symbol":"PSMT:xnas"},
+              "NetPositionBase":{"Amount":0.0,"AssetType":"Stock"},
+              "NetPositionView":{"AverageOpenPrice":193.87,"Exposure":0.0,"ProfitLossOnTrade":0.0}}]}
+            """)));
+        assertThat(provider.positions().get(0).marketPrice()).isNull();
+        assertThat(provider.positions().get(0).openOrdersCount()).isEqualTo(0);
+    }
+
+    @Test
     void ordersMapOpenOrdersAndFilterClientSide() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
             {"Data":[{"OrderId":"5001","Uic":211,"AssetType":"Stock","BuySell":"Buy","Amount":10.0,
