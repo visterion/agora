@@ -1,8 +1,8 @@
 package de.visterion.agora.tools;
 
 import de.visterion.agora.data.MarketDataException;
-import de.visterion.agora.fetch.finnhub.NewsItem;
-import de.visterion.agora.fetch.finnhub.NewsService;
+import de.visterion.agora.fetch.news.NewsItem;
+import de.visterion.agora.fetch.news.FinnhubNewsProvider;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.stereotype.Component;
@@ -18,10 +18,10 @@ import java.util.List;
 @Component
 public class GetCompanyNewsTool implements AgoraTool {
 
-    private final NewsService service;
+    private final FinnhubNewsProvider service;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public GetCompanyNewsTool(NewsService service) { this.service = service; }
+    public GetCompanyNewsTool(FinnhubNewsProvider service) { this.service = service; }
 
     public String name() { return "get_company_news"; }
     public String description() { return "Recent company news headlines for a symbol."; }
