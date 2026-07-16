@@ -189,9 +189,17 @@ public class NewsAggregator {
      */
     private static String warningFor(NewsProvider p, Throwable cause) {
         if (cause instanceof MarketDataException m && m.getMessage() != null)
-            return p.id() + ": " + m.getMessage();
+            return prefixWithProviderId(p.id(), m.getMessage());
         for (Throwable t = cause; t != null; t = t.getCause())
             if (t instanceof SocketTimeoutException) return p.id() + ": timeout";
         return p.id() + ": request failed";
+    }
+
+    /** Avoids a doubled provider-id prefix when the message already carries it
+     *  (e.g. providers that route through {@code ProviderErrors.categorize(id(), e)}). */
+    private static String prefixWithProviderId(String id, String message) {
+        if (message.equals(id) || message.startsWith(id + ":") || message.startsWith(id + " "))
+            return message;
+        return id + ": " + message;
     }
 }

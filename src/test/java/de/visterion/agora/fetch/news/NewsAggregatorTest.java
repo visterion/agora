@@ -163,7 +163,16 @@ class NewsAggregatorTest {
         var result = new NewsAggregator(List.of(ok, bad), 200).aggregate("AAPL", FROM, TO, Set.of());
         assertThat(result.items()).hasSize(1);
         assertThat(result.warnings()).hasSize(1);
-        assertThat(result.warnings().get(0)).startsWith("rss:yahoo-rss:");
+        assertThat(result.warnings().get(0)).isEqualTo("rss:yahoo-rss timeout");
+    }
+
+    @Test void warningDoesNotDoublePrefixWhenMessageAlreadyCarriesProviderId() {
+        NewsProvider ok = provider("finnhub", List.of(item("a", "https://x/1", "news", T1)));
+        NewsProvider bad = failing("rss:yahoo-rss",
+                new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "rss:yahoo-rss timeout", null));
+        var result = new NewsAggregator(List.of(ok, bad), 200).aggregate("AAPL", FROM, TO, Set.of());
+        assertThat(result.warnings()).hasSize(1);
+        assertThat(result.warnings().get(0)).isEqualTo("rss:yahoo-rss timeout");
     }
 
     @Test void warningsNeverContainRawExceptionText() {
