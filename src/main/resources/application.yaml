@@ -76,6 +76,19 @@ agora:
   data:
     # per-request read timeout for all market-data HTTP providers (fail fast into the next provider)
     provider-timeout-ms: ${AGORA_DATA_PROVIDER_TIMEOUT_MS:4000}
+    news:
+      max-items: 200
+      feed-timeout-ms: 5000
+      feeds:
+        - id: yahoo-rss
+          url: "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+          source-type: news
+        - id: reddit-stocks
+          url: "https://old.reddit.com/r/stocks/search.rss?q={symbol}&restrict_sr=1&sort=new"
+          source-type: social
+        - id: reddit-wallstreetbets
+          url: "https://old.reddit.com/r/wallstreetbets/search.rss?q={symbol}&restrict_sr=1&sort=new"
+          source-type: social
     yahoo:
       base-url: ${AGORA_DATA_YAHOO_BASE_URL:https://query1.finance.yahoo.com}
       timeseries-base-url: ${AGORA_DATA_YAHOO_TIMESERIES_BASE_URL:https://query2.finance.yahoo.com}
