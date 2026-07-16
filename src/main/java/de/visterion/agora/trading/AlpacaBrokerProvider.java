@@ -365,11 +365,13 @@ public class AlpacaBrokerProvider implements BrokerProvider {
                             null,
                             bd(n.path("qty")),
                             bd(n.path("avg_entry_price")),
+                            null,
                             bd(n.path("market_value")),
                             bd(n.path("unrealized_pl")),
                             n.path("currency").asString("USD"),
                             n.path("asset_class").asString(null),
-                            null
+                            null,
+                            0
                     ));
                 }
             }

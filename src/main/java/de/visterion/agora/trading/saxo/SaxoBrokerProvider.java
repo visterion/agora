@@ -157,12 +157,14 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     textOrNull(n.path("DisplayAndFormat"), "Description"),
                     qty,
                     avgOpen,
+                    null,
                     marketValue(bd(view.path("Exposure")), qty, avgOpen, unrealizedPl),
                     unrealizedPl,
                     view.path("ExposureCurrency").asString(
                             n.path("DisplayAndFormat").path("Currency").asString("USD")),
                     textOrNull(base, "AssetType"),
-                    textOrNull(base, "ValueDate")));
+                    textOrNull(base, "ValueDate"),
+                    0));
         }
         return out;
     }
