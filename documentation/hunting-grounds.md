@@ -14,9 +14,9 @@ Agora's data tools resolve through provider plugins with fallback, so consumers 
 
 | Domain | Provider | Coverage | Semantics |
 |---|---|---|---|
-| Company profile (name, industry, exchange, cap) | Finnhub | Finnhub's covered universe | Real-time |
-| Company news | Finnhub | Finnhub's covered universe | Last 100 headlines, real-time |
-| Analyst estimates, recommendation trend | Finnhub | Finnhub's covered universe | Real-time |
+| Company profile (name, industry, exchange, cap) | Finnhub (US); skipped for non-US suffixed symbols (empty result, no call) | Finnhub's covered universe | Real-time |
+| Company news | Finnhub (US) + region-agnostic RSS feeds; Finnhub skipped for non-US suffixed symbols (empty result, RSS providers still serve foreign news) | Finnhub's covered universe (news), global (RSS) | Last 100 headlines, real-time |
+| Analyst estimates, recommendation trend | Finnhub (US); skipped for non-US suffixed symbols (empty result, no call) | Finnhub's covered universe | Real-time |
 | Earnings calendar (upcoming + recent) | Finnhub, Yahoo fallback | Finnhub coverage or global Yahoo fallback | Real-time |
 
 ## Fundamentals and SEC filings

@@ -75,4 +75,19 @@ class FinnhubNewsProviderTest {
         s.companyNews("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-01-08"));
         wm.verify(1, getRequestedFor(urlPathEqualTo("/company-news")));
     }
+
+    @Test void nonUsSymbolSkipsFinnhubAndReturnsEmpty() {
+        List<NewsItem> news = svc("k").companyNews("SAP.DE", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-01-08"));
+        assertThat(news).isEmpty();
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/company-news")));
+    }
+
+    @Test void usSymbolStillCallsFinnhub() {
+        wm.stubFor(get(urlPathEqualTo("/company-news"))
+                .withQueryParam("symbol", equalTo("AAPL"))
+                .willReturn(okJson("[{\"headline\":\"h\",\"datetime\":1,\"url\":\"u\",\"source\":\"s\",\"summary\":\"x\"}]")));
+        List<NewsItem> news = svc("k").companyNews("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-01-08"));
+        assertThat(news).hasSize(1);
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/company-news")));
+    }
 }
