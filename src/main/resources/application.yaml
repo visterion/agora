@@ -86,9 +86,13 @@ agora:
         - id: reddit-stocks
           url: "https://old.reddit.com/r/stocks/search.rss?q={symbol}&restrict_sr=1&sort=new"
           source-type: social
+          user-agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+          min-interval-ms: 61000
         - id: reddit-wallstreetbets
           url: "https://old.reddit.com/r/wallstreetbets/search.rss?q={symbol}&restrict_sr=1&sort=new"
           source-type: social
+          user-agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+          min-interval-ms: 61000
     yahoo:
       base-url: ${AGORA_DATA_YAHOO_BASE_URL:https://query1.finance.yahoo.com}
       timeseries-base-url: ${AGORA_DATA_YAHOO_TIMESERIES_BASE_URL:https://query2.finance.yahoo.com}
