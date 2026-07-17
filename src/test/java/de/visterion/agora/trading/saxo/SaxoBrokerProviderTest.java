@@ -49,7 +49,7 @@ class SaxoBrokerProviderTest {
 
     private SaxoInstrumentResolver resolver() {
         return new SaxoInstrumentResolver(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                () -> "Bearer acc-token", null, 86_400_000L, now::get);
+                () -> "Bearer acc-token", null, null, 86_400_000L, now::get);
     }
 
     private void stubAccounts() {
