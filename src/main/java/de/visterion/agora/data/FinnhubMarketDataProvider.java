@@ -13,6 +13,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Quote-only Finnhub fallback market-data provider. {@code ohlc} always throws UNAVAILABLE so the
@@ -28,24 +29,34 @@ public class FinnhubMarketDataProvider implements MarketDataProvider {
 
     private final RestClient client;
     private final String key;
+    private final Set<String> nonUsSuffixes;
 
     /**
      * Constructor bound by Spring via {@code @Value}. Applies the configurable per-request read
      * timeout ({@code agora.data.provider-timeout-ms}) so a slow Finnhub call fails fast into the
-     * next provider instead of stalling the chain.
+     * next provider instead of stalling the chain. Reuses the same
+     * {@code agora.fundamentals.non-us-suffixes} property fundamentals routing reads, so the two
+     * never drift.
      */
     @Autowired
     public FinnhubMarketDataProvider(
             @Value("${agora.data.finnhub.base-url}") String baseUrl,
             @Value("${agora.data.finnhub.key}") String key,
-            @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
+            @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs,
+            @Value("${agora.fundamentals.non-us-suffixes:" + NonUsSuffixes.DEFAULT_CSV + "}") String nonUsSuffixesCsv) {
         this.client = DataHttp.clientBuilder(timeoutMs)
                 .baseUrl(baseUrl)
                 .build();
         this.key = key;
+        this.nonUsSuffixes = NonUsSuffixes.parse(nonUsSuffixesCsv);
     }
 
-    /** Test constructor: explicit base-url + key, default timeout. */
+    /** Test constructor: explicit timeout, default non-US suffix set. */
+    FinnhubMarketDataProvider(String baseUrl, String key, long timeoutMs) {
+        this(baseUrl, key, timeoutMs, NonUsSuffixes.DEFAULT_CSV);
+    }
+
+    /** Test constructor: explicit base-url + key, default timeout + default non-US suffix set. */
     FinnhubMarketDataProvider(String baseUrl, String key) {
         this(baseUrl, key, 4000L);
     }
@@ -53,6 +64,13 @@ public class FinnhubMarketDataProvider implements MarketDataProvider {
     @Override
     public String name() {
         return "finnhub";
+    }
+
+    /** Quote-only US fallback feed: skip non-US instruments so the fallback chain reaches
+     *  Saxo/Yahoo without a wasted 4xx round-trip. */
+    @Override
+    public boolean canServe(Instrument inst) {
+        return !NonUsSuffixes.isNonUs(inst, nonUsSuffixes);
     }
 
     @Override
