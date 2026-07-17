@@ -43,4 +43,21 @@ class EstimatesServiceTest {
         wm.stubFor(get(urlPathEqualTo("/stock/recommendation")).willReturn(aResponse().withStatus(500)));
         assertThatThrownBy(() -> svc("k").recommendations("AAPL")).isInstanceOf(MarketDataException.class);
     }
+
+    @Test void nonUsSymbolSkipsFinnhubAndReturnsEmpty() {
+        List<Recommendation> recs = svc("k").recommendations("SAP.DE");
+        assertThat(recs).isEmpty();
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/stock/recommendation")));
+    }
+
+    @Test void usSymbolStillCallsFinnhub() {
+        wm.stubFor(get(urlPathEqualTo("/stock/recommendation"))
+                .withQueryParam("symbol", equalTo("AAPL"))
+                .willReturn(okJson("""
+                    [{"period":"2025-06-01","strongBuy":10,"buy":15,"hold":5,"sell":1,"strongSell":0}]
+                    """)));
+        List<Recommendation> recs = svc("k").recommendations("AAPL");
+        assertThat(recs).hasSize(1);
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/stock/recommendation")));
+    }
 }

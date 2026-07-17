@@ -45,4 +45,13 @@ public final class NonUsSuffixes {
         String cc = inst.countryCode();
         return cc != null && !cc.isBlank() && !cc.equalsIgnoreCase("US");
     }
+
+    /**
+     * True iff {@code symbol} carries a mapped non-US exchange suffix (e.g. {@code SAP.DE},
+     * {@code 9984.T}, {@code 0700.HK}). Scope is suffixed symbols only — ISINs and bare
+     * US-format symbols (incl. US-format ADRs like {@code BYDDY}) are never flagged here.
+     */
+    public static boolean isNonUs(String symbol, Set<String> nonUsSuffixes) {
+        return Instrument.classify(symbol, nonUsSuffixes) == Instrument.InputKind.SUFFIXED;
+    }
 }

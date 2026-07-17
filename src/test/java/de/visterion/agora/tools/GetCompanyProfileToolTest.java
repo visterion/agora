@@ -34,4 +34,14 @@ class GetCompanyProfileToolTest {
         when(svc.profile(any())).thenThrow(new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "no key", null));
         assertThat(new GetCompanyProfileTool(svc).call(mapper.createObjectNode().put("symbol", "AAPL")).available()).isFalse();
     }
+
+    @Test void nonUsSymbolReturnsOkNotUnavailable() {
+        // Pins: ProfileService returns an empty non-null Profile for non-US symbols;
+        // GetCompanyProfileTool must not NPE on p.symbol() and must not report unavailable.
+        ProfileService svc = Mockito.mock(ProfileService.class);
+        when(svc.profile("SAP.DE")).thenReturn(new Profile("SAP.DE", mapper.createObjectNode()));
+        var r = new GetCompanyProfileTool(svc).call(mapper.createObjectNode().put("symbol", "SAP.DE"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("symbol").asString("")).isEqualTo("SAP.DE");
+    }
 }

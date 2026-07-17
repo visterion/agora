@@ -44,4 +44,20 @@ class ProfileServiceTest {
         wm.stubFor(get(urlPathEqualTo("/stock/profile2")).willReturn(okJson("{}")));
         assertThatThrownBy(() -> service("k").profile("AAPL")).isInstanceOf(MarketDataException.class);
     }
+
+    @Test void nonUsSymbolSkipsFinnhubAndReturnsEmptyNonNullProfile() {
+        Profile p = service("k").profile("SAP.DE");
+        assertThat(p).isNotNull();
+        assertThat(p.symbol()).isEqualTo("SAP.DE");
+        assertThat(p.profile()).isNotNull();
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/stock/profile2")));
+    }
+
+    @Test void usSymbolStillCallsFinnhub() {
+        wm.stubFor(get(urlPathEqualTo("/stock/profile2"))
+                .willReturn(okJson("{\"name\":\"Apple Inc\",\"finnhubIndustry\":\"Technology\",\"exchange\":\"NASDAQ\"}")));
+        Profile p = service("k").profile("AAPL");
+        assertThat(p.symbol()).isEqualTo("AAPL");
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/stock/profile2")));
+    }
 }
