@@ -4,85 +4,61 @@ import de.visterion.agora.trading.*;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
-class GetOrdersToolTest {
+class GetClosedPositionsToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
-    private GetOrdersTool tool(BrokerProvider p) { return new GetOrdersTool(TestConnections.service(p)); }
+    private GetClosedPositionsTool tool(BrokerProvider p) { return new GetClosedPositionsTool(TestConnections.service(p)); }
 
     @Test void namespaceIsTrading() {
         assertThat(tool(new StubBroker()).namespace()).isEqualTo("trading");
     }
 
-    @Test void emptyOrdersShape() {
+    @Test void emptyClosedPositionsShape() {
         var r = tool(new StubBroker()).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isTrue();
-        assertThat(r.output().get("orders").isArray()).isTrue();
-        assertThat(r.output().get("orders").size()).isEqualTo(0);
+        assertThat(r.output().get("closedPositions").isArray()).isTrue();
+        assertThat(r.output().get("closedPositions").size()).isEqualTo(0);
     }
 
-    @Test void ordersListedCorrectly() {
+    @Test void closedPositionsListedCorrectly() {
         var stub = new StubBroker() {
-            public List<Order> orders(String status) {
-                return List.of(new Order("oid-1", "ref-1", "AAPL", "buy",
-                        new BigDecimal("5"), "limit", "new"));
+            public List<ClosedPosition> closedPositions() {
+                return List.of(new ClosedPosition("ISRG", 36313L, new BigDecimal("364.35"),
+                        new BigDecimal("364.10"), new BigDecimal("3"), new BigDecimal("-0.25"), "sig-1"));
             }
         };
         var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
         assertThat(r.available()).isTrue();
-        var orders = r.output().get("orders");
-        assertThat(orders.size()).isEqualTo(1);
-        assertThat(orders.get(0).get("brokerOrderId").asString()).isEqualTo("oid-1");
-        assertThat(orders.get(0).get("clientRef").asString()).isEqualTo("ref-1");
-        assertThat(orders.get(0).get("symbol").asString()).isEqualTo("AAPL");
-        assertThat(orders.get(0).get("side").asString()).isEqualTo("buy");
-        assertThat(orders.get(0).get("status").asString()).isEqualTo("new");
-        assertThat(Instant.parse(r.output().get("asOf").asString())).isNotNull();
+        var closedPositions = r.output().get("closedPositions");
+        assertThat(closedPositions.size()).isEqualTo(1);
+        var cp = closedPositions.get(0);
+        assertThat(cp.get("symbol").asString()).isEqualTo("ISRG");
+        assertThat(cp.get("uic").asLong()).isEqualTo(36313L);
+        assertThat(cp.get("openPrice").decimalValue()).isEqualByComparingTo("364.35");
+        assertThat(cp.get("closePrice").decimalValue()).isEqualByComparingTo("364.10");
+        assertThat(cp.get("amount").decimalValue()).isEqualByComparingTo("3");
+        assertThat(cp.get("profitLoss").decimalValue()).isEqualByComparingTo("-0.25");
+        assertThat(cp.get("clientRef").asString()).isEqualTo("sig-1");
     }
 
-    @Test void nullClientRefOmittedNotExplicitNull() {
+    @Test void clientRefOmittedWhenNull() {
         var stub = new StubBroker() {
-            public List<Order> orders(String status) {
-                return List.of(new Order("oid-1", null, "AAPL", "buy",
-                        new BigDecimal("5"), "limit", "new"));
+            public List<ClosedPosition> closedPositions() {
+                return List.of(new ClosedPosition("AAPL", 211L, new BigDecimal("150.00"),
+                        new BigDecimal("155.00"), new BigDecimal("10"), new BigDecimal("50.00"), null));
             }
         };
         var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
-        var order = r.output().get("orders").get(0);
-        assertThat(order.has("clientRef")).isFalse();
-    }
-
-    @Test void statusArgPassedToProvider() {
-        var captured = new String[1];
-        var stub = new StubBroker() {
-            public List<Order> orders(String status) {
-                captured[0] = status;
-                return List.of();
-            }
-        };
-        var args = new ObjectMapper().createObjectNode().put("connection", TestConnections.CONN).put("status", "all");
-        tool(stub).call(args);
-        assertThat(captured[0]).isEqualTo("all");
-    }
-
-    @Test void noStatusArgPassesNull() {
-        var captured = new String[]{"not-set"};
-        var stub = new StubBroker() {
-            public List<Order> orders(String status) {
-                captured[0] = status;
-                return List.of();
-            }
-        };
-        tool(stub).call(new ObjectMapper().createObjectNode().put("connection", TestConnections.CONN));
-        assertThat(captured[0]).isNull();
+        var cp = r.output().get("closedPositions").get(0);
+        assertThat(cp.has("clientRef")).isFalse();
     }
 
     @Test void unavailableOnBrokerException() {
         var stub = new StubBroker() {
-            public List<Order> orders(String status) {
+            public List<ClosedPosition> closedPositions() {
                 throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "down", null);
             }
         };
@@ -91,7 +67,7 @@ class GetOrdersToolTest {
     }
 
     @Test void missingConnectionUnavailable() {
-        var r = tool(new StubBroker()).call(mapper.createObjectNode().put("status", "all"));
+        var r = tool(new StubBroker()).call(mapper.createObjectNode());
         assertThat(r.available()).isFalse();
         assertThat(r.error()).contains("connection");
     }

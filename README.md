@@ -224,6 +224,7 @@ is always available via `list_indicators`.
 |---|---|
 | `get_account` | Account summary: equity, buying power, cash, status |
 | `get_positions` | All open positions |
+| `get_closed_positions` | Closed positions with real broker fill prices/P&L (Saxo only) |
 | `get_orders` | All open and recent orders |
 | `get_order_by_ref` | Look up an order by client reference ID (`client_ref`) |
 | `place_bracket` | Place a bracket order (entry + stop-loss + take-profit) |

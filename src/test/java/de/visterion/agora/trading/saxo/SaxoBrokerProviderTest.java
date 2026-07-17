@@ -198,6 +198,45 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void closedPositionsMapsRealFillPricesAndClientRef() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
+            {"__count":1,"Data":[{
+              "ClosedPosition":{"Uic":36313,"AssetType":"Stock","Amount":3.0,
+                                 "OpenPrice":364.35,"ClosingPrice":364.10,
+                                 "ClosedProfitLoss":-0.25,
+                                 "OpeningExternalReferenceId":"sig-1",
+                                 "ClosingExternalReferenceId":"sig-1-close"},
+              "DisplayAndFormat":{"Symbol":"ISRG:xnas","Currency":"USD"},
+              "NetPositionId":"ISRG:xnas__Stock"}]}
+            """)));
+        var cps = provider.closedPositions();
+        assertThat(cps).hasSize(1);
+        assertThat(cps.get(0).symbol()).isEqualTo("ISRG");
+        assertThat(cps.get(0).uic()).isEqualTo(36313L);
+        assertThat(cps.get(0).openPrice()).isEqualByComparingTo("364.35");
+        assertThat(cps.get(0).closePrice()).isEqualByComparingTo("364.10");
+        assertThat(cps.get(0).amount()).isEqualByComparingTo("3.0");
+        assertThat(cps.get(0).profitLoss()).isEqualByComparingTo("-0.25");
+        assertThat(cps.get(0).clientRef()).isEqualTo("sig-1");
+        wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/closedpositions"))
+                .withQueryParam("ClientKey", equalTo("Cli+Key/1=="))
+                .withQueryParam("AccountKey", equalTo("Acc+Key/1==")));
+    }
+
+    @Test
+    void closedPositionsClientRefNullWhenExternalReferenceAbsent() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
+            {"__count":1,"Data":[{
+              "ClosedPosition":{"Uic":211,"AssetType":"Stock","Amount":10.0,
+                                 "OpenPrice":150.0,"ClosingPrice":155.0,"ClosedProfitLoss":50.0},
+              "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        var cps = provider.closedPositions();
+        assertThat(cps).hasSize(1);
+        assertThat(cps.get(0).clientRef()).isNull();
+    }
+
+    @Test
     void ordersMapOpenOrdersAndFilterClientSide() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
             {"Data":[{"OrderId":"5001","Uic":211,"AssetType":"Stock","BuySell":"Buy","Amount":10.0,

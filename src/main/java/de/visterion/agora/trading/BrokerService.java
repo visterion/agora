@@ -28,6 +28,7 @@ public class BrokerService {
         return resolveMutable(connection).flatten(symbol, fraction, qty);
     }
     public List<Position> positions(String connection) { return resolve(connection).positions(); }
+    public List<ClosedPosition> closedPositions(String connection) { return resolve(connection).closedPositions(); }
     public List<Order> orders(String connection, String status) { return resolve(connection).orders(status); }
     public Account account(String connection) { return resolve(connection).account(); }
     public Order orderByClientRef(String connection, String ref) { return resolve(connection).orderByClientRef(ref); }

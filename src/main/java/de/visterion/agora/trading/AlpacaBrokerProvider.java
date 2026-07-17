@@ -385,6 +385,17 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         }
     }
 
+    /**
+     * Not yet implemented for Alpaca — {@code get_closed_positions} currently targets Saxo
+     * only (real open/close fill reconciliation need). Empty list, not an error: consistent
+     * with how {@link #positions()} above degrades to an empty list rather than throwing when
+     * there is simply nothing to report.
+     */
+    @Override
+    public List<ClosedPosition> closedPositions() {
+        return List.of();
+    }
+
     private static final int ORDERS_PAGE_LIMIT = 500;
 
     /**
