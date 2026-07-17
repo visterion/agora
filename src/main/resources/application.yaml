@@ -155,8 +155,9 @@ agora:
         initial-delay-ms: ${AGORA_DATA_FX_REFRESH_INITIAL_DELAY_MS:0}
         fixed-delay-ms: ${AGORA_DATA_FX_REFRESH_FIXED_DELAY_MS:1800000}
     cache:
-      ttl-seconds: ${AGORA_DATA_CACHE_TTL_SECONDS:120}     # existing: quote/ohlc (Slice 2/3)
+      ttl-seconds: ${AGORA_DATA_CACHE_TTL_SECONDS:120}     # ohlc (kept short — GUI charts must not show a stale "today" partial bar)
       ttl:
+        quote-seconds: ${AGORA_DATA_CACHE_TTL_QUOTE:300}           # quote (split from ohlc — fewer repeat provider calls for watchlist/kill-criteria/depot quotes)
         prices-seconds: ${AGORA_DATA_CACHE_TTL_PRICES:120}         # intraday, fx
         news-seconds: ${AGORA_DATA_CACHE_TTL_NEWS:900}
         fundamentals-seconds: ${AGORA_DATA_CACHE_TTL_FUNDAMENTALS:21600}
