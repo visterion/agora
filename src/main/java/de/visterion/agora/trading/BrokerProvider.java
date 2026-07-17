@@ -17,6 +17,8 @@ public interface BrokerProvider {
      */
     OrderResult flatten(String symbol, java.math.BigDecimal fraction, java.math.BigDecimal qty);
     List<Position> positions();
+    /** Closed (already-settled) positions — real fill prices/P&amp;L from broker trade history. */
+    List<ClosedPosition> closedPositions();
     List<Order> orders(String status);
     Account account();
     Order orderByClientRef(String clientRef);
