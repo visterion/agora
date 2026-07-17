@@ -6,7 +6,8 @@ Agora's data tools resolve through provider plugins with fallback, so consumers 
 
 | Domain | Provider chain | Coverage | Cache TTL |
 |---|---|---|---|
-| Quotes, OHLC, intraday | Alpaca (broker feed, IEX), then Saxo (non-US via `saxo-live` session, Yahoo-suffix symbols), then TwelveData, Finnhub, then Yahoo (keyless fallback) | Equities globally, with 15-min delay on Saxo non-US | 120s (prices) |
+| Quotes | Alpaca (broker feed, IEX), then Saxo (non-US via `saxo-live` session, Yahoo-suffix symbols), then TwelveData, Finnhub, then Yahoo (keyless fallback) | Equities globally, with 15-min delay on Saxo non-US | 300s (`agora.data.cache.ttl.quote-seconds`, `AGORA_DATA_CACHE_TTL_QUOTE`) — split from OHLC to cut repeat provider calls for watchlist/kill-criteria/depot quotes |
+| OHLC, intraday | Alpaca (broker feed, IEX), then Saxo (non-US via `saxo-live` session, Yahoo-suffix symbols), then TwelveData, Finnhub, then Yahoo (keyless fallback) | Equities globally, with 15-min delay on Saxo non-US | 120s (`agora.data.cache.ttl-seconds`, `AGORA_DATA_CACHE_TTL_SECONDS`) — kept short so GUI charts never show a stale "today" partial bar |
 | FX rates | Yahoo FX pairs (optional scheduled warmer) | Major pairs and crosses | 120s |
 
 ## Company data
