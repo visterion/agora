@@ -6,6 +6,8 @@ import de.visterion.agora.data.ProviderErrors;
 import de.visterion.agora.data.TtlCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -27,6 +29,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.LongSupplier;
 import java.util.regex.Pattern;
 
@@ -43,29 +46,48 @@ import java.util.regex.Pattern;
 public class RssNewsProvider implements NewsProvider {
 
     private static final Logger log = LoggerFactory.getLogger(RssNewsProvider.class);
-    private static final String USER_AGENT = "agora-news/1.0";
+    private static final String DEFAULT_USER_AGENT = "agora-news/1.0";
     private static final String SYMBOL_PLACEHOLDER = "{symbol}";
+    private static final long DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000L;
 
     // DocumentBuilderFactory/DocumentBuilder are not guaranteed thread-safe (JAXP). One builder
     // per thread avoids concurrent parse() corruption under the aggregator's parallel fan-out.
     private static final ThreadLocal<DocumentBuilder> DOC_BUILDER =
             ThreadLocal.withInitial(RssNewsProvider::newDocumentBuilder);
 
+    // Shared across all RssNewsProvider instances (one per configured feed): several feeds can
+    // point at the same anonymously rate-limited host (e.g. two Reddit feeds), so the cooldown
+    // has to be host-scoped, not instance-scoped, to actually prevent the second feed's request
+    // from hammering into the same 429 window.
+    private static final ConcurrentHashMap<String, Long> HOST_COOLDOWN = new ConcurrentHashMap<>();
+
+    /** Test-only reset of the shared host-cooldown state between test cases. */
+    static void clearCooldownsForTests() {
+        HOST_COOLDOWN.clear();
+    }
+
     private final String feedId;
     private final String urlTemplate;
     private final String sourceType;
     private final RestClient http;
     private final TtlCache<String, List<NewsItem>> cache;
+    private final LongSupplier now;
+    private final long minIntervalMs;
 
     public RssNewsProvider(String feedId, String urlTemplate, String sourceType,
-                           long feedTimeoutMs, long ttlSeconds, LongSupplier now) {
+                           long feedTimeoutMs, long ttlSeconds, LongSupplier now,
+                           String userAgent, long minIntervalMs) {
         this.feedId = feedId;
         this.urlTemplate = urlTemplate;
         this.sourceType = sourceType;
+        this.now = now;
+        this.minIntervalMs = minIntervalMs;
+        String effectiveUserAgent = (userAgent == null || userAgent.isBlank())
+                ? DEFAULT_USER_AGENT : userAgent;
         // DataHttp.clientBuilder wires the ProviderCallLogger interceptor (structured
         // provider_call logging + redaction) exactly like the market-data providers.
         this.http = DataHttp.clientBuilder(feedTimeoutMs)
-                .defaultHeader("User-Agent", USER_AGENT)
+                .defaultHeader("User-Agent", effectiveUserAgent)
                 .build();
         // Keyed by feedId+symbol+date-range; the TTL is the request-rate defence for
         // anonymously rate-limited feed hosts.
@@ -90,20 +112,67 @@ public class RssNewsProvider implements NewsProvider {
         String url = templated
                 ? urlTemplate.replace(SYMBOL_PLACEHOLDER, URLEncoder.encode(symbol, StandardCharsets.UTF_8))
                 : urlTemplate;
+        String host = URI.create(url).getHost();
+        long nowMs = now.getAsLong();
+
+        Long notBefore = HOST_COOLDOWN.get(host);
+        if (notBefore != null && nowMs < notBefore) {
+            // Host is in a cooldown recorded by an earlier 429 (possibly from a sister feed on
+            // the same host) — skip the HTTP call entirely rather than hammer into it again.
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    id() + " rate limited (cooldown)", null);
+        }
+
         String xml;
         try {
             xml = http.get().uri(URI.create(url)).retrieve().body(String.class);
+        } catch (HttpClientErrorException.TooManyRequests e) {
+            long cooldownMs = resetCooldownMs(e);
+            HOST_COOLDOWN.put(host, nowMs + cooldownMs);
+            log.warn("rss feed {} rate limited for {}, cooldown {} ms", feedId, symbol, cooldownMs);
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    id() + " rate limited", e);
         } catch (Exception e) {
             log.warn("rss feed {} request failed for {}", feedId, symbol, e);
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     ProviderErrors.categorize(id(), e), e);
         }
+
+        if (minIntervalMs > 0) {
+            // Stagger the sister feed on the same host: the next call to any feed on this
+            // host must wait out minIntervalMs even though this call itself succeeded.
+            HOST_COOLDOWN.put(host, nowMs + minIntervalMs);
+        }
+
         if (xml == null || xml.isBlank())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     id() + " empty feed body", null);
         List<NewsItem> items = parse(xml);
         if (!templated) items = filterBySymbolToken(items, symbol);
         return filterByWindow(items, from, to);
+    }
+
+    /** Parses the cooldown length (ms) for a 429 response: {@code x-ratelimit-reset} (seconds,
+     *  possibly fractional) first, then {@code Retry-After} (seconds), else a 60s default. */
+    private static long resetCooldownMs(HttpClientErrorException.TooManyRequests e) {
+        HttpHeaders headers = e.getResponseHeaders();
+        if (headers != null) {
+            Long fromReset = parseSecondsToMillis(headers.getFirst("x-ratelimit-reset"));
+            if (fromReset != null) return fromReset;
+            Long fromRetryAfter = parseSecondsToMillis(headers.getFirst("Retry-After"));
+            if (fromRetryAfter != null) return fromRetryAfter;
+        }
+        return DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+    }
+
+    private static Long parseSecondsToMillis(String headerValue) {
+        if (headerValue == null || headerValue.isBlank()) return null;
+        try {
+            double seconds = Double.parseDouble(headerValue.trim());
+            return Math.round(seconds * 1000.0);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     // ---- parsing ----

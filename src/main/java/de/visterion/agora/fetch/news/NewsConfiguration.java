@@ -22,7 +22,8 @@ public class NewsConfiguration {
         chain.add(finnhub);
         for (NewsFeedsProperties.FeedConfig feed : props.getFeeds()) {
             chain.add(new RssNewsProvider(feed.getId(), feed.getUrl(), feed.getSourceType(),
-                    props.getFeedTimeoutMs(), ttlSeconds, System::currentTimeMillis));
+                    props.getFeedTimeoutMs(), ttlSeconds, System::currentTimeMillis,
+                    feed.getUserAgent(), feed.getMinIntervalMs()));
         }
         return new NewsAggregator(chain, props.getMaxItems());
     }

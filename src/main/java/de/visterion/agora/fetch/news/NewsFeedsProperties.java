@@ -31,6 +31,10 @@ public class NewsFeedsProperties {
         private String url;
         /** "news" (editorial/wire) or "social" (user-generated). */
         private String sourceType = "news";
+        /** Per-feed HTTP User-Agent header; some hosts rate-limit or degrade generic UAs. */
+        private String userAgent = "agora-news/1.0";
+        /** Minimum spacing (ms) enforced on this feed's host after a successful call; 0 = no spacing. */
+        private long minIntervalMs = 0;
 
         public String getId() { return id; }
         public void setId(String id) { this.id = id; }
@@ -38,5 +42,9 @@ public class NewsFeedsProperties {
         public void setUrl(String url) { this.url = url; }
         public String getSourceType() { return sourceType; }
         public void setSourceType(String sourceType) { this.sourceType = sourceType; }
+        public String getUserAgent() { return userAgent; }
+        public void setUserAgent(String userAgent) { this.userAgent = userAgent; }
+        public long getMinIntervalMs() { return minIntervalMs; }
+        public void setMinIntervalMs(long minIntervalMs) { this.minIntervalMs = minIntervalMs; }
     }
 }
