@@ -84,14 +84,18 @@ class RssNewsProviderTest {
     static WireMockServer wm;
     @BeforeAll static void start() { wm = new WireMockServer(options().dynamicPort()); wm.start(); }
     @AfterAll static void stop() { wm.stop(); }
-    @BeforeEach void reset() { wm.resetAll(); }
+    @BeforeEach void reset() {
+        wm.resetAll();
+        RssNewsProvider.clearCooldownsForTests();
+    }
 
     private static final LocalDate FROM = LocalDate.parse("2026-07-10");
     private static final LocalDate TO = LocalDate.parse("2026-07-16");
+    private static final String DEFAULT_UA = "agora-news/1.0";
 
     private RssNewsProvider feed(String id, String pathTemplate, String sourceType, long timeoutMs) {
         return new RssNewsProvider(id, wm.baseUrl() + pathTemplate, sourceType,
-                timeoutMs, 900L, System::currentTimeMillis);
+                timeoutMs, 900L, System::currentTimeMillis, DEFAULT_UA, 0L);
     }
 
     private static void stubXml(String path, String body) {
@@ -102,8 +106,8 @@ class RssNewsProviderTest {
     @Test void idIsRssPrefixedAndConfiguredNeedsUrl() {
         assertThat(feed("yahoo-rss", "/rss?s={symbol}", "news", 5000).id()).isEqualTo("rss:yahoo-rss");
         assertThat(feed("yahoo-rss", "/rss?s={symbol}", "news", 5000).configured()).isTrue();
-        assertThat(new RssNewsProvider("x", " ", "news", 5000, 900L, System::currentTimeMillis)
-                .configured()).isFalse();
+        assertThat(new RssNewsProvider("x", " ", "news", 5000, 900L, System::currentTimeMillis,
+                DEFAULT_UA, 0L).configured()).isFalse();
     }
 
     @Test void parsesYahooRss() {
@@ -266,7 +270,7 @@ class RssNewsProviderTest {
         stubXml("/rss?s=AAPL", YAHOO_RSS);
         AtomicLong clock = new AtomicLong(1_000_000L);
         RssNewsProvider p = new RssNewsProvider("yahoo-rss", wm.baseUrl() + "/rss?s={symbol}",
-                "news", 5000, 900L, clock::get);
+                "news", 5000, 900L, clock::get, DEFAULT_UA, 0L);
         p.companyNews("AAPL", FROM, TO);
         clock.addAndGet(899_000L); // still inside the 900 s TTL
         p.companyNews("AAPL", FROM, TO);
@@ -278,5 +282,117 @@ class RssNewsProviderTest {
         feed("yahoo-rss", "/rss?s={symbol}", "news", 5000).companyNews("AAPL", FROM, TO);
         wm.verify(getRequestedFor(urlEqualTo("/rss?s=AAPL"))
                 .withHeader("User-Agent", equalTo("agora-news/1.0")));
+    }
+
+    @Test void sendsPerFeedUserAgentWhenConfigured() {
+        stubXml("/rss?s=AAPL", YAHOO_RSS);
+        String customUa = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/138.0.0.0";
+        new RssNewsProvider("reddit-stocks", wm.baseUrl() + "/rss?s={symbol}", "social",
+                5000, 900L, System::currentTimeMillis, customUa, 0L)
+                .companyNews("AAPL", FROM, TO);
+        wm.verify(getRequestedFor(urlEqualTo("/rss?s=AAPL"))
+                .withHeader("User-Agent", equalTo(customUa)));
+    }
+
+    @Test void rateLimitedResponseSetsCooldownFromResetHeaderAndSuppressesFurtherRequests() {
+        wm.stubFor(get(urlEqualTo("/rss?s=AAPL")).willReturn(aResponse()
+                .withStatus(429).withHeader("x-ratelimit-reset", "30")));
+        AtomicLong clock = new AtomicLong(0L);
+        RssNewsProvider p = new RssNewsProvider("reddit-stocks", wm.baseUrl() + "/rss?s={symbol}",
+                "social", 5000, 900L, clock::get, DEFAULT_UA, 0L);
+
+        // First call: real HTTP round-trip, 429 observed, cooldown recorded.
+        assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO))
+                .isInstanceOfSatisfying(MarketDataException.class, e -> {
+                    assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE);
+                    assertThat(e.getMessage()).isEqualTo("rss:reddit-stocks rate limited");
+                });
+        wm.verify(1, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
+
+        // Second call still inside the 30s cooldown: no HTTP request at all.
+        assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO))
+                .isInstanceOfSatisfying(MarketDataException.class, e ->
+                        assertThat(e.getMessage()).isEqualTo("rss:reddit-stocks rate limited (cooldown)"));
+        wm.verify(1, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
+
+        // Advance the fake clock past the reset window: request goes out again.
+        clock.addAndGet(30_000L);
+        assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO))
+                .isInstanceOfSatisfying(MarketDataException.class, e ->
+                        assertThat(e.getMessage()).isEqualTo("rss:reddit-stocks rate limited"));
+        wm.verify(2, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
+    }
+
+    @Test void rateLimitFallsBackToRetryAfterHeaderWhenResetHeaderAbsent() {
+        wm.stubFor(get(urlEqualTo("/rss?s=AAPL")).willReturn(aResponse()
+                .withStatus(429).withHeader("Retry-After", "15")));
+        AtomicLong clock = new AtomicLong(0L);
+        RssNewsProvider p = new RssNewsProvider("reddit-stocks", wm.baseUrl() + "/rss?s={symbol}",
+                "social", 5000, 900L, clock::get, DEFAULT_UA, 0L);
+        assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO)).isInstanceOf(MarketDataException.class);
+
+        clock.addAndGet(14_000L);
+        assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO))
+                .isInstanceOfSatisfying(MarketDataException.class, e ->
+                        assertThat(e.getMessage()).isEqualTo("rss:reddit-stocks rate limited (cooldown)"));
+        wm.verify(1, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
+
+        clock.addAndGet(1_000L);
+        assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO)).isInstanceOf(MarketDataException.class);
+    }
+
+    @Test void rateLimitFallsBackToDefaultSixtySecondsWhenNoHeadersPresent() {
+        wm.stubFor(get(urlEqualTo("/rss?s=AAPL")).willReturn(aResponse().withStatus(429)));
+        AtomicLong clock = new AtomicLong(0L);
+        RssNewsProvider p = new RssNewsProvider("reddit-stocks", wm.baseUrl() + "/rss?s={symbol}",
+                "social", 5000, 900L, clock::get, DEFAULT_UA, 0L);
+        assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO)).isInstanceOf(MarketDataException.class);
+
+        clock.addAndGet(59_000L);
+        assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO))
+                .isInstanceOfSatisfying(MarketDataException.class, e ->
+                        assertThat(e.getMessage()).isEqualTo("rss:reddit-stocks rate limited (cooldown)"));
+        wm.verify(1, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
+
+        clock.addAndGet(1_000L);
+        assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO)).isInstanceOf(MarketDataException.class);
+        wm.verify(2, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
+    }
+
+    @Test void successfulCallSetsCooldownForMinIntervalAndSisterFeedOnSameHostSkips() {
+        stubXml("/rss?s=AAPL", YAHOO_RSS);
+        AtomicLong clock = new AtomicLong(0L);
+        RssNewsProvider primary = new RssNewsProvider("reddit-stocks", wm.baseUrl() + "/rss?s={symbol}",
+                "social", 5000, 900L, clock::get, DEFAULT_UA, 61_000L);
+        RssNewsProvider sister = new RssNewsProvider("reddit-wsb", wm.baseUrl() + "/rss?s={symbol}",
+                "social", 5000, 900L, clock::get, DEFAULT_UA, 0L);
+
+        assertThat(primary.companyNews("AAPL", FROM, TO)).hasSize(3);
+        wm.verify(1, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
+
+        // Sister feed shares the same host: skips via cooldown, no second request.
+        assertThatThrownBy(() -> sister.companyNews("AAPL", FROM, TO))
+                .isInstanceOfSatisfying(MarketDataException.class, e ->
+                        assertThat(e.getMessage()).isEqualTo("rss:reddit-wsb rate limited (cooldown)"));
+        wm.verify(1, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
+
+        // Past the min-interval, the sister feed's request goes out.
+        clock.addAndGet(61_000L);
+        assertThat(sister.companyNews("AAPL", FROM, TO)).hasSize(3);
+        wm.verify(2, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
+    }
+
+    @Test void cooldownOnOneHostDoesNotAffectADifferentHost() {
+        stubXml("/rss?s=AAPL", YAHOO_RSS);
+        AtomicLong clock = new AtomicLong(0L);
+        RssNewsProvider primary = new RssNewsProvider("reddit-stocks", wm.baseUrl() + "/rss?s={symbol}",
+                "social", 5000, 900L, clock::get, DEFAULT_UA, 61_000L);
+        String otherHostUrl = wm.baseUrl().replace("localhost", "127.0.0.1") + "/rss?s={symbol}";
+        RssNewsProvider otherHost = new RssNewsProvider("other-host", otherHostUrl,
+                "news", 5000, 900L, clock::get, DEFAULT_UA, 0L);
+
+        assertThat(primary.companyNews("AAPL", FROM, TO)).hasSize(3);
+        // Different host string ("127.0.0.1" vs "localhost") is unaffected by primary's cooldown.
+        assertThat(otherHost.companyNews("AAPL", FROM, TO)).hasSize(3);
     }
 }
