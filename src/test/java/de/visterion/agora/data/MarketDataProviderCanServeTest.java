@@ -21,6 +21,11 @@ class MarketDataProviderCanServeTest {
         return Instrument.raw(display);
     }
 
+    /** No exchange suffix, but an explicit {@code countryCode} (e.g. resolved via Saxo). */
+    private static Instrument instrumentWithCountryCode(String display, String countryCode) {
+        return new Instrument(display, display, null, null, null, null, null, countryCode, "Stock", false, 1.0);
+    }
+
     private final AlpacaMarketDataProvider alpaca =
             new AlpacaMarketDataProvider(new AlpacaDataClient(RestClient.builder().baseUrl("http://unused").build(), false));
     private final TwelveDataMarketDataProvider twelveData =
@@ -40,6 +45,15 @@ class MarketDataProviderCanServeTest {
             assertThat(p.canServe(instrument("6758.T"))).as(p.name() + " 6758.T").isFalse();  // Tokyo
             assertThat(p.canServe(instrument("NOVO-B.CO"))).as(p.name() + " NOVO-B.CO").isFalse(); // Nordic
             assertThat(p.canServe(instrument("BYDDY"))).as(p.name() + " BYDDY").isTrue();     // US-format ADR — out of scope
+        }
+    }
+
+    @Test void usOnlyProvidersRespectCountryCodeWithoutSuffix() {
+        for (MarketDataProvider p : List.of(alpaca, twelveData, finnhub)) {
+            assertThat(p.canServe(instrumentWithCountryCode("SOMESYM", "DE")))
+                    .as(p.name() + " countryCode=DE, no suffix").isFalse();
+            assertThat(p.canServe(instrumentWithCountryCode("SOMESYM", "US")))
+                    .as(p.name() + " countryCode=US, no suffix").isTrue();
         }
     }
 
