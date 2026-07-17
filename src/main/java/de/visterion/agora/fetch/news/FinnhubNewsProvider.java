@@ -1,6 +1,7 @@
 package de.visterion.agora.fetch.news;
 
 import de.visterion.agora.data.MarketDataException;
+import de.visterion.agora.data.NonUsSuffixes;
 import de.visterion.agora.data.ProviderErrors;
 import de.visterion.agora.data.TtlCache;
 import de.visterion.agora.fetch.finnhub.FinnhubClient;
@@ -15,6 +16,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.LongSupplier;
 
 /** Company news headlines via Finnhub, cached per-family (news TTL). sourceType is always "news". */
@@ -25,17 +27,24 @@ public class FinnhubNewsProvider implements NewsProvider {
 
     private final FinnhubClient client;
     private final TtlCache<String, List<NewsItem>> cache;
+    private final Set<String> nonUsSuffixes;
 
     @Autowired
     public FinnhubNewsProvider(FinnhubClient client,
-                               @Value("${agora.data.cache.ttl.news-seconds:900}") long ttlSeconds) {
-        this(client, ttlSeconds, System::currentTimeMillis);
+                               @Value("${agora.data.cache.ttl.news-seconds:900}") long ttlSeconds,
+                               @Value("${agora.fundamentals.non-us-suffixes:DE,MI,TO,L,T,HK,PA,AS,SW,AX,ST,CO,OL,HE,MC,BR,LS,VI,IR,NZ}") String nonUsSuffixesCsv) {
+        this(client, ttlSeconds, System::currentTimeMillis, NonUsSuffixes.parse(nonUsSuffixesCsv));
     }
 
     FinnhubNewsProvider(FinnhubClient client, long ttlSeconds, LongSupplier now) {
+        this(client, ttlSeconds, now, NonUsSuffixes.DEFAULT);
+    }
+
+    FinnhubNewsProvider(FinnhubClient client, long ttlSeconds, LongSupplier now, Set<String> nonUsSuffixes) {
         this.client = client;
         // Keyed by symbol+date-range, so cardinality grows with distinct windows queried.
         this.cache = new TtlCache<>(ttlSeconds * 1000L, 2048, now);
+        this.nonUsSuffixes = nonUsSuffixes;
     }
 
     @Override
@@ -46,6 +55,7 @@ public class FinnhubNewsProvider implements NewsProvider {
 
     @Override
     public List<NewsItem> companyNews(String symbol, LocalDate from, LocalDate to) {
+        if (NonUsSuffixes.isNonUs(symbol, nonUsSuffixes)) return List.of();
         if (!client.configured())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "finnhub: no api key", null);
         return cache.get("news:" + symbol + ":" + from + ":" + to, () -> fetch(symbol, from, to));
