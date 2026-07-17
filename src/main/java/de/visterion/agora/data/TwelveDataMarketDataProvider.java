@@ -15,6 +15,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
 /**
  * TwelveData fallback market-data provider (quote + ohlc). Skips itself (throws UNAVAILABLE) when no
@@ -29,24 +30,34 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
 
     private final RestClient client;
     private final String key;
+    private final Set<String> nonUsSuffixes;
 
     /**
      * Constructor bound by Spring via {@code @Value}. Applies the configurable per-request read
      * timeout ({@code agora.data.provider-timeout-ms}) so a slow TwelveData call fails fast into the
-     * next provider instead of stalling the chain.
+     * next provider instead of stalling the chain. Reuses the same
+     * {@code agora.fundamentals.non-us-suffixes} property fundamentals routing reads, so the two
+     * never drift.
      */
     @Autowired
     public TwelveDataMarketDataProvider(
             @Value("${agora.data.twelvedata.base-url}") String baseUrl,
             @Value("${agora.data.twelvedata.key}") String key,
-            @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs) {
+            @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs,
+            @Value("${agora.fundamentals.non-us-suffixes:" + NonUsSuffixes.DEFAULT_CSV + "}") String nonUsSuffixesCsv) {
         this.client = DataHttp.clientBuilder(timeoutMs)
                 .baseUrl(baseUrl)
                 .build();
         this.key = key;
+        this.nonUsSuffixes = NonUsSuffixes.parse(nonUsSuffixesCsv);
     }
 
-    /** Test constructor: explicit base-url + key, default timeout. */
+    /** Test constructor: explicit timeout, default non-US suffix set. */
+    TwelveDataMarketDataProvider(String baseUrl, String key, long timeoutMs) {
+        this(baseUrl, key, timeoutMs, NonUsSuffixes.DEFAULT_CSV);
+    }
+
+    /** Test constructor: explicit base-url + key, default timeout + default non-US suffix set. */
     TwelveDataMarketDataProvider(String baseUrl, String key) {
         this(baseUrl, key, 4000L);
     }
@@ -54,6 +65,13 @@ public class TwelveDataMarketDataProvider implements MarketDataProvider {
     @Override
     public String name() {
         return "twelvedata";
+    }
+
+    /** US-only fallback feed: skip non-US instruments so the fallback chain reaches Saxo/Yahoo
+     *  without a wasted 4xx round-trip. */
+    @Override
+    public boolean canServe(Instrument inst) {
+        return !NonUsSuffixes.isNonUs(inst, nonUsSuffixes);
     }
 
     @Override

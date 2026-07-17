@@ -95,7 +95,7 @@ public class MarketDataService {
         try {
             return quoteCache.get(key, () -> {
                 Instrument inst = resolver.resolve(symbol);
-                return firstSuccess(p -> p.quote(inst), "quote " + symbol, allNotFound);
+                return firstSuccess(p -> p.quote(inst), "quote " + symbol, allNotFound, inst);
             });
         } catch (MarketDataException e) {
             cacheNegativeIfApplicable(quoteNotFoundCache, key, allNotFound[0], e);
@@ -112,7 +112,7 @@ public class MarketDataService {
         try {
             return ohlcCache.get(key, () -> {
                 Instrument inst = resolver.resolve(symbol);
-                return firstSuccess(p -> p.ohlc(inst, days), "ohlc " + symbol, allNotFound);
+                return firstSuccess(p -> p.ohlc(inst, days), "ohlc " + symbol, allNotFound, inst);
             });
         } catch (MarketDataException e) {
             cacheNegativeIfApplicable(ohlcNotFoundCache, key, allNotFound[0], e);
@@ -153,10 +153,17 @@ public class MarketDataService {
      * @param allNotFound out-parameter (single-element array): set to {@code false} as soon as
      *                     any provider fails with something other than {@code NOT_FOUND}; stays
      *                     {@code true} only if every attempted provider answered NOT_FOUND.
+     * @param inst         the resolved instrument; providers that declare themselves unable to
+     *                     serve it ({@link MarketDataProvider#canServe(Instrument)} false) are
+     *                     skipped entirely — a skip does not touch {@code allNotFound}.
      */
-    private <T> T firstSuccess(Function<MarketDataProvider, T> call, String what, boolean[] allNotFound) {
+    private <T> T firstSuccess(Function<MarketDataProvider, T> call, String what, boolean[] allNotFound,
+                                 Instrument inst) {
         MarketDataException last = null;
         for (MarketDataProvider p : providers) {
+            if (!p.canServe(inst)) {
+                continue;
+            }
             try {
                 return call.apply(p);
             } catch (MarketDataException e) {

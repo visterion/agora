@@ -19,6 +19,11 @@ Top-level package: `de.visterion.agora`. Entry point: `AgoraApplication`.
   registry discovers and exposes them to the MCP adapter and the catalog controller.
 - **`MarketDataService` + `MarketDataProvider`** — ordered provider chain
   **Alpaca → Saxo → TwelveData → Finnhub → Yahoo**, with TTL cache and normalized errors.
+  Exchange-aware routing: US-only providers (Alpaca, TwelveData, Finnhub) declare
+  `canServe(Instrument)` false for non-US instruments (suffix-classified via the shared
+  `agora.fundamentals.non-us-suffixes` set, or a non-US `countryCode`), so `firstSuccess`
+  skips them for symbols like `SAP.DE`/`0700.HK` instead of eating a guaranteed 4xx before
+  reaching Saxo/Yahoo. Saxo and Yahoo keep the default `canServe` (serve everything).
 - **`IndicatorService` + `IndicatorRegistry`** — indicators from `BuiltinIndicators` +
   `indicators-catalog.yaml`, resolved and computed via ta4j; composable via
   `IndicatorExpressionResolver`.
