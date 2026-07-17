@@ -48,4 +48,22 @@ class NewsFeedsPropertiesTest {
                 "agora.data.news.feeds[0].url", "https://feeds.example.com/all.rss"));
         assertThat(p.getFeeds().get(0).getSourceType()).isEqualTo("news");
     }
+
+    @Test void feedUserAgentAndMinIntervalDefault() {
+        NewsFeedsProperties p = bind(Map.of(
+                "agora.data.news.feeds[0].id", "wire",
+                "agora.data.news.feeds[0].url", "https://feeds.example.com/all.rss"));
+        assertThat(p.getFeeds().get(0).getUserAgent()).isEqualTo("agora-news/1.0");
+        assertThat(p.getFeeds().get(0).getMinIntervalMs()).isEqualTo(0L);
+    }
+
+    @Test void bindsFeedUserAgentAndMinIntervalMsKebabCase() {
+        NewsFeedsProperties p = bind(Map.of(
+                "agora.data.news.feeds[0].id", "reddit-stocks",
+                "agora.data.news.feeds[0].url", "https://social.example.com/search.rss?q={symbol}",
+                "agora.data.news.feeds[0].user-agent", "Mozilla/5.0 Test-Agent",
+                "agora.data.news.feeds[0].min-interval-ms", "61000"));
+        assertThat(p.getFeeds().get(0).getUserAgent()).isEqualTo("Mozilla/5.0 Test-Agent");
+        assertThat(p.getFeeds().get(0).getMinIntervalMs()).isEqualTo(61000L);
+    }
 }
