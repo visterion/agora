@@ -332,10 +332,13 @@ callback `/auth/saxo/callback` stores tokens under the token-dir
 (`AGORA_TRADING_SAXO_TOKEN_DIR`, default `/data/saxo`). Tokens are auto-refreshed from
 there, so the login persists across restarts.
 
-Ambiguous cross-listed symbols must be disambiguated with a connection-level
-`extra.exchange-id` (e.g. `NASDAQ`); otherwise resolution fails with
-`ambiguous symbol: <symbol> — set extra.exchange-id`. The Saxo instrument resolver is
-**stock-only** (`AssetTypes=Stock`) — no FX or other asset types.
+Ambiguous cross-listed symbols (e.g. a US listing + a foreign listing sharing the same
+base symbol) are first tie-broken automatically by a connection-level
+`extra.preferred-currency` (default `USD`) matched against the candidates' `CurrencyCode`;
+only if more than one candidate still shares that currency does resolution fall back to
+requiring a connection-level `extra.exchange-id` (e.g. `NASDAQ`), failing with
+`ambiguous symbol: <symbol> — set extra.exchange-id` until one is set. The Saxo instrument
+resolver is **stock-only** (`AssetTypes=Stock`) — no FX or other asset types.
 
 ---
 
