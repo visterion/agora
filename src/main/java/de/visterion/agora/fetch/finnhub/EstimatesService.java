@@ -25,26 +25,39 @@ public class EstimatesService {
     private final FinnhubClient client;
     private final TtlCache<String, List<Recommendation>> cache;
     private final Set<String> nonUsSuffixes;
+    private final YahooCompanyDataSource yahoo;
+    private final TtlCache<String, List<Recommendation>> yahooCache;
 
     @Autowired
     public EstimatesService(FinnhubClient client,
                             @Value("${agora.data.cache.ttl.fundamentals-seconds:21600}") long ttlSeconds,
-                            @Value("${agora.fundamentals.non-us-suffixes:DE,MI,TO,L,T,HK,PA,AS,SW,AX,ST,CO,OL,HE,MC,BR,LS,VI,IR,NZ}") String nonUsSuffixesCsv) {
-        this(client, ttlSeconds, System::currentTimeMillis, NonUsSuffixes.parse(nonUsSuffixesCsv));
+                            @Value("${agora.fundamentals.non-us-suffixes:DE,MI,TO,L,T,HK,PA,AS,SW,AX,ST,CO,OL,HE,MC,BR,LS,VI,IR,NZ}") String nonUsSuffixesCsv,
+                            @Value("${agora.data.cache.ttl.recommendation-seconds:86400}") long yahooTtlSeconds,
+                            YahooCompanyDataSource yahoo) {
+        this(client, ttlSeconds, System::currentTimeMillis, NonUsSuffixes.parse(nonUsSuffixesCsv), yahooTtlSeconds, yahoo);
     }
 
-    EstimatesService(FinnhubClient client, long ttlSeconds, LongSupplier now) {
-        this(client, ttlSeconds, now, NonUsSuffixes.DEFAULT);
+    EstimatesService(FinnhubClient client, long ttlSeconds, LongSupplier now, long yahooTtlSeconds, YahooCompanyDataSource yahoo) {
+        this(client, ttlSeconds, now, NonUsSuffixes.DEFAULT, yahooTtlSeconds, yahoo);
     }
 
-    EstimatesService(FinnhubClient client, long ttlSeconds, LongSupplier now, Set<String> nonUsSuffixes) {
+    EstimatesService(FinnhubClient client, long ttlSeconds, LongSupplier now, Set<String> nonUsSuffixes,
+                      long yahooTtlSeconds, YahooCompanyDataSource yahoo) {
         this.client = client;
         this.cache = new TtlCache<>(ttlSeconds * 1000L, 2048, now);
         this.nonUsSuffixes = nonUsSuffixes;
+        this.yahoo = yahoo;
+        this.yahooCache = new TtlCache<>(yahooTtlSeconds * 1000L, 2048, now);
     }
 
     public List<Recommendation> recommendations(String symbol) {
-        if (NonUsSuffixes.isNonUs(symbol, nonUsSuffixes)) return List.of();
+        if (NonUsSuffixes.isNonUs(symbol, nonUsSuffixes)) {
+            try {
+                return yahooCache.get("rec:" + symbol, () -> yahoo.recommendations(symbol));
+            } catch (MarketDataException e) {
+                return List.of();
+            }
+        }
         if (!client.configured())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "finnhub: no api key", null);
         return cache.get("rec:" + symbol, () -> fetch(symbol));
