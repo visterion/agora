@@ -1,6 +1,6 @@
 # API Reference
 
-This reference currently covers the fundamentals tools; other Agora tools are self-describing via their MCP inputSchema.
+This reference covers the fundamentals and trading tools in detail; other Agora tools are self-describing via their MCP inputSchema.
 
 ---
 

@@ -316,6 +316,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * order). Carries real fills (AveragePrice/FilledAmount) + ActivityTime, but NO bracket-leg
      * structure — role is always "other", parentId null (leg linkage is a live-orders concept).
      * The open-orders path (/port/v1/orders/me) is unchanged and still used for every non-history call.
+     * status is a router here, not a filter — see exit-tools.md
      */
     private List<Order> ordersHistory(String status, String from, String to) {
         AccountContext ctx = accountContext();
@@ -342,8 +343,10 @@ public class SaxoBrokerProvider implements BrokerProvider {
         for (JsonNode n : resp.path("Data")) {
             String symbol = baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString(""));
             if (symbol.isBlank()) symbol = "?";
-            BigDecimal filledQty = n.path("FilledAmount").isMissingNode() ? null : bd(n.path("FilledAmount"));
-            BigDecimal avgFillPrice = n.path("AveragePrice").isMissingNode() ? null : bd(n.path("AveragePrice"));
+            BigDecimal filledQty = n.path("FilledAmount").isMissingNode() || n.path("FilledAmount").isNull()
+                    ? null : bd(n.path("FilledAmount"));
+            BigDecimal avgFillPrice = n.path("AveragePrice").isMissingNode() || n.path("AveragePrice").isNull()
+                    ? null : bd(n.path("AveragePrice"));
             out.add(new Order(
                     n.path("OrderId").asString(""),
                     textOrNull(n, "ExternalReference"),
