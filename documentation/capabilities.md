@@ -107,6 +107,7 @@ Extensible without rebuild: mount YAML and set `AGORA_RESEARCH_INDICATORS_FILE`.
 | `list_connections` | Active connections (id, provider, environment, probe) |
 | `get_account` | Equity, buying power, cash, status |
 | `get_positions` | Open positions |
+| `get_closed_positions` | Closed positions with real broker fill prices/P&L (Saxo only) |
 | `get_orders` | Open and recent orders |
 | `get_order_by_ref` | Lookup by opaque `client_ref` |
 | `place_bracket` | Entry + stop-loss + take-profit |
@@ -147,13 +148,14 @@ token; live connections need stronger live scopes.
 
 ---
 
-## Tool count checklist (36)
+## Tool count checklist (37)
 
 ```
 cancel_order
 flatten
 get_account
 get_analyst_estimates
+get_closed_positions
 get_company_concept
 get_company_facts
 get_company_news

@@ -7,6 +7,7 @@ import com.github.tomakehurst.wiremock.WireMockServer;
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.observability.ProviderCallLogger;
 import org.junit.jupiter.api.*;
+import tools.jackson.databind.JsonNode;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -145,6 +146,39 @@ class YahooCrumbClientTest {
     }
 
     @Test
+    void getRawTransportFailureThrowsMarketDataExceptionWithCauseAndLogsOnce() throws Exception {
+        // Point at a port nothing is listening on (connection refused) to force a
+        // transport-level failure (not an HTTP status) inside getRaw.
+        int deadPort = findUnusedPort();
+        ProviderCallLogger.configure(true, 4096);
+        Logger l = (Logger) org.slf4j.LoggerFactory.getLogger("agora.providercall");
+        ListAppender<ILoggingEvent> app = new ListAppender<>();
+        app.start();
+        l.addAppender(app);
+        try {
+            YahooCrumbClient c = client();
+            String url = "http://localhost:" + deadPort + "/v1/test/getcrumb";
+            assertThatThrownBy(() -> c.getRaw(url))
+                    .isInstanceOf(MarketDataException.class)
+                    .satisfies(ex -> assertThat(ex.getCause()).isNotNull());
+
+            var lines = app.list.stream()
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .filter(m -> m.contains("/v1/test/getcrumb"))
+                    .toList();
+            assertThat(lines).hasSize(1);
+        } finally {
+            l.detachAppender(app);
+        }
+    }
+
+    private static int findUnusedPort() throws Exception {
+        try (var s = new java.net.ServerSocket(0)) {
+            return s.getLocalPort();
+        }
+    }
+
+    @Test
     void logsProviderCallWithCrumbRedacted() throws Exception {
         stubBootstrap();
         wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
@@ -178,5 +212,97 @@ class YahooCrumbClientTest {
         } finally {
             l.detachAppender(app);
         }
+    }
+
+    @Test
+    void quoteSummary_200_returnsParsedNode() throws Exception {
+        stubBootstrap();
+        wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
+                .willReturn(aResponse().withStatus(200).withBody("tok12345")));
+        wm.stubFor(get(urlPathMatching("/v10/finance/quoteSummary/.*"))
+                .willReturn(okJson("{\"quoteSummary\":{\"result\":[{\"assetProfile\":{\"sector\":\"Technology\"}}],\"error\":null}}")));
+
+        YahooCrumbClient c = client();
+        JsonNode node = c.quoteSummary("SAP.DE", "assetProfile,recommendationTrend");
+
+        assertThat(node.path("quoteSummary").path("result").isArray()).isTrue();
+        assertThat(node.path("quoteSummary").path("result").isEmpty()).isFalse();
+    }
+
+    @Test
+    void quoteSummary_404JsonEnvelope_returnsParsedNode_noThrow() throws Exception {
+        stubBootstrap();
+        wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
+                .willReturn(aResponse().withStatus(200).withBody("tok12345")));
+        wm.stubFor(get(urlPathMatching("/v10/finance/quoteSummary/.*"))
+                .willReturn(aResponse().withStatus(404)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"quoteSummary\":{\"result\":null,\"error\":{\"code\":\"Not Found\"}}}")));
+
+        YahooCrumbClient c = client();
+        JsonNode node = c.quoteSummary("NOSUCH.DE", "assetProfile");
+
+        assertThat(node.path("quoteSummary").path("result").isNull()).isTrue();
+    }
+
+    @Test
+    void quoteSummary_401_rehandshakesWithFreshCrumbThenSucceeds() throws Exception {
+        stubBootstrap();
+        wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
+                .inScenario("qs-crumb-retry")
+                .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willReturn(aResponse().withStatus(200).withBody("staleCrumb"))
+                .willSetStateTo("rehandshaked"));
+        wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
+                .inScenario("qs-crumb-retry")
+                .whenScenarioStateIs("rehandshaked")
+                .willReturn(aResponse().withStatus(200).withBody("freshCrumb")));
+
+        wm.stubFor(get(urlPathMatching("/v10/finance/quoteSummary/.*"))
+                .withQueryParam("crumb", equalTo("staleCrumb"))
+                .willReturn(aResponse().withStatus(401)));
+        wm.stubFor(get(urlPathMatching("/v10/finance/quoteSummary/.*"))
+                .withQueryParam("crumb", equalTo("freshCrumb"))
+                .willReturn(okJson("{\"quoteSummary\":{\"result\":[{\"assetProfile\":{}}],\"error\":null}}")));
+
+        YahooCrumbClient c = client();
+        JsonNode node = c.quoteSummary("SAP.DE", "assetProfile");
+
+        assertThat(node.path("quoteSummary").path("result").isArray()).isTrue();
+        wm.verify(2, getRequestedFor(urlEqualTo("/v1/test/getcrumb")));
+        wm.verify(1, getRequestedFor(urlPathMatching("/v10/finance/quoteSummary/.*"))
+                .withQueryParam("crumb", equalTo("freshCrumb")));
+    }
+
+    @Test
+    void quoteSummary_429_throwsWithoutRehandshake() throws Exception {
+        stubBootstrap();
+        wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
+                .willReturn(aResponse().withStatus(200).withBody("tok12345")));
+        wm.stubFor(get(urlPathMatching("/v10/finance/quoteSummary/.*"))
+                .willReturn(aResponse().withStatus(429)));
+
+        YahooCrumbClient c = client();
+        assertThatThrownBy(() -> c.quoteSummary("SAP.DE", "assetProfile"))
+                .isInstanceOf(MarketDataException.class);
+
+        // initial crumb handshake = 1 getcrumb call; no re-handshake triggered by 429.
+        wm.verify(1, getRequestedFor(urlEqualTo("/v1/test/getcrumb")));
+        wm.verify(1, getRequestedFor(urlPathMatching("/v10/finance/quoteSummary/.*")));
+    }
+
+    @Test
+    void quoteSummary_htmlBody_throws() throws Exception {
+        stubBootstrap();
+        wm.stubFor(get(urlPathEqualTo("/v1/test/getcrumb"))
+                .willReturn(aResponse().withStatus(200).withBody("tok12345")));
+        wm.stubFor(get(urlPathMatching("/v10/finance/quoteSummary/.*"))
+                .willReturn(aResponse().withStatus(200)
+                        .withHeader("Content-Type", "text/html")
+                        .withBody("<html><body>not json</body></html>")));
+
+        YahooCrumbClient c = client();
+        assertThatThrownBy(() -> c.quoteSummary("SAP.DE", "assetProfile"))
+                .isInstanceOf(MarketDataException.class);
     }
 }

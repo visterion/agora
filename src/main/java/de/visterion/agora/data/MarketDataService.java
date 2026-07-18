@@ -36,52 +36,86 @@ public class MarketDataService {
     /**
      * Spring-wired constructor.
      *
-     * @param providers   ordered list of market-data providers (first success wins)
-     * @param ttlSeconds  cache TTL in <strong>seconds</strong> (bound to {@code agora.data.cache.ttl-seconds})
-     * @param resolver    resolves caller input into a canonical {@link Instrument}
+     * @param providers      ordered list of market-data providers (first success wins)
+     * @param quoteTtlSeconds cache TTL in <strong>seconds</strong> for quotes (bound to
+     *                        {@code agora.data.cache.ttl.quote-seconds}) — kept separate from the
+     *                        ohlc TTL so watchlist/kill-criteria/depot quote polling can use a
+     *                        longer TTL without staling GUI ohlc charts.
+     * @param ttlSeconds     cache TTL in <strong>seconds</strong> for ohlc (bound to
+     *                        {@code agora.data.cache.ttl-seconds})
+     * @param resolver       resolves caller input into a canonical {@link Instrument}
      */
     @Autowired
     public MarketDataService(List<MarketDataProvider> providers,
+                             @Value("${agora.data.cache.ttl.quote-seconds:300}") long quoteTtlSeconds,
                              @Value("${agora.data.cache.ttl-seconds:120}") long ttlSeconds,
                              InstrumentResolver resolver) {
-        this(providers, ttlSeconds * 1000L, System::currentTimeMillis, resolver);
+        this(providers, quoteTtlSeconds * 1000L, ttlSeconds * 1000L, System::currentTimeMillis, resolver);
     }
 
     /**
      * Back-compat constructor (no resolver) — defaults to a pass-through resolver so existing
-     * callers/tests keep today's string-in/string-out behaviour.
+     * callers/tests keep today's string-in/string-out behaviour. Both caches share one TTL,
+     * matching pre-split behaviour.
      *
      * @param providers   ordered list of market-data providers (first success wins)
-     * @param ttlSeconds  cache TTL in <strong>seconds</strong>
+     * @param ttlSeconds  cache TTL in <strong>seconds</strong>, applied to both quote and ohlc caches
      */
     public MarketDataService(List<MarketDataProvider> providers, long ttlSeconds) {
-        this(providers, ttlSeconds * 1000L, System::currentTimeMillis, Instrument::raw);
+        this(providers, ttlSeconds * 1000L, ttlSeconds * 1000L, System::currentTimeMillis, Instrument::raw);
     }
 
     /**
-     * Test constructor with injectable clock (pass-through resolver).
+     * Test constructor with injectable clock (pass-through resolver). Both caches share one TTL,
+     * matching pre-split behaviour.
      *
      * @param providers   ordered list of market-data providers
-     * @param ttlMillis   cache TTL in <strong>milliseconds</strong>
+     * @param ttlMillis   cache TTL in <strong>milliseconds</strong>, applied to both quote and ohlc caches
      * @param now         time source (injectable for deterministic tests)
      */
     MarketDataService(List<MarketDataProvider> providers, long ttlMillis, LongSupplier now) {
-        this(providers, ttlMillis, now, Instrument::raw);
+        this(providers, ttlMillis, ttlMillis, now, Instrument::raw);
+    }
+
+    /**
+     * Test constructor with independent quote/ohlc TTLs and injectable clock (pass-through resolver).
+     *
+     * @param providers      ordered list of market-data providers
+     * @param quoteTtlMillis cache TTL in <strong>milliseconds</strong> for quotes
+     * @param ohlcTtlMillis  cache TTL in <strong>milliseconds</strong> for ohlc
+     * @param now            time source (injectable for deterministic tests)
+     */
+    MarketDataService(List<MarketDataProvider> providers, long quoteTtlMillis, long ohlcTtlMillis, LongSupplier now) {
+        this(providers, quoteTtlMillis, ohlcTtlMillis, now, Instrument::raw);
     }
 
     /**
      * Test constructor with injectable clock and resolver.
      *
      * @param providers   ordered list of market-data providers
-     * @param ttlMillis   cache TTL in <strong>milliseconds</strong>
+     * @param ttlMillis   cache TTL in <strong>milliseconds</strong>, applied to both quote and ohlc caches
      * @param now         time source (injectable for deterministic tests)
      * @param resolver    resolves caller input into a canonical {@link Instrument}
      */
     MarketDataService(List<MarketDataProvider> providers, long ttlMillis, LongSupplier now, InstrumentResolver resolver) {
+        this(providers, ttlMillis, ttlMillis, now, resolver);
+    }
+
+    /**
+     * Master constructor: independent quote/ohlc TTLs, injectable clock and resolver.
+     *
+     * @param providers      ordered list of market-data providers
+     * @param quoteTtlMillis cache TTL in <strong>milliseconds</strong> for quotes
+     * @param ohlcTtlMillis  cache TTL in <strong>milliseconds</strong> for ohlc
+     * @param now            time source (injectable for deterministic tests)
+     * @param resolver       resolves caller input into a canonical {@link Instrument}
+     */
+    MarketDataService(List<MarketDataProvider> providers, long quoteTtlMillis, long ohlcTtlMillis,
+                       LongSupplier now, InstrumentResolver resolver) {
         this.providers = List.copyOf(providers);
         this.resolver = resolver;
-        this.ohlcCache = new TtlCache<>(ttlMillis, 4096, now);
-        this.quoteCache = new TtlCache<>(ttlMillis, 4096, now);
+        this.ohlcCache = new TtlCache<>(ohlcTtlMillis, 4096, now);
+        this.quoteCache = new TtlCache<>(quoteTtlMillis, 4096, now);
         this.ohlcNotFoundCache = new TtlCache<>(NEGATIVE_CACHE_TTL_MILLIS, NEGATIVE_CACHE_MAX_SIZE, now);
         this.quoteNotFoundCache = new TtlCache<>(NEGATIVE_CACHE_TTL_MILLIS, NEGATIVE_CACHE_MAX_SIZE, now);
     }
@@ -95,7 +129,7 @@ public class MarketDataService {
         try {
             return quoteCache.get(key, () -> {
                 Instrument inst = resolver.resolve(symbol);
-                return firstSuccess(p -> p.quote(inst), "quote " + symbol, allNotFound);
+                return firstSuccess(p -> p.quote(inst), "quote " + symbol, allNotFound, inst);
             });
         } catch (MarketDataException e) {
             cacheNegativeIfApplicable(quoteNotFoundCache, key, allNotFound[0], e);
@@ -112,7 +146,7 @@ public class MarketDataService {
         try {
             return ohlcCache.get(key, () -> {
                 Instrument inst = resolver.resolve(symbol);
-                return firstSuccess(p -> p.ohlc(inst, days), "ohlc " + symbol, allNotFound);
+                return firstSuccess(p -> p.ohlc(inst, days), "ohlc " + symbol, allNotFound, inst);
             });
         } catch (MarketDataException e) {
             cacheNegativeIfApplicable(ohlcNotFoundCache, key, allNotFound[0], e);
@@ -153,10 +187,17 @@ public class MarketDataService {
      * @param allNotFound out-parameter (single-element array): set to {@code false} as soon as
      *                     any provider fails with something other than {@code NOT_FOUND}; stays
      *                     {@code true} only if every attempted provider answered NOT_FOUND.
+     * @param inst         the resolved instrument; providers that declare themselves unable to
+     *                     serve it ({@link MarketDataProvider#canServe(Instrument)} false) are
+     *                     skipped entirely — a skip does not touch {@code allNotFound}.
      */
-    private <T> T firstSuccess(Function<MarketDataProvider, T> call, String what, boolean[] allNotFound) {
+    private <T> T firstSuccess(Function<MarketDataProvider, T> call, String what, boolean[] allNotFound,
+                                 Instrument inst) {
         MarketDataException last = null;
         for (MarketDataProvider p : providers) {
+            if (!p.canServe(inst)) {
+                continue;
+            }
             try {
                 return call.apply(p);
             } catch (MarketDataException e) {

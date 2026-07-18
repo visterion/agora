@@ -20,8 +20,12 @@ class SaxoInstrumentResolverTest {
     @BeforeEach void reset() { wm.resetAll(); }
 
     private SaxoInstrumentResolver resolver(String exchangeId) {
+        return resolver(exchangeId, null);
+    }
+
+    private SaxoInstrumentResolver resolver(String exchangeId, String preferredCurrency) {
         return new SaxoInstrumentResolver(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                () -> "Bearer t", exchangeId, 86_400_000L, now::get);
+                () -> "Bearer t", exchangeId, preferredCurrency, 86_400_000L, now::get);
     }
 
     @Test
@@ -54,6 +58,26 @@ class SaxoInstrumentResolverTest {
                      {"Identifier":212,"AssetType":"Stock","Symbol":"AAPL:xetr"}]}
             """)));
         assertThatThrownBy(() -> resolver(null).resolve("AAPL"))
+                .isInstanceOf(SaxoInstrumentResolver.SymbolResolutionException.class)
+                .hasMessageContaining("ambiguous");
+    }
+
+    @Test
+    void ambiguousResolvedByPreferredCurrency() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("""
+            {"Data":[{"Identifier":123,"AssetType":"Stock","Symbol":"BAC:xnys","CurrencyCode":"USD"},
+                     {"Identifier":456,"AssetType":"Stock","Symbol":"BAC:xetr","CurrencyCode":"EUR"}]}
+            """)));
+        assertThat(resolver(null, "USD").resolve("BAC").uic()).isEqualTo(123);
+    }
+
+    @Test
+    void stillAmbiguousWhenMultipleMatchPreferredCurrency() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("""
+            {"Data":[{"Identifier":211,"AssetType":"Stock","Symbol":"BAC:xnys","CurrencyCode":"USD"},
+                     {"Identifier":212,"AssetType":"Stock","Symbol":"BAC:arcx","CurrencyCode":"USD"}]}
+            """)));
+        assertThatThrownBy(() -> resolver(null, "USD").resolve("BAC"))
                 .isInstanceOf(SaxoInstrumentResolver.SymbolResolutionException.class)
                 .hasMessageContaining("ambiguous");
     }

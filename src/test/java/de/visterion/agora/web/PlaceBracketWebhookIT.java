@@ -4,6 +4,7 @@ import de.visterion.agora.trading.Account;
 import de.visterion.agora.trading.BracketOrderRequest;
 import de.visterion.agora.trading.BrokerProvider;
 import de.visterion.agora.trading.BrokerProviderFactory;
+import de.visterion.agora.trading.ClosedPosition;
 import de.visterion.agora.trading.OrderResult;
 import de.visterion.agora.trading.Position;
 import org.junit.jupiter.api.Test;
@@ -78,6 +79,7 @@ class PlaceBracketWebhookIT {
                         }
 
                         @Override public List<Position> positions() { return List.of(); }
+            public List<ClosedPosition> closedPositions() { return List.of(); }
 
                         @Override
                         public List<de.visterion.agora.trading.Order> orders(String status) { return List.of(); }

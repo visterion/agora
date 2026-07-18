@@ -18,6 +18,7 @@ class ConnectionProbeRunnerTest {
             public OrderResult modifyBracket(String id, String symbol, BigDecimal s, BigDecimal t) { return null; }
             public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) { return null; }
             public List<Position> positions() { return List.of(); }
+            public List<ClosedPosition> closedPositions() { return List.of(); }
             public List<Order> orders(String status) { return List.of(); }
             public Account account() { return null; }
             public Order orderByClientRef(String ref) { return null; }
@@ -114,6 +115,7 @@ class ConnectionProbeRunnerTest {
                     public OrderResult modifyBracket(String id, String symbol, BigDecimal s, BigDecimal t) { return null; }
                     public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) { return null; }
                     public List<Position> positions() { return List.of(); }
+                    public List<ClosedPosition> closedPositions() { return List.of(); }
                     public List<Order> orders(String status) { return List.of(); }
                     public Account account() { return null; }
                     public Order orderByClientRef(String ref) { return null; }

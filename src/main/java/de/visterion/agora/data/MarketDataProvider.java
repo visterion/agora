@@ -16,6 +16,14 @@ public interface MarketDataProvider {
     default Quote quote(Instrument inst) { return quote(inst.displaySymbol()); }
     default List<OhlcBar> ohlc(Instrument inst, int days) { return ohlc(inst.displaySymbol(), days); }
 
+    /**
+     * Whether this provider is a plausible source for {@code inst} at all. Default {@code true}
+     * (every provider may be tried). US-only providers (Alpaca, TwelveData, Finnhub) override
+     * this to skip non-US instruments so {@link MarketDataService#firstSuccess} doesn't waste a
+     * round-trip on a guaranteed 4xx before falling through to a global provider (Saxo/Yahoo).
+     */
+    default boolean canServe(Instrument inst) { return true; }
+
     /** Batch quotes; default resolves per-symbol and omits symbols that fail. */
     default Map<String, Quote> quotes(Collection<String> symbols) {
         Map<String, Quote> out = new LinkedHashMap<>();
