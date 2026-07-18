@@ -20,6 +20,12 @@ public interface BrokerProvider {
     /** Closed (already-settled) positions — real fill prices/P&amp;L from broker trade history. */
     List<ClosedPosition> closedPositions();
     List<Order> orders(String status);
+    /** Closed positions within an optional [from,to] ISO-8601 window (null = no bound). */
+    default List<ClosedPosition> closedPositions(String from, String to) { return closedPositions(); }
+    /** Orders within an optional [from,to] ISO-8601 window (null = no bound). Providers may route history vs open. */
+    default List<Order> orders(String status, String from, String to) { return orders(status); }
+    /** Whether this broker can return real closed positions (Alpaca cannot — reconstruction only). */
+    default boolean supportsClosedPositions() { return true; }
     Account account();
     Order orderByClientRef(String clientRef);
     OrderResult cancel(String brokerOrderId);

@@ -28,8 +28,15 @@ public class BrokerService {
         return resolveMutable(connection).flatten(symbol, fraction, qty);
     }
     public List<Position> positions(String connection) { return resolve(connection).positions(); }
-    public List<ClosedPosition> closedPositions(String connection) { return resolve(connection).closedPositions(); }
-    public List<Order> orders(String connection, String status) { return resolve(connection).orders(status); }
+    public List<ClosedPosition> closedPositions(String connection) { return closedPositions(connection, null, null); }
+    public List<ClosedPosition> closedPositions(String connection, String from, String to) {
+        return resolve(connection).closedPositions(from, to);
+    }
+    public boolean supportsClosedPositions(String connection) { return resolve(connection).supportsClosedPositions(); }
+    public List<Order> orders(String connection, String status) { return orders(connection, status, null, null); }
+    public List<Order> orders(String connection, String status, String from, String to) {
+        return resolve(connection).orders(status, from, to);
+    }
     public Account account(String connection) { return resolve(connection).account(); }
     public Order orderByClientRef(String connection, String ref) { return resolve(connection).orderByClientRef(ref); }
     public OrderResult cancel(String connection, String brokerOrderId) { return resolveMutable(connection).cancel(brokerOrderId); }
