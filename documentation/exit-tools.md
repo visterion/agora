@@ -201,7 +201,8 @@ further fallback, and every bracket reject (regardless of code) is logged for di
 ```json
 { "brokerOrderId": "...", "clientRef": "...", "symbol": "...", "side": "buy|sell",
   "qty": "...", "type": "...", "status": "...", "role": "entry|stop_loss|take_profit|other",
-  "filledQty": "...", "avgFillPrice": "...", "parentId": "..." }
+  "filledQty": "...", "avgFillPrice": "...", "parentId": "...",
+  "submittedAt": "...", "filledAt": "..." }
 ```
 
 - `role`: `"entry"` for a bracket's parent order, `"stop_loss"`/`"take_profit"` for its
@@ -212,6 +213,34 @@ further fallback, and every bracket reject (regardless of code) is logged for di
   consumer determines "which bracket leg filled at what price"**: call `get_orders`,
   filter to `parentId == <bracket orderId>`, and read `status`/`filledQty`/`avgFillPrice`
   on the matching leg row.
+- `submittedAt`/`filledAt`: nullable ISO-8601 timestamps, omitted when the broker doesn't
+  supply them (never fabricated).
+
+### `from`/`to` params
+
+`get_orders(connection, status?, from?, to?)` takes optional ISO-8601 UTC bounds on order
+submission time, broker-mapped:
+
+- **Alpaca**: mapped to `after`/`until` query params — boundary-exclusive on Alpaca.
+- **Saxo**: presence of `from`/`to` (or `status ∈ {closed, all}`) routes the call to the
+  history endpoint (see below); Saxo's open-orders endpoint has no date filter of its own.
+
+### Saxo — two-endpoint split (open vs. history)
+
+`get_orders` on Saxo hits one of two different endpoints depending on the call:
+
+- **Open path** (default, no `from`/`to`, `status` not in `{closed, all}`):
+  `GET /port/v1/orders/me` — the existing open-orders view. `filledQty`/`avgFillPrice` are
+  **always null** here (see gap #2 below); `role` is derived from bracket structure as
+  before (`RelatedOpenOrders[]`).
+- **History path** (`from`/`to` given, or `status ∈ {closed, all}`):
+  `GET /cs/v1/audit/orderactivities` with `EntryType=Last` (collapses each order's activity
+  trail to its latest state — one row per order) and `FromDateTime`/`ToDateTime` when a
+  range is given. This path carries **real fills**: `filledQty` ← `FilledAmount`,
+  `avgFillPrice` ← `AveragePrice`, `submittedAt`/`filledAt` ← `ActivityTime`. **Trade-off**:
+  this endpoint has no bracket-leg relationship data, so every history row comes back with
+  `role="other"` and `parentId=null` — a consumer cannot reconstruct "which bracket did this
+  leg belong to" from history rows alone (only the open path can do that).
 
 ### Alpaca
 
@@ -242,10 +271,38 @@ same post-fill detachment behavior documented for `modify_bracket`). **Workaroun
 Dracul**: to observe a Saxo leg's fill, poll `get_positions`/`get_account` for the net
 effect, or (once available) a Saxo activity/trades endpoint — not covered by this change.
 
+## `get_closed_positions` — field list, range filter, Alpaca gap
+
+```json
+{ "closedPositions": [ { "symbol": "...", "uic": "...", "openPrice": "...",
+  "closePrice": "...", "amount": "...", "profitLoss": "...", "clientRef": "...",
+  "openTime": "...", "closeTime": "...", "openingPositionId": "..." } ],
+  "supported": false, "windowLimited": true, "note": "..." }
+```
+
+- `openTime`/`closeTime`: nullable ISO-8601 timestamps of when the position was opened
+  and closed.
+- `openingPositionId`: nullable. **This is a Saxo *position* id, not an order id** — it
+  correlates a closed position back to the position that opened it, but it cannot be
+  passed to `get_order_by_ref` or any order-oriented tool.
+- `get_closed_positions(connection, from?, to?)`: `from`/`to` are optional ISO-8601 UTC
+  bounds on close time. On Saxo these are applied as a **client-side filter over the
+  broker's current rolling window**, not a broadened server-side query — Saxo's closed
+  positions view only ever covers its own rolling window, so `from`/`to` narrows what's
+  already in that window rather than fetching further back. Whenever `from` or `to` is
+  given, the response carries `"windowLimited": true` plus a `note` explaining this.
+- **Alpaca**: no native closed-positions source. The response comes back with
+  `"supported": false`, an empty `closedPositions` array, and a `note` pointing the
+  consumer at `get_orders` instead (Alpaca's order history carries the same fill data a
+  consumer would otherwise read off a closed position).
+
 ## Summary of gaps left explicitly documented (not guessed, not fixed)
 
 1. **Saxo flatten** partial-close truncates to whole units with no lot-size table —
    fine for ordinary equities, unverified/likely-wrong for fractional-unit asset classes.
-2. **Saxo orders** never expose `filledQty`/`avgFillPrice` — `/port/v1/orders/me` is an
-   open-orders view and a verified fill-detail field could not be confirmed without live
-   credentials.
+2. **Saxo orders — open path only.** `filledQty`/`avgFillPrice` are still always null on
+   the **open** path (`/port/v1/orders/me`), which remains a pure open-orders view. They
+   are **now populated on the history path** (`/cs/v1/audit/orderactivities`, entered via
+   `from`/`to` or `status ∈ {closed, all}`) — at the cost of losing bracket-leg role/parent
+   info on that path (see the Saxo two-endpoint split above). No remaining gap for reading
+   a Saxo fill; the trade-off is which endpoint (and which fields) you get it from.

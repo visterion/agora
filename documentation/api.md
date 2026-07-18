@@ -261,3 +261,139 @@ All open positions held by the account on the named connection.
 - `asOf`: ISO-8601 instant when the data was fetched
 
 **Availability:** webhook only (requires trading token)
+
+### `get_orders`
+
+Open and historical orders for the account on the named connection. Alpaca serves both
+open and historical orders from one endpoint; Saxo routes to a different endpoint
+depending on whether a date range or a closed/all status is requested (see below).
+
+**Input:**
+```json
+{
+  "connection": "alpaca-paper",
+  "status": "all",
+  "from": "2026-07-01T00:00:00Z",
+  "to": "2026-07-16T00:00:00Z"
+}
+```
+
+**Output:**
+```json
+{
+  "orders": [
+    {
+      "brokerOrderId": "abc123",
+      "clientRef": "dracul-aapl-1",
+      "symbol": "AAPL",
+      "side": "buy",
+      "qty": 100,
+      "type": "market",
+      "status": "filled",
+      "role": "entry",
+      "filledQty": 100,
+      "avgFillPrice": 150.25,
+      "parentId": null,
+      "submittedAt": "2026-07-10T14:30:00Z",
+      "filledAt": "2026-07-10T14:30:02Z"
+    }
+  ],
+  "asOf": "2026-07-16T14:30:00Z"
+}
+```
+
+**Response fields:**
+- `brokerOrderId`: broker-native order id
+- `clientRef`: opaque client reference, when the broker supports one; omitted otherwise
+- `symbol`: ticker symbol
+- `side`: `buy` or `sell`
+- `qty`: order quantity
+- `type`: order type (broker-native string)
+- `status`: order status (broker-native string)
+- `role`: `entry` for a bracket's parent order, `stop_loss`/`take_profit` for its legs,
+  `other` for a standalone order or a Saxo history row (see below); always present
+- `filledQty`/`avgFillPrice`: nullable, omitted when the broker doesn't supply them.
+  Alpaca always returns `filledQty` (`0` when unfilled); Saxo returns both as `null` on
+  the open path and populated on the history path (see below)
+- `parentId`: the parent order's `brokerOrderId` for a bracket leg, `null` for a
+  top-level order; always `null` on Saxo's history path (no leg-relationship data there)
+- `submittedAt`/`filledAt`: nullable ISO-8601 timestamps, omitted when not supplied
+- `asOf`: ISO-8601 instant when the data was fetched
+
+**`from`/`to`:** optional ISO-8601 UTC bounds on order submission time.
+- Alpaca: mapped to `after`/`until` — boundary-exclusive on Alpaca.
+- Saxo: presence of `from`/`to` (or `status` in `closed`/`all`) routes the call to the
+  history endpoint (`/cs/v1/audit/orderactivities`, `EntryType=Last`) instead of the
+  open-orders endpoint (`/port/v1/orders/me`); see [`exit-tools.md`](exit-tools.md) for
+  the full two-endpoint contract, including the `role`/`parentId` trade-off on history
+  rows.
+
+**Availability:** webhook only (requires trading token)
+
+### `get_closed_positions`
+
+Closed (already-settled) positions on the named connection, with real broker fill
+prices/P&L — for reconciling a position that closed at the broker (e.g. stopped out)
+between reconcile cycles. Saxo only; Alpaca has no native closed-position source (see
+below).
+
+**Input:**
+```json
+{
+  "connection": "saxo-sim",
+  "from": "2026-07-01T00:00:00Z",
+  "to": "2026-07-16T00:00:00Z"
+}
+```
+
+**Output (Saxo):**
+```json
+{
+  "closedPositions": [
+    {
+      "symbol": "AAPL",
+      "uic": "211",
+      "openPrice": 150.25,
+      "closePrice": 155.30,
+      "amount": 100,
+      "profitLoss": 505.00,
+      "clientRef": "dracul-aapl-1",
+      "openTime": "2026-07-10T14:30:02Z",
+      "closeTime": "2026-07-15T20:00:00Z",
+      "openingPositionId": "posid-789"
+    }
+  ],
+  "windowLimited": true,
+  "note": "saxo closed positions cover only the broker's current rolling window, not full history — from/to is a client-side filter over that window"
+}
+```
+
+**Output (Alpaca — unsupported):**
+```json
+{
+  "closedPositions": [],
+  "supported": false,
+  "note": "alpaca: no native closed-position source — use get_orders"
+}
+```
+
+**Response fields:**
+- `symbol`, `uic`, `openPrice`, `closePrice`, `amount`, `profitLoss`: as reported by the
+  broker; `clientRef` omitted when unavailable
+- `openTime`/`closeTime`: nullable ISO-8601 timestamps of when the position was opened
+  and closed
+- `openingPositionId`: nullable. This is a Saxo **position** id, not an order id — it
+  correlates a closed position back to the position that opened it, and cannot be passed
+  to `get_order_by_ref` or any order-oriented tool
+- `supported`: `false` on Alpaca (present only in that case); Saxo omits this field
+- `windowLimited`: `true` whenever `from`/`to` was given, since Saxo's closed positions
+  view only ever covers its own rolling window — `from`/`to` narrows what's already in
+  that window rather than fetching further history
+- `note`: present alongside `supported:false` or `windowLimited:true`, explaining the
+  limitation
+
+**`from`/`to`:** optional ISO-8601 UTC bounds on close time. On Saxo, applied client-side
+over the broker's rolling window (see `windowLimited` above); ignored on Alpaca (always
+`supported:false`).
+
+**Availability:** webhook only (requires trading token)
