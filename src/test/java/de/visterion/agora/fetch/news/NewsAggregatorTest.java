@@ -86,7 +86,15 @@ class NewsAggregatorTest {
                 provider("finnhub", List.of(fromFinnhub)),
                 provider("rss:yahoo-rss", List.of(fromFeed))), 200)
                 .aggregate("AAPL", FROM, TO, Set.of());
-        assertThat(result.items()).containsExactly(fromFinnhub);
+        assertThat(result.items()).hasSize(1);
+        NewsItem actual = result.items().get(0);
+        assertThat(actual.headline()).isEqualTo(fromFinnhub.headline());
+        assertThat(actual.summary()).isEqualTo(fromFinnhub.summary());
+        assertThat(actual.source()).isEqualTo(fromFinnhub.source());
+        assertThat(actual.sourceType()).isEqualTo(fromFinnhub.sourceType());
+        assertThat(actual.datetime()).isEqualTo(fromFinnhub.datetime());
+        assertThat(actual.url()).isEqualTo(fromFinnhub.url());
+        assertThat(actual.domain()).isEqualTo("x.com");
     }
 
     // ---- sort + cap ----
@@ -251,5 +259,28 @@ class NewsAggregatorTest {
         // Wall-clock proof: the hanging provider must not stall the aggregate past the budget
         // (generous ceiling for CI jitter, still far below any provider timeout).
         assertThat(elapsedMs).isLessThan(5_000L);
+    }
+
+    // ---- domain derivation (T1.4) ----
+
+    @Test void derivesLowercaseHostAndStripsLeadingWww() {
+        assertThat(NewsAggregator.deriveDomain("https://WWW.Reuters.com/markets/some-article")).isEqualTo("reuters.com");
+        assertThat(NewsAggregator.deriveDomain("http://finance.yahoo.com/news/a.html?.tsrc=rss")).isEqualTo("finance.yahoo.com");
+    }
+
+    @Test void nullBlankGarbageAndHostlessUrlsYieldNullDomain() {
+        assertThat(NewsAggregator.deriveDomain(null)).isNull();
+        assertThat(NewsAggregator.deriveDomain("  ")).isNull();
+        assertThat(NewsAggregator.deriveDomain("ht tp://%% not a url")).isNull();
+        assertThat(NewsAggregator.deriveDomain("/relative/path/only")).isNull();
+    }
+
+    @Test void aggregateSetsDomainOnEveryMergedItem() {
+        NewsProvider p = provider("finnhub", List.of(
+                item("with host", "https://www.reuters.com/a", "news", T1),
+                item("urlless", "", "news", T2)));
+        var result = new NewsAggregator(List.of(p), 200).aggregate("AAPL", FROM, TO, Set.of());
+        assertThat(result.items()).extracting(NewsItem::domain)
+                .containsExactlyInAnyOrder("reuters.com", null);
     }
 }
