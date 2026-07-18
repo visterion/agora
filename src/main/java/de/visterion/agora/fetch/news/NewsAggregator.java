@@ -28,7 +28,8 @@ import java.util.concurrent.TimeoutException;
  * datetime descending (nulls last), optional sourceTypes filter (before the cap), cap at
  * maxItems. Failed or over-budget providers degrade to per-provider warnings (partial
  * results); only a total failure (or no configured provider) throws.
- * Domain derivation (lowercase host, www.-stripped, null on unparsable) is centralized here after merge — providers never set it.
+ * Domain derivation (lowercase host, www.-stripped, null on unparsable) is
+ * centralized here after merge — providers never set it.
  */
 public class NewsAggregator {
 

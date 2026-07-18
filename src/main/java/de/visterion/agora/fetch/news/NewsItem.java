@@ -14,7 +14,10 @@ import java.time.Instant;
 public record NewsItem(String headline, String summary, String source,
                        String sourceType, Instant datetime, String url, String domain) {
 
-    /** Domain-free convenience constructor for providers: only the aggregator sets {@code domain}. */
+    /**
+     * Domain-free convenience constructor for providers: only the aggregator sets
+     * {@code domain}.
+     */
     public NewsItem(String headline, String summary, String source,
                     String sourceType, Instant datetime, String url) {
         this(headline, summary, source, sourceType, datetime, url, null);
