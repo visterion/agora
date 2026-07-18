@@ -98,6 +98,46 @@ public class YahooCrumbClient {
         return mapper.readTree(body);
     }
 
+    /** quoteSummary: modules-based Yahoo endpoint used for analyst-recommendation +
+     *  company-profile data. Unlike {@link #timeseries}, a well-formed-JSON 404 error
+     *  envelope (e.g. {@code {"quoteSummary":{"result":null,...}}}) is NOT an error here —
+     *  it is returned to the caller as a parsed node so downstream mapping can distinguish
+     *  "no data for this symbol" from "provider unavailable". Only 401/403 (after one
+     *  fresh-crumb retry), 429/5xx, transport failure, and unparseable/non-object bodies
+     *  throw. */
+    public JsonNode quoteSummary(String symbol, String modulesCsv) {
+        String crumb = crumb();
+        String url = quoteSummaryUrl(symbol, modulesCsv, crumb);
+        RawResponse r = getRaw(url);
+        if (r.status() == 401 || r.status() == 403) {
+            lock.lock();
+            try { invalidateCrumb(); } finally { lock.unlock(); }
+            String fresh = crumb();
+            r = getRaw(quoteSummaryUrl(symbol, modulesCsv, fresh));
+            if (r.status() == 401 || r.status() == 403) {
+                throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo " + r.status(), null);
+            }
+        }
+        if (r.status() == 429 || r.status() >= 500) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo " + r.status(), null);
+        }
+        JsonNode node;
+        try {
+            node = mapper.readTree(r.body());
+        } catch (Exception e) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo unparseable", e);
+        }
+        if (node == null || node.isMissingNode() || !node.isObject()) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo empty/non-object", null);
+        }
+        return node;
+    }
+
+    private String quoteSummaryUrl(String symbol, String modulesCsv, String crumb) {
+        return query2 + "/v10/finance/quoteSummary/" + enc(symbol)
+                + "?modules=" + enc(modulesCsv) + "&crumb=" + enc(crumb);
+    }
+
     private String timeseriesUrl(String symbol, String typesCsv, String crumb) {
         return query2 + "/ws/fundamentals-timeseries/v1/finance/timeseries/" + enc(symbol)
                 + "?symbol=" + enc(symbol) + "&type=" + enc(typesCsv)
@@ -114,7 +154,17 @@ public class YahooCrumbClient {
         return Optional.empty();
     }
 
-    private String get(String url) {
+    /** Result of a raw HTTP GET: never throws for HTTP-level statuses (including
+     *  401/403/429/5xx) — callers classify the status themselves. Only transport failure
+     *  (unreachable host, malformed URL, etc.) throws, via {@link #getRaw}. */
+    record RawResponse(int status, String body) {}
+
+    /** Non-throwing GET: performs the HTTP request and {@link ProviderCallLogger} logging
+     *  (exactly once, in a finally), but does NOT throw for any HTTP status — it returns
+     *  the status/body pair for the caller to classify. Still throws
+     *  {@link MarketDataException}(UNAVAILABLE) with the original cause on transport
+     *  failure / malformed URL, preserving the cause chain. */
+    RawResponse getRaw(String url) {
         long start = System.nanoTime();
         int status = -1;
         String bodyStr = "";
@@ -126,14 +176,7 @@ public class YahooCrumbClient {
             HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
             status = resp.statusCode();
             bodyStr = resp.body() == null ? "" : resp.body();
-            if (status == 401 || status == 403 || status == 429 || status >= 500) {
-                // 429/5xx are transient: never let the caller parse a Yahoo error envelope as a
-                // clean empty result (that would get cached as a false SPARSE/success by the TTL cache).
-                throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo " + status, null);
-            }
-            return bodyStr;
-        } catch (MarketDataException e) {
-            throw e;
+            return new RawResponse(status, bodyStr);
         } catch (Exception e) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo unreachable: " + e.getMessage(), e);
         } finally {
@@ -147,6 +190,16 @@ public class YahooCrumbClient {
                     userAgent == null ? java.util.Map.of() : java.util.Map.of("User-Agent", userAgent), null,
                     status, bodyStr, (System.nanoTime() - start) / 1_000_000L);
         }
+    }
+
+    private String get(String url) {
+        RawResponse r = getRaw(url);
+        if (r.status() == 401 || r.status() == 403 || r.status() == 429 || r.status() >= 500) {
+            // 429/5xx are transient: never let the caller parse a Yahoo error envelope as a
+            // clean empty result (that would get cached as a false SPARSE/success by the TTL cache).
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "yahoo " + r.status(), null);
+        }
+        return r.body();
     }
 
     /** Best-effort cookie-bootstrap GET: any failure (non-2xx or unreachable) is ignored —
