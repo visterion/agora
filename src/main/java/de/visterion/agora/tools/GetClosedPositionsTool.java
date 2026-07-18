@@ -35,6 +35,10 @@ public class GetClosedPositionsTool implements AgoraTool {
         ObjectNode props = schema.putObject("properties");
         props.putObject("connection").put("type", "string")
                 .put("description", "Target connection id (see list_connections)");
+        props.putObject("from").put("type", "string")
+                .put("description", "ISO-8601 UTC bound on close time; Saxo covers only its rolling window (windowLimited)");
+        props.putObject("to").put("type", "string")
+                .put("description", "ISO-8601 UTC bound on close time; Saxo covers only its rolling window (windowLimited)");
         schema.putArray("required").add("connection");
         return schema;
     }
@@ -44,10 +48,17 @@ public class GetClosedPositionsTool implements AgoraTool {
         if (args == null || !args.hasNonNull("connection"))
             return ToolResult.unavailable("missing required argument: connection");
         String connection = args.get("connection").asString();
-
+        String from = args.hasNonNull("from") ? args.get("from").asString(null) : null;
+        String to = args.hasNonNull("to") ? args.get("to").asString(null) : null;
         try {
-            var closedPositions = broker.closedPositions(connection);
             ObjectNode out = mapper.createObjectNode();
+            if (!broker.supportsClosedPositions(connection)) {
+                out.putArray("closedPositions");
+                out.put("supported", false);
+                out.put("note", "alpaca: no native closed-position source — use get_orders");
+                return ToolResult.ok(out);
+            }
+            var closedPositions = broker.closedPositions(connection, from, to);
             var arr = out.putArray("closedPositions");
             for (ClosedPosition cp : closedPositions) {
                 ObjectNode n = arr.addObject();
@@ -58,6 +69,14 @@ public class GetClosedPositionsTool implements AgoraTool {
                 n.put("amount", cp.amount());
                 n.put("profitLoss", cp.profitLoss());
                 if (cp.clientRef() != null) n.put("clientRef", cp.clientRef());
+                if (cp.openTime() != null) n.put("openTime", cp.openTime());
+                if (cp.closeTime() != null) n.put("closeTime", cp.closeTime());
+                if (cp.openingPositionId() != null) n.put("openingPositionId", cp.openingPositionId());
+            }
+            if (from != null || to != null) {
+                out.put("windowLimited", true);
+                out.put("note", "saxo closed positions cover only the broker's current rolling window, "
+                        + "not full history — from/to is a client-side filter over that window");
             }
             return ToolResult.ok(out);
         } catch (BrokerException e) {

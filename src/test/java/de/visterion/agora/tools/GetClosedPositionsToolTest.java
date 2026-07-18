@@ -72,6 +72,49 @@ class GetClosedPositionsToolTest {
         assertThat(r.error()).contains("connection");
     }
 
+    @Test void unsupportedBrokerEmitsSupportedFalseAndNoteWithoutCallingProvider() {
+        boolean[] called = {false};
+        var stub = new StubBroker() {
+            @Override public boolean supportsClosedPositions() { return false; }
+            @Override public List<ClosedPosition> closedPositions(String from, String to) { called[0] = true; return List.of(); }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("closedPositions").size()).isEqualTo(0);
+        assertThat(r.output().get("supported").asBoolean()).isFalse();
+        assertThat(r.output().get("note").asString()).contains("get_orders");
+        assertThat(called[0]).isFalse();
+    }
+
+    @Test void newFieldsEmittedWhenPresent() {
+        var stub = new StubBroker() {
+            @Override public List<ClosedPosition> closedPositions(String from, String to) {
+                return List.of(new ClosedPosition("ISRG",36313L,new BigDecimal("364.35"),
+                        new BigDecimal("364.10"),new BigDecimal("3"),new BigDecimal("-0.25"),"sig-1",
+                        "2026-07-01T09:00:00Z","2026-07-01T15:30:00Z",998877L));
+            }
+        };
+        var cp = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN))
+                .output().get("closedPositions").get(0);
+        assertThat(cp.get("openTime").asString()).isEqualTo("2026-07-01T09:00:00Z");
+        assertThat(cp.get("closeTime").asString()).isEqualTo("2026-07-01T15:30:00Z");
+        assertThat(cp.get("openingPositionId").asLong()).isEqualTo(998877L);
+    }
+
+    @Test void windowLimitedFlagWhenRangeRequested() {
+        var stub = new StubBroker() {
+            @Override public List<ClosedPosition> closedPositions(String from, String to) { return List.of(); }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN)
+                .put("from", "2026-07-01T00:00:00Z"));
+        assertThat(r.output().get("windowLimited").asBoolean()).isTrue();
+    }
+
+    @Test void noWindowLimitedWhenNoRange() {
+        var r = tool(new StubBroker()).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
+        assertThat(r.output().has("windowLimited")).isFalse();
+    }
+
     static class StubBroker implements BrokerProvider {
         public String name(){return "stub";}
         public OrderResult submitBracket(BracketOrderRequest r){return OrderResult.accepted("oid",r.clientRef(),"accepted");}
