@@ -765,6 +765,38 @@ class AlpacaBrokerProviderTest {
                 });
     }
 
+    @Test
+    void ordersMapsTimestamps() {
+        wm.stubFor(get(urlPathEqualTo("/orders")).willReturn(okJson("""
+            [{"id":"o1","client_order_id":"r1","symbol":"AAPL","side":"buy","qty":"5",
+              "order_type":"limit","status":"filled","filled_qty":"5","filled_avg_price":"150.0",
+              "submitted_at":"2026-07-01T10:00:00Z","filled_at":"2026-07-01T10:00:05Z"}]
+            """)));
+        var os = provider.orders("all", null, null);
+        assertThat(os).hasSize(1);
+        assertThat(os.get(0).submittedAt()).isEqualTo("2026-07-01T10:00:00Z");
+        assertThat(os.get(0).filledAt()).isEqualTo("2026-07-01T10:00:05Z");
+    }
+
+    @Test
+    void ordersPassesFromToAsAfterUntil() {
+        wm.stubFor(get(urlPathEqualTo("/orders")).willReturn(okJson("[]")));
+        provider.orders("all", "2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z");
+        wm.verify(getRequestedFor(urlPathEqualTo("/orders"))
+                .withQueryParam("after", equalTo("2026-07-01T00:00:00Z"))
+                .withQueryParam("until", equalTo("2026-07-02T00:00:00Z")));
+    }
+
+    @Test
+    void supportsClosedPositionsFalse() {
+        assertThat(provider.supportsClosedPositions()).isFalse();
+    }
+
+    @Test
+    void closedPositionsWithRangeStillEmpty() {
+        assertThat(provider.closedPositions("2026-07-01T00:00:00Z", null)).isEmpty();
+    }
+
     // ---- account() ----
 
     @Test
