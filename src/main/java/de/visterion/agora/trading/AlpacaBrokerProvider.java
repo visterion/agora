@@ -396,7 +396,28 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         return List.of();
     }
 
+    /** Not yet implemented for Alpaca — see {@link #closedPositions()}. */
+    @Override
+    public List<ClosedPosition> closedPositions(String from, String to) {
+        return List.of();
+    }
+
+    @Override
+    public boolean supportsClosedPositions() { return false; }
+
     private static final int ORDERS_PAGE_LIMIT = 500;
+
+    /**
+     * Max of two ISO-8601 UTC timestamps (either may be null); the keyset cursor never
+     * precedes the range floor. ISO-8601 strings are lexicographically ordered when both are
+     * UTC {@code ...Z} — Alpaca's {@code submitted_at} cursors and a UTC {@code from} both
+     * are, so a string max is correct here.
+     */
+    private static String maxTimestamp(String a, String b) {
+        if (a == null || a.isBlank()) return b;
+        if (b == null || b.isBlank()) return a;
+        return a.compareTo(b) >= 0 ? a : b;
+    }
 
     /**
      * Requests {@code nested=true} so a bracket parent's response carries its stop-loss/
@@ -412,6 +433,18 @@ public class AlpacaBrokerProvider implements BrokerProvider {
      */
     @Override
     public List<Order> orders(String status) {
+        return orders(status, null, null);
+    }
+
+    /**
+     * M-T6: {@code from}/{@code to} are an additive caller-supplied window, mapped to Alpaca's
+     * {@code after}/{@code until} query params. {@code from} acts as a floor under the keyset
+     * pagination cursor — {@link #maxTimestamp} keeps the effective {@code after} at whichever
+     * of the two is later, so the caller's range floor is never overridden backwards once
+     * pagination has advanced past it.
+     */
+    @Override
+    public List<Order> orders(String status, String from, String to) {
         try {
             List<Order> out = new ArrayList<>();
             String after = null;
@@ -423,7 +456,9 @@ public class AlpacaBrokerProvider implements BrokerProvider {
                                     .queryParam("limit", String.valueOf(ORDERS_PAGE_LIMIT))
                                     .queryParam("direction", "asc");
                             if (status != null && !status.isBlank()) b = b.queryParam("status", status);
-                            if (afterParam != null) b = b.queryParam("after", afterParam);
+                            String effectiveAfter = maxTimestamp(from, afterParam);   // range floor vs keyset cursor
+                            if (effectiveAfter != null) b = b.queryParam("after", effectiveAfter);
+                            if (to != null && !to.isBlank()) b = b.queryParam("until", to);
                             return b.build();
                         })
                         .retrieve()
@@ -622,6 +657,8 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         String role = deriveRole(n, type, parentId);
         BigDecimal filledQty = n.hasNonNull("filled_qty") ? bd(n.path("filled_qty")) : null;
         BigDecimal avgFillPrice = n.hasNonNull("filled_avg_price") ? bd(n.path("filled_avg_price")) : null;
+        String submittedAt = n.path("submitted_at").asString(null);
+        String filledAt = n.path("filled_at").asString(null);
         return new Order(
                 n.path("id").asString(""),
                 n.path("client_order_id").asString(null),
@@ -630,7 +667,8 @@ public class AlpacaBrokerProvider implements BrokerProvider {
                 bd(n.path("qty")),
                 type,
                 n.path("status").asString(""),
-                role, filledQty, avgFillPrice, parentId
+                role, filledQty, avgFillPrice, parentId,
+                submittedAt, filledAt
         );
     }
 
