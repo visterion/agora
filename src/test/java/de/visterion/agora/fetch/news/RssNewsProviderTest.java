@@ -412,4 +412,10 @@ class RssNewsProviderTest {
         // Different host string ("127.0.0.1" vs "localhost") is unaffected by primary's cooldown.
         assertThat(otherHost.companyNews("AAPL", FROM, TO)).hasSize(3);
     }
+
+    @Test void providerLeavesDomainNullOnlyTheAggregatorSetsIt() {
+        stubXml("/rss?s=AAPL", YAHOO_RSS);
+        List<NewsItem> items = feed("yahoo-rss", "/rss?s={symbol}", "news", 5000).companyNews("AAPL", FROM, TO);
+        assertThat(items).allSatisfy(n -> assertThat(n.domain()).isNull());
+    }
 }
