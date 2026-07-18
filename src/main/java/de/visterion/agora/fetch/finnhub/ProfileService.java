@@ -25,26 +25,39 @@ public class ProfileService {
     private final TtlCache<String, Profile> cache;
     private final Set<String> nonUsSuffixes;
     private final ObjectMapper mapper = new ObjectMapper();
+    private final YahooCompanyDataSource yahoo;
+    private final TtlCache<String, Profile> yahooCache;
 
     @Autowired
     public ProfileService(FinnhubClient client,
                           @Value("${agora.data.cache.ttl.fundamentals-seconds:21600}") long ttlSeconds,
-                          @Value("${agora.fundamentals.non-us-suffixes:DE,MI,TO,L,T,HK,PA,AS,SW,AX,ST,CO,OL,HE,MC,BR,LS,VI,IR,NZ}") String nonUsSuffixesCsv) {
-        this(client, ttlSeconds, System::currentTimeMillis, NonUsSuffixes.parse(nonUsSuffixesCsv));
+                          @Value("${agora.fundamentals.non-us-suffixes:DE,MI,TO,L,T,HK,PA,AS,SW,AX,ST,CO,OL,HE,MC,BR,LS,VI,IR,NZ}") String nonUsSuffixesCsv,
+                          @Value("${agora.data.cache.ttl.company-profile-seconds:604800}") long yahooTtlSeconds,
+                          YahooCompanyDataSource yahoo) {
+        this(client, ttlSeconds, System::currentTimeMillis, NonUsSuffixes.parse(nonUsSuffixesCsv), yahooTtlSeconds, yahoo);
     }
 
-    ProfileService(FinnhubClient client, long ttlSeconds, LongSupplier now) {
-        this(client, ttlSeconds, now, NonUsSuffixes.DEFAULT);
+    ProfileService(FinnhubClient client, long ttlSeconds, LongSupplier now, long yahooTtlSeconds, YahooCompanyDataSource yahoo) {
+        this(client, ttlSeconds, now, NonUsSuffixes.DEFAULT, yahooTtlSeconds, yahoo);
     }
 
-    ProfileService(FinnhubClient client, long ttlSeconds, LongSupplier now, Set<String> nonUsSuffixes) {
+    ProfileService(FinnhubClient client, long ttlSeconds, LongSupplier now, Set<String> nonUsSuffixes,
+                    long yahooTtlSeconds, YahooCompanyDataSource yahoo) {
         this.client = client;
         this.cache = new TtlCache<>(ttlSeconds * 1000L, 4096, now);
         this.nonUsSuffixes = nonUsSuffixes;
+        this.yahoo = yahoo;
+        this.yahooCache = new TtlCache<>(yahooTtlSeconds * 1000L, 4096, now);
     }
 
     public Profile profile(String symbol) {
-        if (NonUsSuffixes.isNonUs(symbol, nonUsSuffixes)) return new Profile(symbol, mapper.createObjectNode());
+        if (NonUsSuffixes.isNonUs(symbol, nonUsSuffixes)) {
+            try {
+                return yahooCache.get("profile:" + symbol, () -> yahoo.profile(symbol));
+            } catch (MarketDataException e) {
+                return new Profile(symbol, mapper.createObjectNode());
+            }
+        }
         if (!client.configured())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "finnhub: no api key", null);
         return cache.get("profile:" + symbol, () -> fetch(symbol));
