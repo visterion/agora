@@ -74,6 +74,13 @@ class RssNewsProviderTest {
         </feed>
         """;
 
+    /** Recorded from a real old.reddit.com search feed on 2026-07-18 (entries trimmed to 2, timestamps
+     * normalized into the test window, authors redacted); pins the real item-link host for the
+     * T1.4 credibility seed table. */
+    private static final String REDDIT_ATOM_RECORDED = """
+        <?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/"><category term="stocks" label="r/stocks"/><updated>2026-07-15T20:35:00+00:00</updated><icon>https://www.redditstatic.com/icon.png/</icon><id>/r/stocks/search.rss?q=AAPL&amp;restrict_sr=1&amp;sort=new</id><link rel="self" href="https://old.reddit.com/r/stocks/search.rss?q=AAPL&amp;restrict_sr=1&amp;sort=new" type="application/atom+xml" /><link rel="alternate" href="https://old.reddit.com/r/stocks/search?q=AAPL&amp;restrict_sr=1&amp;sort=new" type="text/html" /><subtitle>The most serious place on Reddit for Stock related discussions!</subtitle><title>stocks: search results - AAPL</title><entry><author><name>/u/redacted</name><uri>https://old.reddit.com/user/redacted</uri></author><category term="stocks" label="r/stocks"/><content type="html">&lt;!-- SC_OFF --&gt;&lt;div class=&quot;md&quot;&gt;&lt;p&gt;Shares of Nvidia briefly dropped about 3% and its market value dipped to $4.84 trillion in early morning trading, while Apple hovered near a $4.88 trillion market value.&lt;/p&gt; &lt;p&gt;Source: &lt;a href=&quot;https://www.cnbc.com/2026/07/17/apple-nvidia-aapl-nvda-market-cap.html&quot;&gt;https://www.cnbc.com/2026/07/17/apple-nvidia-aapl-nvda-market-cap.html&lt;/a&gt;&lt;/p&gt; &lt;/div&gt;&lt;!-- SC_ON --&gt; &amp;#32; submitted by &amp;#32; &lt;a href=&quot;https://old.reddit.com/user/redacted&quot;&gt; /u/redacted &lt;/a&gt; &lt;br/&gt; &lt;span&gt;&lt;a href=&quot;https://old.reddit.com/r/stocks/comments/1uzhtu1/apple_surpassed_nvidia_in_market_value_reclaiming/&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt; &amp;#32; &lt;span&gt;&lt;a href=&quot;https://old.reddit.com/r/stocks/comments/1uzhtu1/apple_surpassed_nvidia_in_market_value_reclaiming/&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt;</content><id>t3_1uzhtu1</id><link href="https://old.reddit.com/r/stocks/comments/1uzhtu1/apple_surpassed_nvidia_in_market_value_reclaiming/" /><updated>2026-07-15T20:35:00+00:00</updated><published>2026-07-15T20:35:00+00:00</published><title>Apple surpassed Nvidia in market value, reclaiming its spot as the world’s most valuable company</title></entry><entry><author><name>/u/redacted</name><uri>https://old.reddit.com/user/redacted</uri></author><category term="stocks" label="r/stocks"/><content type="html">&lt;!-- SC_OFF --&gt;&lt;div class=&quot;md&quot;&gt;&lt;p&gt;This is the daily discussion, so anything stocks related is fine, but the theme for today is on fundamentals.&lt;/p&gt; &lt;p&gt;Useful links:&lt;/p&gt; &lt;ul&gt; &lt;li&gt;&lt;a href=&quot;https://finviz.com/quote.ashx?t=aapl&quot;&gt;FINVIZ&lt;/a&gt; for fundamental data, charts, and aggregated news&lt;/li&gt; &lt;/ul&gt; &lt;/div&gt;&lt;!-- SC_ON --&gt; &amp;#32; submitted by &amp;#32; &lt;a href=&quot;https://old.reddit.com/user/redacted&quot;&gt; /u/redacted &lt;/a&gt; &lt;br/&gt; &lt;span&gt;&lt;a href=&quot;https://old.reddit.com/r/stocks/comments/1uyutpy/rstocks_daily_discussion_fundamentals_friday_jul/&quot;&gt;[link]&lt;/a&gt;&lt;/span&gt; &amp;#32; &lt;span&gt;&lt;a href=&quot;https://old.reddit.com/r/stocks/comments/1uyutpy/rstocks_daily_discussion_fundamentals_friday_jul/&quot;&gt;[comments]&lt;/a&gt;&lt;/span&gt;</content><id>t3_1uyutpy</id><link href="https://old.reddit.com/r/stocks/comments/1uyutpy/rstocks_daily_discussion_fundamentals_friday_jul/" /><updated>2026-07-14T09:30:07+00:00</updated><published>2026-07-14T09:30:07+00:00</published><title>r/Stocks Daily Discussion &amp; Fundamentals Friday Jul 17, 2026</title></entry></feed>
+        """;
+
     private static final String XXE_RSS = """
         <?xml version="1.0"?>
         <!DOCTYPE rss [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
@@ -136,6 +143,16 @@ class RssNewsProviderTest {
         assertThat(first.sourceType()).isEqualTo("social");
         assertThat(first.datetime()).isEqualTo(Instant.parse("2026-07-16T09:15:30Z"));
         assertThat(first.url()).isEqualTo("https://old.reddit.com/r/stocks/comments/1abcd2/aapl_earnings_next_week/");
+    }
+
+    @Test void recordedRealRedditFeedItemLinksResolveToOldRedditHost() {
+        stubXml("/search.rss?q=AAPL", REDDIT_ATOM_RECORDED);
+        List<NewsItem> items = feed("reddit-stocks", "/search.rss?q={symbol}", "social", 5000)
+                .companyNews("AAPL", FROM, TO);
+        assertThat(items).isNotEmpty();
+        for (NewsItem n : items) {
+            assertThat(java.net.URI.create(n.url()).getHost()).isEqualTo("old.reddit.com");
+        }
     }
 
     @Test void decodesXmlEntitiesInTitles() {
