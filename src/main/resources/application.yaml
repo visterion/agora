@@ -161,6 +161,7 @@ agora:
         prices-seconds: ${AGORA_DATA_CACHE_TTL_PRICES:120}         # intraday, fx
         news-seconds: ${AGORA_DATA_CACHE_TTL_NEWS:900}
         fundamentals-seconds: ${AGORA_DATA_CACHE_TTL_FUNDAMENTALS:21600}
+        recommendation-seconds: ${AGORA_DATA_CACHE_TTL_RECOMMENDATION:86400}
         filings-seconds: ${AGORA_DATA_CACHE_TTL_FILINGS:3600}
         constituents-seconds: ${AGORA_DATA_CACHE_TTL_CONSTITUENTS:86400}
         splits-seconds: ${AGORA_DATA_CACHE_TTL_SPLITS:21600}
