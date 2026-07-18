@@ -40,15 +40,18 @@ public class SaxoInstrumentResolver {
     private final RestClient client;
     private final Supplier<String> bearer;
     private final String exchangeId;
+    private final String preferredCurrency;
     private final TtlCache<String, ResolvedInstrument> cache;
     private final LongSupplier nowMillis;
     private final ConcurrentHashMap<String, Long> negativeExpiresAt = new ConcurrentHashMap<>();
 
     public SaxoInstrumentResolver(RestClient client, Supplier<String> bearer,
-                                  String exchangeId, long ttlMillis, LongSupplier nowMillis) {
+                                  String exchangeId, String preferredCurrency,
+                                  long ttlMillis, LongSupplier nowMillis) {
         this.client = client;
         this.bearer = bearer;
         this.exchangeId = (exchangeId == null || exchangeId.isBlank()) ? null : exchangeId;
+        this.preferredCurrency = (preferredCurrency == null || preferredCurrency.isBlank()) ? null : preferredCurrency;
         this.cache = new TtlCache<>(ttlMillis, 2048, nowMillis);
         this.nowMillis = nowMillis;
     }
@@ -113,6 +116,13 @@ public class SaxoInstrumentResolver {
             }
         }
         if (matches.isEmpty()) throw new SymbolResolutionException("unknown symbol: " + symbol);
+        if (matches.size() > 1 && preferredCurrency != null) {
+            List<JsonNode> preferred = new ArrayList<>();
+            for (JsonNode n : matches) {
+                if (preferredCurrency.equalsIgnoreCase(n.path("CurrencyCode").asString(""))) preferred.add(n);
+            }
+            if (preferred.size() == 1) matches = preferred;
+        }
         if (matches.size() > 1) {
             throw new SymbolResolutionException("ambiguous symbol: " + symbol + " — set extra.exchange-id");
         }

@@ -1,6 +1,8 @@
 package de.visterion.agora.data;
 
 import de.visterion.agora.fetch.alpaca.AlpacaDataClient;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClientResponseException;
@@ -14,6 +16,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Broker-first market-data provider backed by the Alpaca Market Data API
@@ -36,14 +39,35 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
     private static final ZoneId MARKET_ZONE = ZoneId.of("America/New_York");
 
     private final AlpacaDataClient client;
+    private final Set<String> nonUsSuffixes;
 
-    public AlpacaMarketDataProvider(AlpacaDataClient client) {
+    /**
+     * Constructor bound by Spring via {@code @Value}. Reuses the same
+     * {@code agora.fundamentals.non-us-suffixes} property fundamentals routing reads, so the
+     * two never drift.
+     */
+    @Autowired
+    public AlpacaMarketDataProvider(AlpacaDataClient client,
+            @Value("${agora.fundamentals.non-us-suffixes:" + NonUsSuffixes.DEFAULT_CSV + "}") String nonUsSuffixesCsv) {
         this.client = client;
+        this.nonUsSuffixes = NonUsSuffixes.parse(nonUsSuffixesCsv);
+    }
+
+    /** Test/back-compat constructor: default non-US suffix set. */
+    public AlpacaMarketDataProvider(AlpacaDataClient client) {
+        this(client, NonUsSuffixes.DEFAULT_CSV);
     }
 
     @Override
     public String name() {
         return "alpaca";
+    }
+
+    /** US-only broker feed: skip non-US instruments so the fallback chain reaches Saxo/Yahoo
+     *  without a wasted 4xx round-trip. */
+    @Override
+    public boolean canServe(Instrument inst) {
+        return !NonUsSuffixes.isNonUs(inst, nonUsSuffixes);
     }
 
     @Override

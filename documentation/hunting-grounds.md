@@ -6,16 +6,17 @@ Agora's data tools resolve through provider plugins with fallback, so consumers 
 
 | Domain | Provider chain | Coverage | Cache TTL |
 |---|---|---|---|
-| Quotes, OHLC, intraday | Alpaca (broker feed, IEX), then Saxo (non-US via `saxo-live` session, Yahoo-suffix symbols), then TwelveData, Finnhub, then Yahoo (keyless fallback) | Equities globally, with 15-min delay on Saxo non-US | 120s (prices) |
+| Quotes | Alpaca (broker feed, IEX), then Saxo (non-US via `saxo-live` session, Yahoo-suffix symbols), then TwelveData, Finnhub, then Yahoo (keyless fallback) | Equities globally, with 15-min delay on Saxo non-US | 300s (`agora.data.cache.ttl.quote-seconds`, `AGORA_DATA_CACHE_TTL_QUOTE`) — split from OHLC to cut repeat provider calls for watchlist/kill-criteria/depot quotes |
+| OHLC, intraday | Alpaca (broker feed, IEX), then Saxo (non-US via `saxo-live` session, Yahoo-suffix symbols), then TwelveData, Finnhub, then Yahoo (keyless fallback) | Equities globally, with 15-min delay on Saxo non-US | 120s (`agora.data.cache.ttl-seconds`, `AGORA_DATA_CACHE_TTL_SECONDS`) — kept short so GUI charts never show a stale "today" partial bar |
 | FX rates | Yahoo FX pairs (optional scheduled warmer) | Major pairs and crosses | 120s |
 
 ## Company data
 
 | Domain | Provider | Coverage | Semantics |
 |---|---|---|---|
-| Company profile (name, industry, exchange, cap) | Finnhub | Finnhub's covered universe | Real-time |
-| Company news | Finnhub | Finnhub's covered universe | Last 100 headlines, real-time |
-| Analyst estimates, recommendation trend | Finnhub | Finnhub's covered universe | Real-time |
+| Company profile (name, industry, exchange, cap) | Finnhub (US); Yahoo `quoteSummary` `assetProfile` fallback for non-US suffixed symbols | Finnhub's covered universe (US), global for non-US via Yahoo | Real-time (US); non-US cached 7d (`agora.data.cache.ttl.company-profile-seconds`, `AGORA_DATA_CACHE_TTL_COMPANY_PROFILE`) — degrades to an empty (non-null) profile, uncached, on Yahoo outage |
+| Company news | Finnhub (US) + region-agnostic RSS feeds; Finnhub skipped for non-US suffixed symbols (empty result, RSS providers still serve foreign news) | Finnhub's covered universe (news), global (RSS) | Last 100 headlines, real-time |
+| Analyst estimates, recommendation trend | Finnhub (US); Yahoo `quoteSummary` `recommendationTrend` fallback for non-US suffixed symbols | Finnhub's covered universe (US), global for non-US via Yahoo | Real-time (US); non-US cached 1d (`agora.data.cache.ttl.recommendation-seconds`, `AGORA_DATA_CACHE_TTL_RECOMMENDATION`) — degrades to an empty list, uncached, on Yahoo outage |
 | Earnings calendar (upcoming + recent) | Finnhub, Yahoo fallback | Finnhub coverage or global Yahoo fallback | Real-time |
 
 ## Fundamentals and SEC filings

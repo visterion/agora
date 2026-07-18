@@ -172,6 +172,51 @@ public class SaxoBrokerProvider implements BrokerProvider {
     }
 
     /**
+     * Maps Saxo {@code GET /port/v1/closedpositions} — the REAL open/close fill prices +
+     * realized P/L of a position that has already closed at the broker (e.g. a bracket that
+     * filled and stopped out between reconcile cycles), as opposed to {@link #positions()}
+     * which only ever sees still-open positions. Same authenticated-call shape as positions()/
+     * account(): ClientKey/AccountKey bound as {@code build(Object...)} template variables
+     * (never hand-concatenated — see the TEMPLATE_AND_VALUES comment on {@link #account()}).
+     *
+     * <p>Field mapping (verified against the Saxo OpenAPI reference for {@code ClosedPosition}):
+     * {@code Uic} → uic, {@code OpenPrice} → openPrice, {@code ClosingPrice} → closePrice
+     * (NOT "ClosePrice"), {@code Amount} → amount, {@code ClosedProfitLoss} → profitLoss
+     * (instrument-currency realized P/L; falls back to {@code ProfitLossOnTrade} if absent),
+     * symbol from the sibling {@code DisplayAndFormat.Symbol} (stripped of the Saxo exchange
+     * suffix, same as positions()/orders()). {@code clientRef} comes from
+     * {@code OpeningExternalReferenceId} — the reference of the order that OPENED the
+     * position, i.e. the original signal's client reference — falling back to
+     * {@code ClosingExternalReferenceId} if the opening one is absent; null if Saxo echoes
+     * neither (closed positions do not always carry an external reference).
+     */
+    @Override
+    public List<ClosedPosition> closedPositions() {
+        AccountContext ctx = accountContext();
+        JsonNode resp = followPagination(getJson("GET /port/v1/closedpositions",
+                b -> b.path("/port/v1/closedpositions")
+                        .queryParam("ClientKey", "{ck}")
+                        .queryParam("AccountKey", "{ak}")
+                        .queryParam("FieldGroups", "{fg}")
+                        .build(ctx.clientKey(), ctx.accountKey(), "ClosedPosition,DisplayAndFormat")));
+        List<ClosedPosition> out = new ArrayList<>();
+        for (JsonNode n : resp.path("Data")) {
+            JsonNode cp = n.path("ClosedPosition");
+            String symbol = baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString(""));
+            long uic = cp.path("Uic").asLong(-1);
+            BigDecimal openPrice = bd(cp.path("OpenPrice"));
+            BigDecimal closePrice = bd(cp.path("ClosingPrice"));
+            BigDecimal amount = bd(cp.path("Amount"));
+            BigDecimal profitLoss = cp.path("ClosedProfitLoss").isMissingNode()
+                    ? bd(cp.path("ProfitLossOnTrade")) : bd(cp.path("ClosedProfitLoss"));
+            String clientRef = textOrNull(cp, "OpeningExternalReferenceId");
+            if (clientRef == null) clientRef = textOrNull(cp, "ClosingExternalReferenceId");
+            out.add(new ClosedPosition(symbol, uic, openPrice, closePrice, amount, profitLoss, clientRef));
+        }
+        return out;
+    }
+
+    /**
      * Flattens each bracket parent's embedded {@code RelatedOpenOrders} legs into the
      * returned list as their own {@link Order} entries with {@code parentId} set to the
      * parent's OrderId, so {@code get_orders} exposes legs individually — mirrors the leg

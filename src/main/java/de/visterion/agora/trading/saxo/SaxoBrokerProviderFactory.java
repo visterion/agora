@@ -37,9 +37,13 @@ public class SaxoBrokerProviderFactory implements BrokerProviderFactory {
                 .baseUrl(cfg.getBaseUrl())
                 .build();
         SaxoTokenStore store = stores.forConnection(connectionId);
+        String preferredCurrency = cfg.getExtra() == null
+                ? "USD"
+                : cfg.getExtra().getOrDefault("preferred-currency", "USD");
         SaxoInstrumentResolver resolver = new SaxoInstrumentResolver(client,
                 store::authorizationHeaderValue,
                 cfg.getExtra() == null ? null : cfg.getExtra().get("exchange-id"),
+                preferredCurrency,
                 86_400_000L, System::currentTimeMillis);
         return new SaxoBrokerProvider(cfg, store, client, resolver);
     }
