@@ -236,6 +236,51 @@ class SaxoBrokerProviderTest {
         assertThat(cps.get(0).clientRef()).isNull();
     }
 
+    @Test void closedPositionsMapsTimestampsAndOpeningPositionId() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
+            {"__count":1,"Data":[{
+              "ClosedPosition":{"Uic":36313,"AssetType":"Stock","Amount":3.0,
+                                 "OpenPrice":364.35,"ClosingPrice":364.10,"ClosedProfitLoss":-0.25,
+                                 "ExecutionTimeOpen":"2026-07-01T09:00:00.000000Z",
+                                 "ExecutionTimeClose":"2026-07-01T15:30:00.000000Z",
+                                 "OpeningPositionId":"998877","OpeningExternalReferenceId":"sig-1"},
+              "DisplayAndFormat":{"Symbol":"ISRG:xnas"}}]}
+            """)));
+        var cps = provider.closedPositions(null, null);
+        assertThat(cps).hasSize(1);
+        assertThat(cps.get(0).openTime()).isEqualTo("2026-07-01T09:00:00.000000Z");
+        assertThat(cps.get(0).closeTime()).isEqualTo("2026-07-01T15:30:00.000000Z");
+        assertThat(cps.get(0).openingPositionId()).isEqualTo(998877L);
+    }
+
+    @Test void closedPositionsRangeFiltersTemporallyOnCloseTime() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
+            {"__count":2,"Data":[
+              {"ClosedPosition":{"Uic":1,"Amount":1.0,"OpenPrice":1,"ClosingPrice":1,"ClosedProfitLoss":0,
+                                 "ExecutionTimeClose":"2026-06-30T23:59:59Z"},
+               "DisplayAndFormat":{"Symbol":"A:xnas"}},
+              {"ClosedPosition":{"Uic":2,"Amount":1.0,"OpenPrice":1,"ClosingPrice":1,"ClosedProfitLoss":0,
+                                 "ExecutionTimeClose":"2026-07-01T00:30:00.000Z"},
+               "DisplayAndFormat":{"Symbol":"B:xnas"}}]}
+            """)));
+        // from with a +02:00 offset that is temporally AFTER the first row but BEFORE the second:
+        // 2026-07-01T02:15:00+02:00 == 2026-07-01T00:15:00Z, which sits strictly between
+        // A's 2026-06-30T23:59:59Z and B's 2026-07-01T00:30:00Z on the instant timeline
+        // (a naive lexicographic string compare would get this wrong).
+        var cps = provider.closedPositions("2026-07-01T02:15:00+02:00", null); // == 2026-07-01T00:15:00Z
+        assertThat(cps).extracting(de.visterion.agora.trading.ClosedPosition::symbol).containsExactly("B");
+    }
+
+    @Test void closedPositionsNullCloseTimeKeptOnlyWithoutRange() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
+            {"__count":1,"Data":[{
+              "ClosedPosition":{"Uic":3,"Amount":1.0,"OpenPrice":1,"ClosingPrice":1,"ClosedProfitLoss":0},
+              "DisplayAndFormat":{"Symbol":"C:xnas"}}]}
+            """)));
+        assertThat(provider.closedPositions(null, null)).hasSize(1);
+        assertThat(provider.closedPositions("2026-01-01T00:00:00Z", null)).isEmpty();
+    }
+
     @Test
     void ordersMapOpenOrdersAndFilterClientSide() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""

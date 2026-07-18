@@ -188,10 +188,26 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * {@code OpeningExternalReferenceId} — the reference of the order that OPENED the
      * position, i.e. the original signal's client reference — falling back to
      * {@code ClosingExternalReferenceId} if the opening one is absent; null if Saxo echoes
-     * neither (closed positions do not always carry an external reference).
+     * neither (closed positions do not always carry an external reference). {@code openTime}/
+     * {@code closeTime} come straight from {@code ExecutionTimeOpen}/{@code ExecutionTimeClose}
+     * (ISO-8601 strings, passed through unparsed). {@code openingPositionId} is the Saxo
+     * *position* id from {@code OpeningPositionId} — there is no order id on a closed position,
+     * only the id of the position that was opened and later closed.
+     *
+     * <p>{@code from}/{@code to} apply a client-side TEMPORAL window filter on {@code closeTime}
+     * (Saxo's closedpositions endpoint has no server-side date-range query): both bounds are
+     * parsed to {@link java.time.Instant} and compared on the instant timeline (not
+     * lexicographically), so mixed UTC offsets/precisions compare correctly. A row whose
+     * closeTime is missing or unparseable is kept only when neither bound is requested — it is
+     * never silently dropped by a range it cannot be judged against.
      */
     @Override
     public List<ClosedPosition> closedPositions() {
+        return closedPositions(null, null);
+    }
+
+    @Override
+    public List<ClosedPosition> closedPositions(String from, String to) {
         AccountContext ctx = accountContext();
         JsonNode resp = followPagination(getJson("GET /port/v1/closedpositions",
                 b -> b.path("/port/v1/closedpositions")
@@ -211,9 +227,41 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     ? bd(cp.path("ProfitLossOnTrade")) : bd(cp.path("ClosedProfitLoss"));
             String clientRef = textOrNull(cp, "OpeningExternalReferenceId");
             if (clientRef == null) clientRef = textOrNull(cp, "ClosingExternalReferenceId");
-            out.add(new ClosedPosition(symbol, uic, openPrice, closePrice, amount, profitLoss, clientRef));
+            String openTime = textOrNull(cp, "ExecutionTimeOpen");
+            String closeTime = textOrNull(cp, "ExecutionTimeClose");
+            Long openingPositionId = parseLongOrNull(textOrNull(cp, "OpeningPositionId"));
+            if (!withinCloseWindow(closeTime, from, to)) continue;
+            out.add(new ClosedPosition(symbol, uic, openPrice, closePrice, amount, profitLoss,
+                    clientRef, openTime, closeTime, openingPositionId));
         }
         return out;
+    }
+
+    /** True if closeTime lies within [from,to] on the instant timeline. Null/unparseable closeTime
+     *  is kept only when neither bound is set (never silently dropped by a range it can't be judged against). */
+    private static boolean withinCloseWindow(String closeTime, String from, String to) {
+        boolean ranged = (from != null && !from.isBlank()) || (to != null && !to.isBlank());
+        if (!ranged) return true;
+        java.time.Instant close = parseInstantOrNull(closeTime);
+        if (close == null) return false;
+        java.time.Instant lo = parseInstantOrNull(from);
+        java.time.Instant hi = parseInstantOrNull(to);
+        if (lo != null && close.isBefore(lo)) return false;
+        if (hi != null && close.isAfter(hi)) return false;
+        return true;
+    }
+
+    private static java.time.Instant parseInstantOrNull(String iso) {
+        if (iso == null || iso.isBlank()) return null;
+        try { return java.time.OffsetDateTime.parse(iso).toInstant(); }
+        catch (java.time.format.DateTimeParseException e) {
+            try { return java.time.Instant.parse(iso); } catch (Exception ignored) { return null; }
+        }
+    }
+
+    private static Long parseLongOrNull(String s) {
+        if (s == null || s.isBlank()) return null;
+        try { return Long.parseLong(s.trim()); } catch (NumberFormatException e) { return null; }
     }
 
     /**
