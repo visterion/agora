@@ -38,6 +38,10 @@ public class GetOrdersTool implements AgoraTool {
                 .put("description", "Target connection id (see list_connections)");
         props.putObject("status").put("type", "string")
                 .put("description", "Filter by order status (e.g. open, closed, all). Optional.");
+        props.putObject("from").put("type", "string")
+                .put("description", "ISO-8601 UTC lower bound on order submission time (broker-mapped, boundary-exclusive on Alpaca). Optional.");
+        props.putObject("to").put("type", "string")
+                .put("description", "ISO-8601 UTC upper bound on order submission time (broker-mapped). Optional.");
         schema.putArray("required").add("connection");
         return schema;
     }
@@ -49,8 +53,10 @@ public class GetOrdersTool implements AgoraTool {
         String connection = args.get("connection").asString();
         String status = args.hasNonNull("status")
                 ? args.get("status").asString(null) : null;
+        String from = args.hasNonNull("from") ? args.get("from").asString(null) : null;
+        String to = args.hasNonNull("to") ? args.get("to").asString(null) : null;
         try {
-            List<Order> orders = broker.orders(connection, status);
+            List<Order> orders = broker.orders(connection, status, from, to);
             ObjectNode out = mapper.createObjectNode();
             ArrayNode arr = out.putArray("orders");
             for (Order o : orders) {
@@ -66,6 +72,8 @@ public class GetOrdersTool implements AgoraTool {
                 if (o.filledQty() != null) node.put("filledQty", o.filledQty());
                 if (o.avgFillPrice() != null) node.put("avgFillPrice", o.avgFillPrice());
                 if (o.parentId() != null) node.put("parentId", o.parentId());
+                if (o.submittedAt() != null) node.put("submittedAt", o.submittedAt());
+                if (o.filledAt() != null) node.put("filledAt", o.filledAt());
             }
             out.put("asOf", java.time.Instant.now().toString());
             return ToolResult.ok(out);
