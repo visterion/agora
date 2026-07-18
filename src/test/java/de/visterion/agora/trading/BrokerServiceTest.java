@@ -108,4 +108,40 @@ class BrokerServiceTest {
         BrokerService svc = new BrokerService(twoConnRegistry(), guard(null));
         assertThat(svc.positions("paper-1")).isEmpty();
     }
+
+    @Test
+    void rangeAndSupportsThreadThroughToProvider() {
+        var captured = new String[3];
+        BrokerProvider rangeStub = new BrokerProvider() {
+            public String name() { return "stub"; }
+            public OrderResult submitBracket(BracketOrderRequest r) { return OrderResult.accepted("oid-1", r.clientRef(), "accepted"); }
+            public OrderResult modifyBracket(String id, String symbol, BigDecimal s, BigDecimal t) { return OrderResult.accepted(id, null, "replaced"); }
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) { return OrderResult.accepted("oid-2", null, "accepted"); }
+            public List<Position> positions() { return List.of(); }
+            public List<ClosedPosition> closedPositions() { return List.of(); }
+            public List<Order> orders(String status) { return List.of(); }
+            @Override public List<Order> orders(String status, String from, String to) {
+                captured[0] = status; captured[1] = from; captured[2] = to;
+                return List.of();
+            }
+            @Override public boolean supportsClosedPositions() { return false; }
+            public Account account() { return new Account("acc-P", BigDecimal.TEN, BigDecimal.TEN, BigDecimal.TEN, "USD", "ACTIVE"); }
+            public Order orderByClientRef(String ref) { return new Order("oid-1", ref, "AAPL", "buy", BigDecimal.ONE, "limit", "new"); }
+            public OrderResult cancel(String id) { return OrderResult.accepted(id, null, "canceled"); }
+            public void probe() {}
+        };
+        Map<String, ConnectionConfig> conns = new LinkedHashMap<>();
+        conns.put("paper-1", cfg(ConnectionConfig.Environment.PAPER));
+        ConnectionsProperties props = new ConnectionsProperties();
+        props.setConnections(conns);
+        BrokerProviderFactory f = new BrokerProviderFactory() {
+            public String provider() { return "stub"; }
+            public BrokerProvider create(String connectionId, ConnectionConfig cfg) { return rangeStub; }
+        };
+        BrokerService svc = new BrokerService(new ConnectionRegistry(props, List.of(f)), guard(null));
+
+        svc.orders("paper-1", "all", "2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z");
+        assertThat(captured).containsExactly("all", "2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z");
+        assertThat(svc.supportsClosedPositions("paper-1")).isFalse();
+    }
 }
