@@ -275,6 +275,17 @@ public class SaxoBrokerProvider implements BrokerProvider {
      */
     @Override
     public List<Order> orders(String status) {
+        return orders(status, null, null);
+    }
+
+    @Override
+    public List<Order> orders(String status, String from, String to) {
+        boolean history = (from != null && !from.isBlank()) || (to != null && !to.isBlank())
+                || (status != null && (status.equalsIgnoreCase("closed") || status.equalsIgnoreCase("all")));
+        return history ? ordersHistory(status, from, to) : ordersOpen(status);
+    }
+
+    private List<Order> ordersOpen(String status) {
         JsonNode resp = followPagination(getJson("/port/v1/orders/me?FieldGroups=DisplayAndFormat"));
         List<Order> out = new ArrayList<>();
         for (JsonNode n : resp.path("Data")) {
@@ -294,6 +305,55 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     }
                 }
             }
+        }
+        return out;
+    }
+
+    /**
+     * Saxo filled/closed order HISTORY via the Client-Services audit trail
+     * (/cs/v1/audit/orderactivities), used when a date range is given or status ∈ {closed, all}.
+     * EntryType=Last collapses each order's activity trail to its latest state (one row per
+     * order). Carries real fills (AveragePrice/FilledAmount) + ActivityTime, but NO bracket-leg
+     * structure — role is always "other", parentId null (leg linkage is a live-orders concept).
+     * The open-orders path (/port/v1/orders/me) is unchanged and still used for every non-history call.
+     */
+    private List<Order> ordersHistory(String status, String from, String to) {
+        AccountContext ctx = accountContext();
+        JsonNode resp = followPagination(getJson("GET /cs/v1/audit/orderactivities",
+                b -> {
+                    var ub = b.path("/cs/v1/audit/orderactivities")
+                            .queryParam("EntryType", "Last")
+                            .queryParam("ClientKey", "{ck}")
+                            .queryParam("AccountKey", "{ak}")
+                            .queryParam("FieldGroups", "DisplayAndFormat")
+                            .queryParam("$top", "500");
+                    if (from != null && !from.isBlank()) ub = ub.queryParam("FromDateTime", "{fd}");
+                    if (to != null && !to.isBlank()) ub = ub.queryParam("ToDateTime", "{td}");
+                    // Bind only the template vars that were added, in order.
+                    if (from != null && !from.isBlank() && to != null && !to.isBlank())
+                        return ub.build(ctx.clientKey(), ctx.accountKey(), from, to);
+                    if (from != null && !from.isBlank())
+                        return ub.build(ctx.clientKey(), ctx.accountKey(), from);
+                    if (to != null && !to.isBlank())
+                        return ub.build(ctx.clientKey(), ctx.accountKey(), to);
+                    return ub.build(ctx.clientKey(), ctx.accountKey());
+                }));
+        List<Order> out = new ArrayList<>();
+        for (JsonNode n : resp.path("Data")) {
+            String symbol = baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString(""));
+            if (symbol.isBlank()) symbol = "?";
+            BigDecimal filledQty = n.path("FilledAmount").isMissingNode() ? null : bd(n.path("FilledAmount"));
+            BigDecimal avgFillPrice = n.path("AveragePrice").isMissingNode() ? null : bd(n.path("AveragePrice"));
+            out.add(new Order(
+                    n.path("OrderId").asString(""),
+                    textOrNull(n, "ExternalReference"),
+                    symbol,
+                    n.path("BuySell").asString("").toLowerCase(java.util.Locale.ROOT),
+                    bd(n.path("Amount")),
+                    n.path("OrderType").asString("").toLowerCase(java.util.Locale.ROOT),
+                    n.path("Status").asString("").toLowerCase(java.util.Locale.ROOT),
+                    "other", filledQty, avgFillPrice, null,
+                    null, textOrNull(n, "ActivityTime")));
         }
         return out;
     }
