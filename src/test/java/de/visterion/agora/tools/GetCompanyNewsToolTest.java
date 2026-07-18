@@ -113,4 +113,26 @@ class GetCompanyNewsToolTest {
         assertThat(schema.get("properties").get("sourceTypes").get("description").asString())
                 .contains("news").contains("social");
     }
+
+    @Test void serializesDomainPerItem() {
+        var withDomain = new NewsItem("Apple beats", "s", "Reuters", "news",
+                Instant.ofEpochSecond(1749600000L), "https://www.reuters.com/x", "reuters.com");
+        var tool = new GetCompanyNewsTool(mockAggregator(
+                new AggregatedNews(List.of(withDomain), List.of())));
+        var r = tool.call(mapper.createObjectNode().put("symbol", "AAPL"));
+        assertThat(r.output().get("news").get(0).get("domain").asString()).isEqualTo("reuters.com");
+    }
+
+    @Test void nullDomainSerializesAsExplicitJsonNull() {
+        var tool = new GetCompanyNewsTool(mockAggregator(
+                new AggregatedNews(List.of(newsItem(Instant.ofEpochSecond(1L))), List.of())));
+        var r = tool.call(mapper.createObjectNode().put("symbol", "AAPL"));
+        assertThat(r.output().get("news").get(0).has("domain")).isTrue();
+        assertThat(r.output().get("news").get(0).get("domain").isNull()).isTrue();
+    }
+
+    @Test void descriptionDocumentsDomainField() {
+        assertThat(new GetCompanyNewsTool(Mockito.mock(NewsAggregator.class)).description())
+                .contains("domain");
+    }
 }
