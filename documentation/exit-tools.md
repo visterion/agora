@@ -240,7 +240,12 @@ submission time, broker-mapped:
   `avgFillPrice` ← `AveragePrice`, `submittedAt`/`filledAt` ← `ActivityTime`. **Trade-off**:
   this endpoint has no bracket-leg relationship data, so every history row comes back with
   `role="other"` and `parentId=null` — a consumer cannot reconstruct "which bracket did this
-  leg belong to" from history rows alone (only the open path can do that).
+  leg belong to" from history rows alone (only the open path can do that). On the history
+  path, `status ∈ {closed, all}` acts purely as a **router** that selects this audit
+  endpoint — it does **not** filter the returned rows. Each returned order carries its
+  real Saxo status (e.g. `fill`/`finalfill`/`cancelled`) for the consumer to filter
+  client-side; Saxo's audit `Status` values (`Placed`/`Changed`/`Fill`/`FinalFill`/
+  `Cancelled`/`Expired`) don't map onto the generic `closed`/`all` routing keywords.
 
 ### Alpaca
 

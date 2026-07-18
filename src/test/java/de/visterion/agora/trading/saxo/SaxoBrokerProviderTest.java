@@ -384,6 +384,27 @@ class SaxoBrokerProviderTest {
                 .withQueryParam("ToDateTime", equalTo("2026-07-02T00:00:00Z")));
     }
 
+    @Test void ordersHistoryFromOnlyOmitsToDateTime() {
+        wm.stubFor(get(urlPathEqualTo("/cs/v1/audit/orderactivities")).willReturn(okJson("{\"Data\":[]}")));
+        provider.orders(null, "2026-07-01T00:00:00Z", null);
+        wm.verify(getRequestedFor(urlPathEqualTo("/cs/v1/audit/orderactivities"))
+                .withQueryParam("FromDateTime", equalTo("2026-07-01T00:00:00Z"))
+                .withoutQueryParam("ToDateTime"));
+    }
+
+    @Test void ordersHistoryExplicitNullFillFieldsMapToNull() {
+        wm.stubFor(get(urlPathEqualTo("/cs/v1/audit/orderactivities")).willReturn(okJson("""
+            {"Data":[{"OrderId":"7002","ExternalReference":"ref-n","BuySell":"Buy","Amount":2.0,
+                      "OrderType":"Market","Status":"Placed","FilledAmount":null,"AveragePrice":null,
+                      "ActivityTime":"2026-07-01T15:30:00.000000Z",
+                      "DisplayAndFormat":{"Symbol":"ISRG:xnas"}}]}
+            """)));
+        var os = provider.orders("all", null, null);
+        assertThat(os).hasSize(1);
+        assertThat(os.get(0).filledQty()).isNull();
+        assertThat(os.get(0).avgFillPrice()).isNull();
+    }
+
     @Test
     void serverErrorOnReadIsUnavailable() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(aResponse().withStatus(503)));
