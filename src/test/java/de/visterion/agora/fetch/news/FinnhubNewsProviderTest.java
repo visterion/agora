@@ -95,4 +95,11 @@ class FinnhubNewsProviderTest {
         s.companyNews("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-01-08"));
         wm.verify(1, getRequestedFor(urlPathEqualTo("/company-news")));
     }
+
+    @Test void providerLeavesDomainNullOnlyTheAggregatorSetsIt() {
+        wm.stubFor(get(urlPathEqualTo("/company-news"))
+                .willReturn(okJson("[{\"headline\":\"h\",\"datetime\":1,\"url\":\"https://www.reuters.com/a\",\"source\":\"s\",\"summary\":\"x\"}]")));
+        List<NewsItem> news = svc("k").companyNews("AAPL", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-01-08"));
+        assertThat(news.get(0).domain()).isNull();
+    }
 }

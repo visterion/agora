@@ -28,6 +28,7 @@ import java.util.concurrent.TimeoutException;
  * datetime descending (nulls last), optional sourceTypes filter (before the cap), cap at
  * maxItems. Failed or over-budget providers degrade to per-provider warnings (partial
  * results); only a total failure (or no configured provider) throws.
+ * Domain derivation (lowercase host, www.-stripped, null on unparsable) is centralized here after merge — providers never set it.
  */
 public class NewsAggregator {
 
@@ -78,6 +79,7 @@ public class NewsAggregator {
                     "all news providers failed: " + String.join("; ", warnings), null);
 
         List<NewsItem> merged = merge(results);
+        merged.replaceAll(NewsAggregator::withDomain);
         if (wanted != null)
             merged.removeIf(n -> n.sourceType() == null
                     || !wanted.contains(n.sourceType().toLowerCase(Locale.ROOT)));
@@ -159,6 +161,25 @@ public class NewsAggregator {
                     + u.getHost().toLowerCase(Locale.ROOT)
                     + (u.getPath() == null ? "" : u.getPath());
         } catch (URISyntaxException e) {
+            return null;
+        }
+    }
+
+    private static NewsItem withDomain(NewsItem n) {
+        return new NewsItem(n.headline(), n.summary(), n.source(), n.sourceType(),
+                n.datetime(), n.url(), deriveDomain(n.url()));
+    }
+
+    /** Lowercase URL host with a leading {@code www.} prefix stripped; null for
+     *  null/blank/unparsable URLs or URLs without a host — never an error (T1.4). */
+    static String deriveDomain(String url) {
+        if (url == null || url.isBlank()) return null;
+        try {
+            String host = new URI(url.trim()).getHost();
+            if (host == null) return null;
+            host = host.toLowerCase(Locale.ROOT);
+            return host.startsWith("www.") ? host.substring("www.".length()) : host;
+        } catch (URISyntaxException | RuntimeException e) {
             return null;
         }
     }
