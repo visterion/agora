@@ -262,14 +262,15 @@ its clientRef, you get the parent row only; to see its legs, call `get_orders` i
 (mirrors the leg-detection pattern already used by `modify_bracket`/`place_bracket`'s
 follow-up lookup): `role="entry"` for a parent with `OrderRelation="IfDoneMaster"`, else
 `"other"`; a leg's role is derived from its own `OpenOrderType` (`Stop*` → `stop_loss`,
-`Limit` → `take_profit`). **Genuine gap, left undone rather than guessed**:
-`filledQty`/`avgFillPrice` are **always null for every Saxo order**.
-`/port/v1/orders/me` is an *open*-orders endpoint, and this implementation could not
-verify — without live Saxo credentials in this sandbox — a reliable fill-qty/fill-price
-field on it (a filled bracket leg likely disappears from this endpoint entirely, per the
-same post-fill detachment behavior documented for `modify_bracket`). **Workaround for
-Dracul**: to observe a Saxo leg's fill, poll `get_positions`/`get_account` for the net
-effect, or (once available) a Saxo activity/trades endpoint — not covered by this change.
+`Limit` → `take_profit`). **Partial gap, open path only**: `filledQty`/`avgFillPrice` are
+**always null on the open path** (`/port/v1/orders/me`), which remains a pure
+open-orders view (a filled bracket leg likely disappears from this endpoint entirely, per
+the same post-fill detachment behavior documented for `modify_bracket`). They **are
+populated on the history path** (`/cs/v1/audit/orderactivities`, entered via `from`/`to`
+or `status ∈ {closed, all}`) — see the Saxo two-endpoint split above for the trade-off
+(history rows lose bracket-leg `role`/`parentId`). **For Dracul**: to read a Saxo leg's
+fill, call `get_orders` with a `from`/`to` range or `status ∈ {closed, all}` rather than
+the default open-path call.
 
 ## `get_closed_positions` — field list, range filter, Alpaca gap
 
