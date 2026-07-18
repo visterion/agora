@@ -28,8 +28,9 @@ public class GetCompanyNewsTool implements AgoraTool {
     public String name() { return "get_company_news"; }
     public String description() {
         return "Recent company news headlines for a symbol, merged from multiple sources. "
-                + "Each item carries sourceType (news|social); partial provider failures are "
-                + "reported in a top-level warnings array.";
+                + "Each item carries sourceType (news|social) and domain (lowercase url host "
+                + "without www., null when the url is missing or unparsable); partial provider "
+                + "failures are reported in a top-level warnings array.";
     }
 
     public ObjectNode inputSchema() {
@@ -82,6 +83,8 @@ public class GetCompanyNewsTool implements AgoraTool {
                 if (n.datetime() == null) o.putNull("datetime");
                 else o.put("datetime", n.datetime().toString());
                 o.put("url", n.url());
+                if (n.domain() == null) o.putNull("domain");
+                else o.put("domain", n.domain());
             }
             if (!agg.warnings().isEmpty()) {
                 ArrayNode w = out.putArray("warnings");
