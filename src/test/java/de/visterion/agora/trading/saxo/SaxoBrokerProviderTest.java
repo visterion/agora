@@ -343,6 +343,47 @@ class SaxoBrokerProviderTest {
                 .isEqualTo(BrokerException.Kind.NOT_FOUND);
     }
 
+    @Test void ordersNoRangeStillHitsOpenEndpoint() {  // C1 regression guard
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[{"OrderId":"5001","Uic":211,"BuySell":"Buy","Amount":10.0,"OpenOrderType":"Limit",
+                      "Status":"Working","ExternalReference":"ref-1","DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        assertThat(provider.orders("working", null, null)).hasSize(1);
+        assertThat(provider.orders("filled", null, null)).isEmpty();  // client-side filter, open endpoint
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/cs/v1/audit/orderactivities")));
+    }
+
+    @Test void ordersHistoryPathRoutesToAuditWithFills() {
+        wm.stubFor(get(urlPathEqualTo("/cs/v1/audit/orderactivities")).willReturn(okJson("""
+            {"Data":[{"OrderId":"7001","ExternalReference":"ref-h","BuySell":"Sell","Amount":4.0,
+                      "OrderType":"Market","Status":"FinalFill","FilledAmount":4.0,"AveragePrice":151.25,
+                      "ActivityTime":"2026-07-01T15:30:00.000000Z",
+                      "DisplayAndFormat":{"Symbol":"ISRG:xnas"}}]}
+            """)));
+        var os = provider.orders("all", null, null);
+        assertThat(os).hasSize(1);
+        var o = os.get(0);
+        assertThat(o.brokerOrderId()).isEqualTo("7001");
+        assertThat(o.clientRef()).isEqualTo("ref-h");
+        assertThat(o.symbol()).isEqualTo("ISRG");
+        assertThat(o.side()).isEqualTo("sell");
+        assertThat(o.filledQty()).isEqualByComparingTo("4.0");
+        assertThat(o.avgFillPrice()).isEqualByComparingTo("151.25");
+        assertThat(o.filledAt()).isEqualTo("2026-07-01T15:30:00.000000Z");
+        assertThat(o.role()).isEqualTo("other");
+        assertThat(o.parentId()).isNull();
+        wm.verify(getRequestedFor(urlPathEqualTo("/cs/v1/audit/orderactivities"))
+                .withQueryParam("EntryType", equalTo("Last")));
+    }
+
+    @Test void ordersRangeRoutesToAuditWithFromToDateTime() {
+        wm.stubFor(get(urlPathEqualTo("/cs/v1/audit/orderactivities")).willReturn(okJson("{\"Data\":[]}")));
+        provider.orders(null, "2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z");
+        wm.verify(getRequestedFor(urlPathEqualTo("/cs/v1/audit/orderactivities"))
+                .withQueryParam("FromDateTime", equalTo("2026-07-01T00:00:00Z"))
+                .withQueryParam("ToDateTime", equalTo("2026-07-02T00:00:00Z")));
+    }
+
     @Test
     void serverErrorOnReadIsUnavailable() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(aResponse().withStatus(503)));
