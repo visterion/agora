@@ -44,4 +44,26 @@ class GetCompanyProfileToolTest {
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("symbol").asString("")).isEqualTo("SAP.DE");
     }
+
+    @Test void nonUs_withSector_okAndFinnhubIndustry() {
+        ProfileService svc = Mockito.mock(ProfileService.class);
+        var profile = mapper.createObjectNode().put("finnhubIndustry", "Technology");
+        when(svc.profile("SAP.DE")).thenReturn(new Profile("SAP.DE", profile));
+
+        var r = new GetCompanyProfileTool(svc).call(mapper.createObjectNode().put("symbol", "SAP.DE"));
+
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("profile").get("finnhubIndustry").asString("")).isEqualTo("Technology");
+    }
+
+    @Test void nonUs_degradedEmptyProfile_okNoNpe() {
+        ProfileService svc = Mockito.mock(ProfileService.class);
+        when(svc.profile("SAP.DE")).thenReturn(new Profile("SAP.DE", mapper.createObjectNode()));
+
+        var r = new GetCompanyProfileTool(svc).call(mapper.createObjectNode().put("symbol", "SAP.DE"));
+
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("profile").isObject()).isTrue();
+        assertThat(r.output().get("profile").isEmpty()).isTrue();
+    }
 }

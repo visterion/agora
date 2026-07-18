@@ -162,6 +162,7 @@ agora:
         news-seconds: ${AGORA_DATA_CACHE_TTL_NEWS:900}
         fundamentals-seconds: ${AGORA_DATA_CACHE_TTL_FUNDAMENTALS:21600}
         recommendation-seconds: ${AGORA_DATA_CACHE_TTL_RECOMMENDATION:86400}
+        company-profile-seconds: ${AGORA_DATA_CACHE_TTL_COMPANY_PROFILE:604800}   # non-US Yahoo profile fallback (rarely changes)
         filings-seconds: ${AGORA_DATA_CACHE_TTL_FILINGS:3600}
         constituents-seconds: ${AGORA_DATA_CACHE_TTL_CONSTITUENTS:86400}
         splits-seconds: ${AGORA_DATA_CACHE_TTL_SPLITS:21600}
