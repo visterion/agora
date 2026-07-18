@@ -107,8 +107,8 @@ Extensible without rebuild: mount YAML and set `AGORA_RESEARCH_INDICATORS_FILE`.
 | `list_connections` | Active connections (id, provider, environment, probe) |
 | `get_account` | Equity, buying power, cash, status |
 | `get_positions` | Open positions |
-| `get_closed_positions` | Closed positions with real broker fill prices/P&L (Saxo only) |
-| `get_orders` | Open and recent orders |
+| `get_closed_positions` | Closed positions with real fill prices/P&L + open/close time (Saxo); Alpaca signals supported:false → use get_orders. Optional from/to. |
+| `get_orders` | Open + historical orders with fills; Alpaca native, Saxo history via audit trail. Optional from/to. |
 | `get_order_by_ref` | Lookup by opaque `client_ref` |
 | `place_bracket` | Entry + stop-loss + take-profit |
 | `modify_bracket` | Change stop-loss and/or take-profit |
