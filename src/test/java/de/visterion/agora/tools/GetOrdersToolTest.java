@@ -96,6 +96,42 @@ class GetOrdersToolTest {
         assertThat(r.error()).contains("connection");
     }
 
+    @Test void fromToPassedToProvider() {
+        var captured = new String[2];
+        var stub = new StubBroker() {
+            @Override public List<Order> orders(String status, String from, String to) {
+                captured[0] = from; captured[1] = to; return List.of();
+            }
+        };
+        tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN)
+                .put("from", "2026-07-01T00:00:00Z").put("to", "2026-07-02T00:00:00Z"));
+        assertThat(captured).containsExactly("2026-07-01T00:00:00Z", "2026-07-02T00:00:00Z");
+    }
+
+    @Test void timestampsEmittedWhenPresentOmittedWhenNull() {
+        var stub = new StubBroker() {
+            @Override public List<Order> orders(String status, String from, String to) {
+                return List.of(
+                    new Order("o1","r1","AAPL","buy",new BigDecimal("5"),"limit","filled","entry",
+                              new BigDecimal("5"),new BigDecimal("150"),null,
+                              "2026-07-01T10:00:00Z","2026-07-01T10:00:05Z"),
+                    new Order("o2",null,"MSFT","buy",new BigDecimal("1"),"limit","new"));
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
+        var arr = r.output().get("orders");
+        assertThat(arr.get(0).get("submittedAt").asString()).isEqualTo("2026-07-01T10:00:00Z");
+        assertThat(arr.get(0).get("filledAt").asString()).isEqualTo("2026-07-01T10:00:05Z");
+        assertThat(arr.get(1).has("submittedAt")).isFalse();
+        assertThat(arr.get(1).has("filledAt")).isFalse();
+    }
+
+    @Test void schemaDeclaresFromAndTo() {
+        var props = tool(new StubBroker()).inputSchema().get("properties");
+        assertThat(props.has("from")).isTrue();
+        assertThat(props.has("to")).isTrue();
+    }
+
     static class StubBroker implements BrokerProvider {
         public String name(){return "stub";}
         public OrderResult submitBracket(BracketOrderRequest r){return OrderResult.accepted("oid",r.clientRef(),"accepted");}
