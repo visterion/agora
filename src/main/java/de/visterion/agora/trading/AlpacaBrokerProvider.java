@@ -657,6 +657,11 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         String role = deriveRole(n, type, parentId);
         BigDecimal filledQty = n.hasNonNull("filled_qty") ? bd(n.path("filled_qty")) : null;
         BigDecimal avgFillPrice = n.hasNonNull("filled_avg_price") ? bd(n.path("filled_avg_price")) : null;
+        // Schema-inferred, not live-verified: Alpaca's documented order schema carries
+        // limit_price/stop_price (snake_case JSON string or null) on every order object,
+        // parent and legs[] entries alike — read defensively, null when absent.
+        BigDecimal limitPrice = n.hasNonNull("limit_price") ? bd(n.path("limit_price")) : null;
+        BigDecimal stopPrice = n.hasNonNull("stop_price") ? bd(n.path("stop_price")) : null;
         String submittedAt = n.path("submitted_at").asString(null);
         String filledAt = n.path("filled_at").asString(null);
         return new Order(
@@ -667,7 +672,7 @@ public class AlpacaBrokerProvider implements BrokerProvider {
                 bd(n.path("qty")),
                 type,
                 n.path("status").asString(""),
-                role, filledQty, avgFillPrice, parentId,
+                role, filledQty, avgFillPrice, limitPrice, stopPrice, parentId,
                 submittedAt, filledAt
         );
     }
