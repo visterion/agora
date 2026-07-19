@@ -1166,6 +1166,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
         if (symbol.isBlank()) {
             symbol = (fallbackSymbol != null && !fallbackSymbol.isBlank()) ? fallbackSymbol : "?";
         }
+        BigDecimal[] prices = classifyPrice(n, type);
         return new Order(
                 n.path("OrderId").asString(""),
                 n.path("ExternalReference").asString(null),
@@ -1174,7 +1175,36 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 bd(n.path("Amount")),
                 type,
                 n.path("Status").asString("").toLowerCase(Locale.ROOT),
-                deriveRole(n, type, parentId), null, null, parentId);
+                deriveRole(n, type, parentId), null, null, prices[0], prices[1], parentId, null, null);
+    }
+
+    /**
+     * Maps Saxo's own price field to limitPrice/stopPrice — {@code Price} on a bracket parent,
+     * {@code OrderPrice} on a leg embedded in {@code RelatedOpenOrders} (a parent never carries
+     * OrderPrice, a leg never carries Price, so reading Price-else-OrderPrice covers both
+     * shapes). Classified by the node's own {@code OpenOrderType} (already lowercased, {@code
+     * type} param): a stop type ({@code type.contains("stop")}, e.g. StopIfTraded/Stop/
+     * TriggerStop/TrailingStopIfTraded) maps the price to stopPrice, otherwise (Limit,
+     * TriggerLimit, Market, ...) to limitPrice. {@code StopLimitPrice}, when present (a
+     * StopLimit order's limit sub-price, live-verified via {@link #submitBracket}'s
+     * {@code slLimit} branch), is treated as limitPrice while the Price/OrderPrice value
+     * becomes stopPrice regardless of the contains("stop") check — defensive, not live-verified
+     * on a get_orders response. {@code hasNonNull} guards keep an absent field genuinely null,
+     * never the zero-defaulting {@link #bd(JsonNode)} behavior.
+     *
+     * @return a 2-element array: {@code [limitPrice, stopPrice]}
+     */
+    private static BigDecimal[] classifyPrice(JsonNode n, String type) {
+        BigDecimal price = n.hasNonNull("Price") ? bd(n.path("Price"))
+                : n.hasNonNull("OrderPrice") ? bd(n.path("OrderPrice")) : null;
+        BigDecimal stopLimitPrice = n.hasNonNull("StopLimitPrice") ? bd(n.path("StopLimitPrice")) : null;
+        if (stopLimitPrice != null) {
+            return new BigDecimal[] { stopLimitPrice, price };
+        }
+        if (type.contains("stop")) {
+            return new BigDecimal[] { null, price };
+        }
+        return new BigDecimal[] { price, null };
     }
 
     private static String deriveRole(JsonNode n, String type, String parentId) {
