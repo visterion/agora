@@ -201,8 +201,8 @@ further fallback, and every bracket reject (regardless of code) is logged for di
 ```json
 { "brokerOrderId": "...", "clientRef": "...", "symbol": "...", "side": "buy|sell",
   "qty": "...", "type": "...", "status": "...", "role": "entry|stop_loss|take_profit|other",
-  "filledQty": "...", "avgFillPrice": "...", "parentId": "...",
-  "submittedAt": "...", "filledAt": "..." }
+  "filledQty": "...", "avgFillPrice": "...", "limitPrice": "...", "stopPrice": "...",
+  "parentId": "...", "submittedAt": "...", "filledAt": "..." }
 ```
 
 - `role`: `"entry"` for a bracket's parent order, `"stop_loss"`/`"take_profit"` for its
@@ -213,6 +213,10 @@ further fallback, and every bracket reject (regardless of code) is logged for di
   consumer determines "which bracket leg filled at what price"**: call `get_orders`,
   filter to `parentId == <bracket orderId>`, and read `status`/`filledQty`/`avgFillPrice`
   on the matching leg row.
+- `limitPrice`/`stopPrice`: nullable `BigDecimal`, broker-dependent (see the Saxo/Alpaca
+  subsections below) — an order's limit and/or stop price. A plain market order carries
+  neither; a bracket's take-profit leg typically carries only `limitPrice`, its stop-loss
+  leg typically carries only `stopPrice`, and a stop-limit order may carry both.
 - `submittedAt`/`filledAt`: nullable ISO-8601 timestamps, omitted when the broker doesn't
   supply them (never fabricated).
 
@@ -261,6 +265,12 @@ so it's populated, not null, for every order). `avgFillPrice` ← `filled_avg_pr
 returns only the matched order itself. **Minor gap**: if you look up a bracket parent by
 its clientRef, you get the parent row only; to see its legs, call `get_orders` instead.
 
+`limitPrice`/`stopPrice` ← Alpaca's documented `limit_price`/`stop_price` fields (JSON
+string or null), read on every order object, parent and `legs[]` entries alike. **Schema-
+inferred, not live-verified**: mapped defensively from Alpaca's published order schema
+(no live paper/live account trace captured for this), so both fields are read via a
+null-safe guard and simply come back null if the field is absent or unexpectedly shaped.
+
 ### Saxo
 
 `get_orders` flattens each bracket parent's embedded `RelatedOpenOrders[]` the same way
@@ -276,6 +286,17 @@ or `status ∈ {closed, all}`) — see the Saxo two-endpoint split above for the
 (history rows lose bracket-leg `role`/`parentId`). **For Dracul**: to read a Saxo leg's
 fill, call `get_orders` with a `from`/`to` range or `status ∈ {closed, all}` rather than
 the default open-path call.
+
+`limitPrice`/`stopPrice` ← the node's own `Price` (bracket parent) or `OrderPrice` (a leg
+embedded in `RelatedOpenOrders`), classified by the node's own `OpenOrderType`: a stop
+type (contains "Stop", e.g. `StopIfTraded`/`Stop`/`TriggerStop`/`TrailingStopIfTraded`)
+maps to `stopPrice`, otherwise (`Limit`, `TriggerLimit`, `Market`, ...) to `limitPrice`. A
+`StopLimit` order's `StopLimitPrice`, when present, is treated as `limitPrice` while
+`Price`/`OrderPrice` becomes `stopPrice` (defensive — not live-verified). **Live-verified**:
+this mapping was checked against a real Saxo SIM bracket response captured in prod logs
+(parent `Price:182.53`; take-profit leg `OpenOrderType:Limit, OrderPrice:226.03`;
+stop-loss leg `OpenOrderType:StopIfTraded, OrderPrice:168.03`) — the open path only, same
+as `filledQty`/`avgFillPrice` above; the history path never carries these price fields.
 
 ## `get_closed_positions` — field list, range filter, Alpaca gap
 

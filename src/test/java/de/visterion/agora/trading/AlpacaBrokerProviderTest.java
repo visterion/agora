@@ -691,6 +691,42 @@ class AlpacaBrokerProviderTest {
     }
 
     @Test
+    void orders_parsesLimitAndStopPriceOnParentAndLegs_nullWhenAbsent() {
+        // Schema-inferred, not live-verified (see AlpacaBrokerProvider#parseOrder docstring):
+        // Alpaca's documented order schema carries limit_price/stop_price on every order
+        // object, parent and legs[] alike, JSON string or null.
+        wm.stubFor(get(urlPathEqualTo("/orders"))
+                .willReturn(okJson("""
+                    [
+                      {"id":"oid-parent","client_order_id":"ref-p","symbol":"MSFT",
+                       "side":"buy","qty":"3","order_type":"limit","status":"new",
+                       "order_class":"bracket","limit_price":"200.00","stop_price":null,
+                       "legs":[
+                         {"id":"leg-stop","type":"stop","symbol":"MSFT","side":"sell",
+                          "qty":"3","status":"new","limit_price":null,"stop_price":"168.03"},
+                         {"id":"leg-limit","type":"limit","symbol":"MSFT","side":"sell",
+                          "qty":"3","status":"new","limit_price":"226.03"}
+                       ]}
+                    ]
+                    """)));
+
+        var orders = provider.orders(null);
+
+        assertThat(orders).hasSize(3);
+        var parent = orders.get(0);
+        assertThat(parent.limitPrice()).isEqualByComparingTo("200.00");
+        assertThat(parent.stopPrice()).isNull();
+
+        var stopLeg = orders.get(1);
+        assertThat(stopLeg.stopPrice()).isEqualByComparingTo("168.03");
+        assertThat(stopLeg.limitPrice()).isNull();
+
+        var tpLeg = orders.get(2);
+        assertThat(tpLeg.limitPrice()).isEqualByComparingTo("226.03");
+        assertThat(tpLeg.stopPrice()).isNull();
+    }
+
+    @Test
     void orders_withStatus_sendsQueryParam() {
         wm.stubFor(get(urlPathEqualTo("/orders"))
                 .withQueryParam("status", equalTo("all"))
