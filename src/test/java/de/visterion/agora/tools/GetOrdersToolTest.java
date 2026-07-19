@@ -126,6 +126,29 @@ class GetOrdersToolTest {
         assertThat(arr.get(1).has("filledAt")).isFalse();
     }
 
+    @Test void limitAndStopPriceEmittedWhenPresentOmittedWhenNull() {
+        var stub = new StubBroker() {
+            @Override public List<Order> orders(String status, String from, String to) {
+                return List.of(
+                    new Order("o1","r1","AAPL","sell",new BigDecimal("5"),"limit","working","take_profit",
+                              null,null,new BigDecimal("226.03"),null,"parent-1",
+                              null,null),
+                    new Order("o2","r2","AAPL","sell",new BigDecimal("5"),"stopiftraded","working","stop_loss",
+                              null,null,null,new BigDecimal("168.03"),"parent-1",
+                              null,null),
+                    new Order("o3",null,"MSFT","buy",new BigDecimal("1"),"market","new"));
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
+        var arr = r.output().get("orders");
+        assertThat(arr.get(0).get("limitPrice").decimalValue()).isEqualByComparingTo("226.03");
+        assertThat(arr.get(0).has("stopPrice")).isFalse();
+        assertThat(arr.get(1).get("stopPrice").decimalValue()).isEqualByComparingTo("168.03");
+        assertThat(arr.get(1).has("limitPrice")).isFalse();
+        assertThat(arr.get(2).has("limitPrice")).isFalse();
+        assertThat(arr.get(2).has("stopPrice")).isFalse();
+    }
+
     @Test void schemaDeclaresFromAndTo() {
         var props = tool(new StubBroker()).inputSchema().get("properties");
         assertThat(props.has("from")).isTrue();

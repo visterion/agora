@@ -330,6 +330,40 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void ordersOpen_parsesLimitAndStopPriceFromSaxo() {
+        // Real Saxo SIM bracket response captured in prod logs (see docstring on
+        // SaxoBrokerProvider#classifyPrice): parent carries its price in "Price", each leg in
+        // RelatedOpenOrders carries it in "OrderPrice".
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"__count":1,"Data":[{"OpenOrderType":"Limit","OrderId":"5039279121","OrderRelation":"IfDoneMaster",
+              "Price":182.53,
+              "DisplayAndFormat":{"Symbol":"STT:xnys"},"BuySell":"Buy","Amount":6.0,"Status":"Working",
+              "RelatedOpenOrders":[
+                {"OpenOrderType":"Limit","OrderId":"5039279122","OrderPrice":226.03,"Status":"NotWorking"},
+                {"OpenOrderType":"StopIfTraded","OrderId":"5039279123","OrderPrice":168.03,"Status":"NotWorking"}
+              ]}]}
+            """)));
+
+        var all = provider.orders(null);
+        assertThat(all).hasSize(3);
+
+        var parent = all.get(0);
+        assertThat(parent.brokerOrderId()).isEqualTo("5039279121");
+        assertThat(parent.limitPrice()).isEqualByComparingTo("182.53");
+        assertThat(parent.stopPrice()).isNull();
+
+        var tpLeg = all.get(1);
+        assertThat(tpLeg.brokerOrderId()).isEqualTo("5039279122");
+        assertThat(tpLeg.limitPrice()).isEqualByComparingTo("226.03");
+        assertThat(tpLeg.stopPrice()).isNull();
+
+        var slLeg = all.get(2);
+        assertThat(slLeg.brokerOrderId()).isEqualTo("5039279123");
+        assertThat(slLeg.stopPrice()).isEqualByComparingTo("168.03");
+        assertThat(slLeg.limitPrice()).isNull();
+    }
+
+    @Test
     void orderByClientRefFindsMatchOr404() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
             {"Data":[{"OrderId":"5001","BuySell":"Buy","Amount":1.0,"OpenOrderType":"Limit",
