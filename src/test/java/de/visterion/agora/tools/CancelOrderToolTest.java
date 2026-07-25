@@ -1,6 +1,7 @@
 package de.visterion.agora.tools;
 
 import de.visterion.agora.tool.ToolResult;
+import de.visterion.agora.trading.BrokerException;
 import de.visterion.agora.trading.BrokerService;
 import de.visterion.agora.trading.OrderResult;
 import de.visterion.agora.trading.TestConnections;
@@ -23,6 +24,48 @@ class CancelOrderToolTest {
         assertThat(r.output().path("accepted").asBoolean()).isTrue();
         assertThat(r.output().path("status").asString()).isEqualTo("canceled");
         assertThat(tool.namespace()).isEqualTo("trading");
+    }
+
+    // A cancel for an order the broker does not know is a DEFINITE answer, not an outage. It is
+    // deliberately NOT reported as an idempotent success: "gone" is ambiguous at the broker
+    // (already cancelled/expired -> intent fulfilled, OR filled -> a live position exists, OR a
+    // wrong id). Dracul's gateway cancelOrder() is void and treats any non-throwing return as
+    // "cancelled", flipping the book row to CANCELLED -- doing that for a filled entry would
+    // orphan a real, unguarded position. So the tool returns a distinguishable business
+    // rejection: available=true, accepted=false, rejectCode=NOT_FOUND.
+    @Test void notFoundIsADistinguishableNegativeNotAnOutage() {
+        BrokerService broker = mock(BrokerService.class);
+        when(broker.cancel(TestConnections.CONN, "gone-1"))
+                .thenThrow(new BrokerException(BrokerException.Kind.NOT_FOUND, "Order not found: gone-1", null));
+        var tool = new CancelOrderTool(broker);
+        ToolResult r = tool.call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("orderId", "gone-1"));
+
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().path("accepted").asBoolean()).isFalse();
+        assertThat(r.output().path("rejectCode").asString()).isEqualTo("NOT_FOUND");
+        assertThat(r.output().path("rejectReason").asString()).contains("gone-1");
+        assertThat(r.output().path("orderId").asString()).isEqualTo("gone-1");
+    }
+
+    @Test void aRealOutageStaysUnavailable() {
+        BrokerService broker = mock(BrokerService.class);
+        when(broker.cancel(TestConnections.CONN, "oid-1"))
+                .thenThrow(new BrokerException(BrokerException.Kind.UNAVAILABLE, "saxo auth failed", null));
+        ToolResult r = new CancelOrderTool(broker).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("orderId", "oid-1"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("saxo auth failed");
+    }
+
+    @Test void notReadyStaysUnavailable() {
+        BrokerService broker = mock(BrokerService.class);
+        when(broker.cancel(TestConnections.CONN, "oid-1"))
+                .thenThrow(new BrokerException(BrokerException.Kind.NOT_READY, "saxo rate limited", null));
+        ToolResult r = new CancelOrderTool(broker).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("orderId", "oid-1"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("saxo rate limited");
     }
 
     @Test void missingOrderId_unavailable() {

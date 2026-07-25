@@ -65,6 +65,19 @@ public class GetOrderByRefTool implements AgoraTool {
             if (o.parentId() != null) order.put("parentId", o.parentId());
             return ToolResult.ok(out);
         } catch (BrokerException e) {
+            if (e.kind() == BrokerException.Kind.NOT_FOUND) {
+                // An unknown clientRef is a NEGATIVE RESULT, not an outage: the caller asks "is
+                // there an order with this ref?", and the answer is "no". Reported as unavailable,
+                // Dracul could not tell the case apart from "broker down" and treated it as a
+                // retriable BROKER_ERROR -- from 2026-07-25 its adoption guard thereby blocked
+                // every tranche-2 placement for signals with an error history.
+                //
+                // Only NOT_FOUND is reclassified. UNAVAILABLE and NOT_READY are real outages and
+                // stay unavailable, so the caller keeps treating them as retriable.
+                ObjectNode out = mapper.createObjectNode();
+                out.putNull("order");
+                return ToolResult.ok(out);
+            }
             return ToolResult.unavailable(e.getMessage());
         }
     }

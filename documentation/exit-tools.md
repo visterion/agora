@@ -261,6 +261,34 @@ caller must reconcile before retrying — read back by `clientRef` (`get_order_b
 adopt an existing order instead of placing a second one. Dracul does exactly this on the
 entry path.
 
+## `get_order_by_ref` — an unknown ref is a negative result, not an outage
+
+An unknown `clientRef` returns `available:true` with `{"order": null}` — "the lookup ran
+fine, there is no such order". It is **not** an `unavailable` error envelope. Genuine
+outages (broker down, not ready / rate-limited) still return `available:false`, so the
+caller can tell "no such order" apart from "ask again later" and retry only the latter.
+
+This matters precisely for the reconcile-then-retry flow above: a caller adopting an
+order by `clientRef` must be able to read "none exists" as a green light to place, rather
+than as a broker failure that blocks the placement.
+
+## `cancel_order` — an unknown order id is a rejection, not an outage
+
+Cancelling an order id the broker does not know returns `available:true` with
+`accepted:false`, `rejectCode:"NOT_FOUND"` and the broker's message in `rejectReason` —
+a definite "this did not happen", not a retriable transport failure. Real outages
+(broker down, not ready / rate-limited) still return `available:false`.
+
+Note the deliberate asymmetry with `get_order_by_ref`: there, "not found" is flattened
+into a plain success (`order:null`), because the question was "does it exist?" and "no"
+is the complete answer. For a cancel it is **not** reported as an idempotent success,
+because at the broker "not found" is ambiguous — the order may be already cancelled or
+expired (intent fulfilled), it may have **filled** and left the working book (a live
+position exists), or the id may simply be wrong. A silent success would let a caller book
+a filled entry as "cancelled" and stop guarding a real position. The distinguishable
+rejection lets a caller that can reconcile order/position state branch on `NOT_FOUND`,
+while a caller that cannot keeps the safe reading: "did not happen", not "retry me".
+
 ## `get_orders` / `get_order_by_ref` — field list
 
 ```json

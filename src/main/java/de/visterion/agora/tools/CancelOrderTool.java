@@ -24,7 +24,9 @@ public class CancelOrderTool implements AgoraTool {
     @Override public String namespace() { return "trading"; }
 
     @Override public String description() {
-        return "Cancel an open order by broker order id.";
+        return "Cancel an open order by broker order id. An unknown order id is reported as a "
+                + "result, not an outage: accepted=false with rejectCode NOT_FOUND (the order may "
+                + "already be cancelled, expired or filled) -- do not retry it.";
     }
 
     @Override public ObjectNode inputSchema() {
@@ -60,6 +62,36 @@ public class CancelOrderTool implements AgoraTool {
             }
             return ToolResult.ok(out);
         } catch (BrokerException e) {
+            if (e.kind() == BrokerException.Kind.NOT_FOUND) {
+                // An order id the broker does not know is a DEFINITE answer, not an outage:
+                // reported as unavailable it looks like "broker down", which invites the caller
+                // into a retry loop that can never succeed.
+                //
+                // But unlike get_order_by_ref this is deliberately NOT flattened into an
+                // idempotent success. At the broker, "not found" is ambiguous:
+                //   (a) the order is already cancelled/expired -- the caller's intent is met, or
+                //   (b) the order FILLED and left the working book -- a live position exists, or
+                //   (c) the id was simply wrong.
+                // Nothing in the DELETE response tells these apart. Dracul's consumer
+                // (AgoraExecutionGateway.cancelOrder -> EntryExpiryService.cancelFully) is void
+                // and reads any non-throwing return as "cancelled", flipping the book row to
+                // CANCELLED. Doing that for case (b) would orphan a real, unguarded position --
+                // a direct breach of the always-guarded principle. A cancel that wrongly claims
+                // success is more dangerous than one that wrongly reports a problem.
+                //
+                // So we report the conservative, DISTINGUISHABLE outcome: a business rejection
+                // (available=true, accepted=false) carrying rejectCode=NOT_FOUND. Callers that
+                // can resolve the ambiguity (e.g. by reconciling the order/position state) can
+                // branch on that code; callers that cannot keep the safe old behaviour, since
+                // accepted=false already means "did not happen" rather than "retry me".
+                ObjectNode out = mapper.createObjectNode();
+                out.put("accepted", false);
+                out.put("orderId", orderId);
+                out.put("rejectReason", e.getMessage());
+                out.put("rejectCode", "NOT_FOUND");
+                return ToolResult.ok(out);
+            }
+            // UNAVAILABLE / NOT_READY are real outages and stay retriable.
             return ToolResult.unavailable(e.getMessage());
         }
     }
