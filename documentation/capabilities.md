@@ -116,7 +116,10 @@ Extensible without rebuild: mount YAML and set `AGORA_RESEARCH_INDICATORS_FILE`.
 | `flatten` | Close entire position via market order |
 
 **Brokers:** Alpaca (paper/live), Saxo (headless OAuth). Selected per connection, no
-cross-broker fallback on a single call. Exit contract details: [`exit-tools.md`](exit-tools.md).
+cross-broker fallback on a single call. Order placements are **not** idempotent on the
+broker side — Saxo's `X-Request-ID` is a per-attempt key, so a caller retrying after a
+timeout must reconcile via `get_order_by_ref` first. Exit contract details:
+[`exit-tools.md`](exit-tools.md).
 
 ---
 
