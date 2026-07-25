@@ -486,6 +486,59 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void bracketWithoutTakeProfitOmitsTheTakeProfitLeg() {
+        // Entry + Stop, no take-profit. The capability existed only inside the far-stop
+        // fallback so far; here it becomes the regular case (Dracul places tranche 2 without
+        // a take-profit because Saxo rejects a 3R target with TooFarFromEntryOrder).
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9003"}]}
+            """)));
+
+        var req = new de.visterion.agora.trading.BracketOrderRequest(
+                "AAPL", "buy", new java.math.BigDecimal("1"), "limit", "gtc",
+                new java.math.BigDecimal("100"), new java.math.BigDecimal("90"), null,
+                null, "ref-no-tp");
+
+        var r = provider.submitBracket(req);
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.brokerOrderId()).isEqualTo("9001");
+
+        var posts = wm.findAll(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        assertThat(posts).hasSize(1);
+        var orders = new tools.jackson.databind.ObjectMapper()
+                .readTree(posts.get(0).getBodyAsString()).path("Orders");
+        assertThat(orders.size()).isEqualTo(1);
+        assertThat(orders.get(0).path("OrderType").asString()).isIn("StopIfTraded", "StopLimit");
+        assertThat(orders.get(0).path("OrderPrice").asString()).isEqualTo("90");
+        assertThat(orders.get(0).path("BuySell").asString()).isEqualTo("Sell");
+    }
+
+    @Test
+    void bracketWithTakeProfitIsUnchanged() {
+        // Backwards compatibility: existing callers keep setting the value.
+        // Leg order stays TP (index 0) then stop (index 1).
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
+            """)));
+
+        var r = provider.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isTrue();
+
+        var posts = wm.findAll(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        assertThat(posts).hasSize(1);
+        var orders = new tools.jackson.databind.ObjectMapper()
+                .readTree(posts.get(0).getBodyAsString()).path("Orders");
+        assertThat(orders.size()).isEqualTo(2);
+        assertThat(orders.get(0).path("OrderType").asString()).isEqualTo("Limit");
+        assertThat(orders.get(0).path("OrderPrice").asString()).isEqualTo("110");
+        assertThat(orders.get(1).path("OrderType").asString()).isEqualTo("StopIfTraded");
+    }
+
+    @Test
     void submitBracketSellSideFlipsChildBuySell() {
         stubInstrument();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""

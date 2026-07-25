@@ -116,6 +116,23 @@ class AlpacaBrokerProviderTest {
     }
 
     @Test
+    void alpacaRejectsAMissingTakeProfit() {
+        // Alpaca's "bracket" order class requires both legs. The correct alternative would be
+        // order_class=oto, whose semantics are not verified here — instead of guessing, the
+        // case is refused explicitly (and NOT with a NullPointerException).
+        var req = new BracketOrderRequest(
+                "AAPL", "buy", new BigDecimal("1"), "limit", "gtc",
+                new BigDecimal("190"), new BigDecimal("180"), null,
+                null, "ref-no-tp");
+
+        assertThatThrownBy(() -> provider.submitBracket(req))
+                .isNotInstanceOf(NullPointerException.class)
+                .isInstanceOf(BrokerException.class)
+                .hasMessageContaining("take-profit");
+        wm.verify(0, postRequestedFor(urlEqualTo("/orders")));
+    }
+
+    @Test
     void submitBracket_500_throwsUnavailable() {
         wm.stubFor(post(urlEqualTo("/orders"))
                 .willReturn(aResponse().withStatus(500)));

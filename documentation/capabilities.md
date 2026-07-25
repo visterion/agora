@@ -110,7 +110,7 @@ Extensible without rebuild: mount YAML and set `AGORA_RESEARCH_INDICATORS_FILE`.
 | `get_closed_positions` | Closed positions with real fill prices/P&L + open/close time (Saxo); Alpaca signals supported:false → use get_orders. Optional from/to. |
 | `get_orders` | Open + historical orders with fills; Alpaca native, Saxo history via audit trail. Optional from/to. |
 | `get_order_by_ref` | Lookup by opaque `client_ref` |
-| `place_bracket` | Entry + stop-loss + take-profit |
+| `place_bracket` | Entry + stop-loss, optional take-profit (omit `takeProfitLimit` → entry+stop only; Saxo only) |
 | `modify_bracket` | Change stop-loss and/or take-profit |
 | `cancel_order` | Cancel by broker order id |
 | `flatten` | Close entire position via market order |

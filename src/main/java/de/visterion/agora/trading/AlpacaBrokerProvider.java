@@ -60,6 +60,16 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         if (req.stopLossLimit() != null) stopLoss.put("limit_price", req.stopLossLimit().toPlainString());
         body.set("stop_loss", stopLoss);
 
+        if (req.takeProfitLimit() == null) {
+            // Alpaca's "bracket" order class requires both legs. The correct alternative would
+            // be order_class=oto, whose semantics are not verified here — instead of guessing,
+            // the case is refused explicitly. Dracul trades via depot-1 (saxo-sim) and is
+            // unaffected.
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "alpaca bracket requires a take-profit leg (order_class=bracket); "
+                            + "use saxo for entry-plus-stop orders", null);
+        }
+
         ObjectNode takeProfit = MAPPER.createObjectNode();
         takeProfit.put("limit_price", req.takeProfitLimit().toPlainString());
         body.set("take_profit", takeProfit);

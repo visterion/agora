@@ -150,6 +150,24 @@ brokers. If the requested leg still isn't found by either lookup (e.g. only a TP
 exists and a stop change was requested), the call is rejected with `LEG_NOT_FOUND`
 rather than silently PATCHing the wrong order.
 
+## `place_bracket` — optional take-profit
+
+`takeProfitLimit` is **optional**. Omit it to place an entry plus a protective stop and
+no take-profit leg — the shape needed when a synthesised target (e.g. 3R) sits outside
+Saxo's proximity band and would otherwise get the whole bracket rejected with
+`400 TooFarFromEntryOrder`. It is the same body the far-stop fallback below produces,
+only requested deliberately instead of reached reactively after a reject.
+
+- **Saxo**: supported. The child `Orders[]` array then carries the stop leg only, and
+  `takeProfitLegId` is absent from the response.
+- **Alpaca**: rejected — `order_class=bracket` requires both legs and `order_class=oto`
+  is not wired up. The call fails with an explicit "requires a take-profit leg" message
+  rather than guessing at unverified semantics.
+
+The entry-vs-stop relation is still validated in both directions (`buy` needs
+`limitPrice > stopLossStop`, `sell` the reverse) — dropping the take-profit never drops
+the protective-stop sanity check.
+
 ## `place_bracket` — response shape
 
 ```json
