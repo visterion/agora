@@ -33,24 +33,57 @@ class GetOrderByRefToolTest {
         assertThat(order.get("status").asString()).isEqualTo("filled");
     }
 
-    @Test void unavailableOnNotFound() {
+    // An unknown ref is the answer "no, there is none" -- not an outage. Until 2026-07-25 it came
+    // back as unavailable; Dracul could not tell it apart from "broker down" and therefore blocked
+    // every tranche-2 placement for signals with an error history.
+    @Test void unknownClientRefIsANegativeResultNotAnOutage() {
         var stub = new StubBroker() {
             public Order orderByClientRef(String ref) {
-                throw new BrokerException(BrokerException.Kind.NOT_FOUND, "not found", null);
+                throw new BrokerException(BrokerException.Kind.NOT_FOUND, "Order not found: t2-x", null);
             }
         };
-        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("clientRef","my-ref"));
-        assertThat(r.available()).isFalse();
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("clientRef","t2-x"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().has("order")).isTrue();
+        assertThat(r.output().get("order").isNull()).isTrue();
     }
 
-    @Test void unavailableOnBrokerException() {
+    @Test void aRealOutageStaysUnavailable() {
         var stub = new StubBroker() {
             public Order orderByClientRef(String ref) {
-                throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "down", null);
+                throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "saxo auth failed", null);
             }
         };
         var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("clientRef","my-ref"));
         assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("saxo auth failed");
+    }
+
+    @Test void notReadyStaysUnavailable() {
+        var stub = new StubBroker() {
+            public Order orderByClientRef(String ref) {
+                throw new BrokerException(BrokerException.Kind.NOT_READY, "saxo rate limited", null);
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("clientRef","my-ref"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("saxo rate limited");
+    }
+
+    @Test void aFoundOrderIsUnchanged() {
+        var stub = new StubBroker() {
+            public Order orderByClientRef(String ref) {
+                return new Order("oid-9", ref, "MSFT", "buy", new BigDecimal("5"), "limit", "working");
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("clientRef","my-ref"));
+        assertThat(r.available()).isTrue();
+        var order = r.output().get("order");
+        assertThat(order.isNull()).isFalse();
+        assertThat(order.get("brokerOrderId").asString()).isEqualTo("oid-9");
+        assertThat(order.get("clientRef").asString()).isEqualTo("my-ref");
+        assertThat(order.get("symbol").asString()).isEqualTo("MSFT");
+        assertThat(order.get("status").asString()).isEqualTo("working");
     }
 
     @Test void unavailableOnMissingClientRef() {
