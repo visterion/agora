@@ -467,9 +467,11 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     // writeError below, which owns the logging for those.
                     log.info("saxo response [POST /trade/v2/orders (bracket)]: status=400 body={} — rejected [{}]: {} for {}",
                             ProviderLogRedactor.redactBody(rawBody(e)), code, message, req.symbol());
-                    log.info("saxo far-stop: bracket rejected TooFarFromEntryOrder for {} (stop {} vs entry {}), "
-                            + "falling back to entry + standalone stop",
-                            req.symbol(), req.stopLossStop(), req.limitPrice());
+                    String leg = rejectedLeg(errorBody, req.takeProfitLimit() != null);
+                    log.info("saxo far-stop: bracket rejected [{}] for {} at leg {} "
+                            + "(take-profit {}, stop {}, entry {}), falling back to entry + standalone stop",
+                            code, req.symbol(), leg == null ? "unknown" : leg,
+                            req.takeProfitLimit(), req.stopLossStop(), req.limitPrice());
                     return submitFarStopFallback(req, ri, ctx, opposite, entryFields);
                 }
             }
@@ -478,6 +480,33 @@ public class SaxoBrokerProvider implements BrokerProvider {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "saxo submitBracket failed: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Rolle des Legs, das Saxo tatsächlich abgelehnt hat — oder {@code null}, wenn der
+     * Body keine Per-Leg-Information trägt.
+     *
+     * <p>Die Zuordnung Index → Rolle folgt der Konstruktionsreihenfolge in
+     * {@code submitBracket}: mit Take-Profit ist Index 0 der TP und Index 1 der Stop,
+     * ohne Take-Profit ist Index 0 der Stop. Diese Kopplung ist fragil — ändert sich die
+     * Reihenfolge dort, muss sie hier mitgeändert werden; die Tests pinnen beide Fälle.
+     *
+     * <p>{@code OrderNotPlaced} wird übersprungen: Saxo setzt das auf die übrigen Legs,
+     * wenn ein anderes Leg der Anfrage abgelehnt wurde ("Order not placed as other order
+     * in request was rejected"). Das ist Kollateralschaden, nicht der Grund. Genau diese
+     * Verwechslung ließ Agora am 2026-07-25 den Stop beschuldigen, obwohl der
+     * Take-Profit (+28 % vom Entry) abgelehnt worden war.
+     */
+    static String rejectedLeg(JsonNode errorBody, boolean hasTakeProfit) {
+        JsonNode orders = errorBody.path("Orders");
+        if (!orders.isArray()) return null;
+        for (int i = 0; i < orders.size(); i++) {
+            String code = orders.get(i).path("ErrorInfo").path("ErrorCode").asString("");
+            if (code.isEmpty() || "OrderNotPlaced".equals(code)) continue;
+            if (hasTakeProfit) return i == 0 ? "take_profit" : "stop_loss";
+            return "stop_loss";
+        }
+        return null;
     }
 
     /**
