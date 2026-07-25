@@ -261,6 +261,17 @@ caller must reconcile before retrying — read back by `clientRef` (`get_order_b
 adopt an existing order instead of placing a second one. Dracul does exactly this on the
 entry path.
 
+## `get_order_by_ref` — an unknown ref is a negative result, not an outage
+
+An unknown `clientRef` returns `available:true` with `{"order": null}` — "the lookup ran
+fine, there is no such order". It is **not** an `unavailable` error envelope. Genuine
+outages (broker down, not ready / rate-limited) still return `available:false`, so the
+caller can tell "no such order" apart from "ask again later" and retry only the latter.
+
+This matters precisely for the reconcile-then-retry flow above: a caller adopting an
+order by `clientRef` must be able to read "none exists" as a green light to place, rather
+than as a broker failure that blocks the placement.
+
 ## `get_orders` / `get_order_by_ref` — field list
 
 ```json
