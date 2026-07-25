@@ -401,15 +401,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
         // explicit timeInForce always wins over either default.
         entryFields.set("OrderDuration", durationNode(mapTif(req.timeInForce(), limit ? "GoodTillCancel" : "DayOrder")));
 
-        ObjectNode takeProfit = MAPPER.createObjectNode();
-        takeProfit.put("OrderType", "Limit");
-        takeProfit.put("OrderPrice", req.takeProfitLimit());
-        takeProfit.put("BuySell", opposite);
-        takeProfit.put("Amount", req.qty());
-        takeProfit.put("ManualOrder", false);
-        takeProfit.put("AccountKey", ctx.accountKey());
-        takeProfit.set("OrderDuration", durationNode("GoodTillCancel"));
-
         ObjectNode stopLoss = MAPPER.createObjectNode();
         stopLoss.put("OrderType", slLimit ? "StopLimit" : "StopIfTraded");
         stopLoss.put("OrderPrice", req.stopLossStop());
@@ -422,7 +413,25 @@ public class SaxoBrokerProvider implements BrokerProvider {
 
         ObjectNode fullBody = entryFields.deepCopy();
         var children = MAPPER.createArrayNode();
-        children.add(takeProfit);
+        // Leg order in "Orders" is load-bearing: index 0 = take-profit IF one was requested,
+        // then the stop-loss. So the stop's index shifts (1 with a TP, 0 without) — any
+        // per-leg error mapping from Saxo's response must derive the index from this same
+        // condition rather than assuming a fixed position.
+        //
+        // The take-profit is optional (since 2026-07-25). Without it an entry+stop bracket is
+        // built — the same shape submitFarStopFallback produces, but deliberately instead of
+        // reactively after a 400 TooFarFromEntryOrder.
+        if (req.takeProfitLimit() != null) {
+            ObjectNode takeProfit = MAPPER.createObjectNode();
+            takeProfit.put("OrderType", "Limit");
+            takeProfit.put("OrderPrice", req.takeProfitLimit());
+            takeProfit.put("BuySell", opposite);
+            takeProfit.put("Amount", req.qty());
+            takeProfit.put("ManualOrder", false);
+            takeProfit.put("AccountKey", ctx.accountKey());
+            takeProfit.set("OrderDuration", durationNode("GoodTillCancel"));
+            children.add(takeProfit);
+        }
         children.add(stopLoss);
         fullBody.set("Orders", children);
 
