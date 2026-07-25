@@ -27,6 +27,7 @@ class SaxoBrokerProviderTest {
     final AtomicLong now = new AtomicLong(1_000_000L);
     SaxoTokenStore store;
     SaxoBrokerProvider provider;
+    ConnectionConfig cfg;
 
     @BeforeAll static void start() { wm = new WireMockServer(options().dynamicPort()); wm.start(); }
     @AfterAll static void stop() { wm.stop(); }
@@ -34,7 +35,7 @@ class SaxoBrokerProviderTest {
     @BeforeEach
     void setUp() {
         wm.resetAll();
-        ConnectionConfig cfg = new ConnectionConfig();
+        cfg = new ConnectionConfig();
         cfg.setProvider("saxo");
         cfg.setEnvironment(ConnectionConfig.Environment.PAPER);
         cfg.setBaseUrl(wm.baseUrl());
@@ -44,6 +45,7 @@ class SaxoBrokerProviderTest {
         provider = new SaxoBrokerProvider(cfg, store, RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 resolver());
         provider.legLookupDelayMillis = 0;   // don't actually sleep in tests
+        provider.farStopDelayMillis = 0;     // ditto for the pre-fallback spacing
         stubAccounts();
     }
 
@@ -474,7 +476,9 @@ class SaxoBrokerProviderTest {
         assertThat(r.brokerOrderId()).isEqualTo("9001");
         assertThat(r.clientRef()).isEqualTo("ref-1");
         wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
-                .withHeader("X-Request-ID", equalTo("ref-1"))
+                // X-Request-ID is a per-attempt dedupe key now, no longer the clientRef —
+                // the clientRef lives on as ExternalReference in the body (asserted below).
+                .withHeader("X-Request-ID", matching(".+"))
                 .withRequestBody(matchingJsonPath("$.Uic", equalTo("211")))
                 .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Buy")))
                 .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Limit")))
@@ -995,6 +999,68 @@ class SaxoBrokerProviderTest {
         wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
                 .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
                 .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell"))));
+    }
+
+    // ---- X-Request-ID is a per-attempt key, not a business key ----
+
+    @Test
+    void everyAttemptGetsAFreshRequestIdWhileExternalReferenceStaysTheClientRef() {
+        // Dracul passes a DETERMINISTIC clientRef. If that also became the X-Request-ID, the
+        // second attempt would hit Saxo's dedupe cache (observed 2026-07-25: 400 → retry → 409)
+        // and the key would be burned for good. The stable business key is ExternalReference.
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9001\"}")));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("{\"Data\":[]}")));
+
+        provider.submitBracket(bracketReq());
+        provider.submitBracket(bracketReq());
+
+        var posts = wm.findAll(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        assertThat(posts).hasSize(2);
+        String first = posts.get(0).getHeader("X-Request-ID");
+        String second = posts.get(1).getHeader("X-Request-ID");
+        assertThat(first).isNotNull().isNotEqualTo("ref-1");
+        assertThat(second).isNotNull().isNotEqualTo("ref-1").isNotEqualTo(first);
+        assertThat(posts.get(0).getBodyAsString()).contains("\"ExternalReference\":\"ref-1\"");
+        assertThat(posts.get(1).getBodyAsString()).contains("\"ExternalReference\":\"ref-1\"");
+    }
+
+    @Test
+    void farStopFallbackWaitsBeforeRePlacingTheEntry() {
+        // The fallback used to fire ~90 ms after the rejected bracket and tripped Saxo's own
+        // order rate limit every single time (0 of 5 got through in the 14 days before
+        // 2026-07-25). The delay seam mirrors legLookupDelayMillis: a package-private field
+        // that tests neutralize — here the sleep is observed instead of actually slept.
+        stubInstrument();
+        stubBracketRejectTooFar("far-stop-delay");
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-delay")
+                .whenScenarioStateIs("toofar-rejected")
+                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
+                .willSetStateTo("entry-placed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-delay")
+                .whenScenarioStateIs("entry-placed")
+                .willReturn(okJson("{\"OrderId\":\"S1\"}")));
+
+        var sleeps = new java.util.concurrent.atomic.AtomicInteger();
+        var postsSeenAtSleep = new java.util.concurrent.atomic.AtomicInteger(-1);
+        var spy = new SaxoBrokerProvider(cfg, store,
+                RestClient.builder().baseUrl(wm.baseUrl()).build(), resolver()) {
+            @Override void sleepBeforeFarStopFallback() {
+                sleeps.incrementAndGet();
+                postsSeenAtSleep.set(wm.findAll(postRequestedFor(urlEqualTo("/trade/v2/orders"))).size());
+            }
+        };
+        spy.legLookupDelayMillis = 0;
+
+        var r = spy.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(sleeps.get()).isEqualTo(1);
+        // exactly one POST had happened when the wait started: the rejected bracket. The
+        // fallback entry comes AFTER the wait.
+        assertThat(postsSeenAtSleep.get()).isEqualTo(1);
+        // the wait is the configured one, defaulting to the documented constant
+        assertThat(spy.farStopDelayMillis).isEqualTo(SaxoBrokerProvider.FAR_STOP_DELAY_MS);
     }
 
     // ---- rejectedLeg: which leg did Saxo actually reject? ----
