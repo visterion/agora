@@ -997,6 +997,51 @@ class SaxoBrokerProviderTest {
                 .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell"))));
     }
 
+    // ---- rejectedLeg: which leg did Saxo actually reject? ----
+
+    /** Echter 400-Body aus dem Vorfall vom 2026-07-25 (Run 8BA7038B…, Symbol STT). */
+    private static final String REAL_REJECT_BODY = """
+        {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order-Preis ist zu weit von der Eingabeorder entfernt."},
+         "ExternalReference":"t2-5016b4d3-db04-42af-b1dc-8399455d618c",
+         "Orders":[{"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order-Preis ist zu weit von der Eingabeorder entfernt."}},
+                   {"ErrorInfo":{"ErrorCode":"OrderNotPlaced","Message":"Order not placed as other order in request was rejected."}}]}
+        """;
+
+    @Test
+    void rejectedLegNamesTakeProfitOnTheRealIncidentBody() {
+        var body = SaxoBrokerProvider.MAPPER.readTree(REAL_REJECT_BODY);
+        assertThat(SaxoBrokerProvider.rejectedLeg(body, true)).isEqualTo("take_profit");
+    }
+
+    @Test
+    void rejectedLegSkipsOrderNotPlacedCollateralAndNamesTheStop() {
+        // Mirror image of the incident: leg 0 is the collateral damage, leg 1 the real cause.
+        var body = SaxoBrokerProvider.MAPPER.readTree("""
+            {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"too far"},
+             "Orders":[{"ErrorInfo":{"ErrorCode":"OrderNotPlaced","Message":"Order not placed as other order in request was rejected."}},
+                       {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"too far"}}]}
+            """);
+        assertThat(SaxoBrokerProvider.rejectedLeg(body, true)).isEqualTo("stop_loss");
+    }
+
+    @Test
+    void rejectedLegWithoutTakeProfitAlwaysNamesTheStop() {
+        // No take-profit was sent, so index 0 IS the stop (see submitBracket's leg-order note).
+        var body = SaxoBrokerProvider.MAPPER.readTree("""
+            {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"too far"},
+             "Orders":[{"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"too far"}}]}
+            """);
+        assertThat(SaxoBrokerProvider.rejectedLeg(body, false)).isEqualTo("stop_loss");
+    }
+
+    @Test
+    void rejectedLegIsNullWhenTheBodyCarriesNoPerLegInfo() {
+        var body = SaxoBrokerProvider.MAPPER.readTree("""
+            {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"too far"}}
+            """);
+        assertThat(SaxoBrokerProvider.rejectedLeg(body, true)).isNull();
+    }
+
     // ---- cancel ----
 
     @Test
