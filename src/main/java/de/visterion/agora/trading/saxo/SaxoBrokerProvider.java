@@ -472,7 +472,8 @@ public class SaxoBrokerProvider implements BrokerProvider {
                             + "(take-profit {}, stop {}, entry {}), falling back to entry + standalone stop",
                             code, req.symbol(), leg == null ? "unknown" : leg,
                             req.takeProfitLimit(), req.stopLossStop(), req.limitPrice());
-                    return submitFarStopFallback(req, ri, ctx, opposite, entryFields);
+                    var reject = new BracketReject(code, message, leg, legPrice(req, leg));
+                    return submitFarStopFallback(req, ri, ctx, opposite, entryFields, reject);
                 }
             }
             return writeError("POST /trade/v2/orders (bracket)", e);
@@ -510,6 +511,40 @@ public class SaxoBrokerProvider implements BrokerProvider {
     }
 
     /**
+     * Why the original bracket POST was rejected, carried into {@link #submitFarStopFallback}
+     * so it survives a fallback that then fails for an unrelated reason.
+     *
+     * <p>Before this existed, a rejected bracket followed by a failing fallback reported only
+     * the SECOND failure: on 2026-07-25 the caller saw "saxo rate limited (HTTP 429)" and had
+     * no way to learn that the bracket had been rejected for a too-far take-profit — so it
+     * retried the identical request instead of fixing the target.
+     */
+    record BracketReject(String code, String message, String leg, BigDecimal legPrice) {
+        /** {@code bracket rejected [TooFarFromEntryOrder am take_profit 237.71]} */
+        String describe() {
+            StringBuilder sb = new StringBuilder("bracket rejected [");
+            sb.append(code != null ? code : (message != null ? message : "unknown reason"));
+            if (leg != null) {
+                sb.append(" am ").append(leg);
+                if (legPrice != null) sb.append(' ').append(legPrice.toPlainString());
+            }
+            return sb.append(']').toString();
+        }
+
+        /** Prefixes {@code detail} (the fallback's own failure) with the original cause. */
+        String prefix(String detail) {
+            return describe() + "; fallback dann gescheitert: " + detail;
+        }
+    }
+
+    /** The price of the leg Saxo named — the number the caller has to change to get accepted. */
+    private static BigDecimal legPrice(BracketOrderRequest req, String leg) {
+        if ("take_profit".equals(leg)) return req.takeProfitLimit();
+        if ("stop_loss".equals(leg)) return req.stopLossStop();
+        return null;
+    }
+
+    /**
      * Far-stop fallback (triggered reactively when the real bracket POST rejects with
      * {@code TooFarFromEntryOrder}): Saxo's proximity band rejects a bracket whose stop-loss
      * sits outside it, so instead of a single bracket POST this places the entry alone, then
@@ -526,7 +561,8 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * {@code rejected("STOP_PLACEMENT_FAILED")} rather than an accepted-but-unprotected result.
      */
     private OrderResult submitFarStopFallback(BracketOrderRequest req, SaxoInstrumentResolver.ResolvedInstrument ri,
-                                                AccountContext ctx, String opposite, ObjectNode entryBody) {
+                                                AccountContext ctx, String opposite, ObjectNode entryBody,
+                                                BracketReject reject) {
         String entryId;
         try {
             JsonNode resp = client.post().uri("/trade/v2/orders")
@@ -538,11 +574,19 @@ public class SaxoBrokerProvider implements BrokerProvider {
             entryId = resp == null ? null : resp.path("OrderId").asString(null);
         } catch (RestClientResponseException e) {
             // Nothing has been placed yet — safe to report as a plain reject, same as the
-            // CLEAN path's error mapping.
-            return writeError("POST /trade/v2/orders (far-stop entry)", e);
+            // CLEAN path's error mapping. But writeError only RETURNS for a 400; for 409 and
+            // for everything readError covers (401/403/404/429/5xx) it THROWS instead. Both
+            // exits must carry the original bracket reject forward, so the throwing one is
+            // caught here and re-thrown with the same kind and an enriched message.
+            try {
+                OrderResult rejected = writeError("POST /trade/v2/orders (far-stop entry)", e);
+                return OrderResult.rejected(reject.prefix(rejected.rejectReason()), rejected.rejectCode());
+            } catch (BrokerException be) {
+                throw new BrokerException(be.kind(), reject.prefix(be.getMessage()), be);
+            }
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
-                    "saxo submitBracket (far-stop entry) failed: " + e.getMessage(), e);
+                    reject.prefix("saxo submitBracket (far-stop entry) failed: " + e.getMessage()), e);
         }
 
         ObjectNode standaloneStop = MAPPER.createObjectNode();
@@ -575,7 +619,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
         }
 
         if (stopId == null) {
-            return protectUnprotectedEntry(entryId, req.symbol(), stopFailure);
+            return protectUnprotectedEntry(entryId, req.symbol(), stopFailure, reject);
         }
 
         log.info("saxo far-stop fallback: entry {} + standalone stop {} for {}", entryId, stopId, req.symbol());
@@ -606,7 +650,8 @@ public class SaxoBrokerProvider implements BrokerProvider {
      *   cancel/flatten failure propagate as a thrown {@link BrokerException}.</li>
      * </ol>
      */
-    private OrderResult protectUnprotectedEntry(String entryId, String symbol, Exception stopFailure) {
+    private OrderResult protectUnprotectedEntry(String entryId, String symbol, Exception stopFailure,
+                                                BracketReject reject) {
         try {
             cancel(entryId);
         } catch (BrokerException e) {
@@ -629,7 +674,8 @@ public class SaxoBrokerProvider implements BrokerProvider {
             // already removed it. Nothing left to protect.
         }
         String cause = stopFailure == null ? "no OrderId in response" : stopFailure.getMessage();
-        return OrderResult.rejected("standalone stop placement failed: " + cause, "STOP_PLACEMENT_FAILED");
+        return OrderResult.rejected(reject.prefix("standalone stop placement failed: " + cause),
+                "STOP_PLACEMENT_FAILED");
     }
 
     /**

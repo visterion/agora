@@ -1042,6 +1042,36 @@ class SaxoBrokerProviderTest {
         assertThat(SaxoBrokerProvider.rejectedLeg(body, true)).isNull();
     }
 
+    @Test
+    void fallbackFailureCarriesBothCauses() {
+        // Bracket wird mit 400 TooFarFromEntryOrder abgelehnt, der Fallback-Entry dann
+        // mit 429 — exakt der Ablauf vom 2026-07-25. Der Aufrufer muss BEIDE Ursachen
+        // sehen; bisher gewann die zweite und die erste ging verloren.
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-429")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(aResponse().withStatus(400)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody(REAL_REJECT_BODY))
+                .willSetStateTo("toofar-rejected"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-429")
+                .whenScenarioStateIs("toofar-rejected")
+                .willReturn(aResponse().withStatus(429)));
+
+        // One call only — the WireMock scenario advances, so re-invoking would hit a
+        // different stub.
+        Throwable t = catchThrowable(() -> provider.submitBracket(bracketReq()));
+
+        assertThat(t).isInstanceOf(BrokerException.class);
+        // the 429 mapping (NOT_READY, "retry shortly") must survive unchanged …
+        assertThat(((BrokerException) t).kind()).isEqualTo(BrokerException.Kind.NOT_READY);
+        // … while the message now names BOTH causes: what the bracket was rejected for
+        // (and at which leg), and what the fallback then failed with.
+        assertThat(t).hasMessageContaining("TooFarFromEntryOrder")
+                .hasMessageContaining("take_profit")
+                .hasMessageContaining("rate limited");
+    }
+
     // ---- cancel ----
 
     @Test
