@@ -227,7 +227,7 @@ is always available via `list_indicators`.
 | `get_closed_positions` | Closed positions with real broker fill prices/P&L (Saxo only) |
 | `get_orders` | All open and recent orders |
 | `get_order_by_ref` | Look up an order by client reference ID (`client_ref`) |
-| `place_bracket` | Place a bracket order (entry + stop-loss + take-profit) |
+| `place_bracket` | Place a bracket order (entry + stop-loss, optional take-profit) |
 | `modify_bracket` | Modify the stop-loss and/or take-profit of an existing bracket |
 | `flatten` | Close (flatten) the entire position for a symbol via market order |
 | `cancel_order` | Cancel an open order by broker order id |

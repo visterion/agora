@@ -27,6 +27,7 @@ class SaxoBrokerProviderTest {
     final AtomicLong now = new AtomicLong(1_000_000L);
     SaxoTokenStore store;
     SaxoBrokerProvider provider;
+    ConnectionConfig cfg;
 
     @BeforeAll static void start() { wm = new WireMockServer(options().dynamicPort()); wm.start(); }
     @AfterAll static void stop() { wm.stop(); }
@@ -34,7 +35,7 @@ class SaxoBrokerProviderTest {
     @BeforeEach
     void setUp() {
         wm.resetAll();
-        ConnectionConfig cfg = new ConnectionConfig();
+        cfg = new ConnectionConfig();
         cfg.setProvider("saxo");
         cfg.setEnvironment(ConnectionConfig.Environment.PAPER);
         cfg.setBaseUrl(wm.baseUrl());
@@ -44,6 +45,7 @@ class SaxoBrokerProviderTest {
         provider = new SaxoBrokerProvider(cfg, store, RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 resolver());
         provider.legLookupDelayMillis = 0;   // don't actually sleep in tests
+        provider.farStopDelayMillis = 0;     // ditto for the pre-fallback spacing
         stubAccounts();
     }
 
@@ -474,7 +476,9 @@ class SaxoBrokerProviderTest {
         assertThat(r.brokerOrderId()).isEqualTo("9001");
         assertThat(r.clientRef()).isEqualTo("ref-1");
         wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
-                .withHeader("X-Request-ID", equalTo("ref-1"))
+                // X-Request-ID is a per-attempt dedupe key now, no longer the clientRef —
+                // the clientRef lives on as ExternalReference in the body (asserted below).
+                .withHeader("X-Request-ID", matching(".+"))
                 .withRequestBody(matchingJsonPath("$.Uic", equalTo("211")))
                 .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Buy")))
                 .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Limit")))
@@ -483,6 +487,59 @@ class SaxoBrokerProviderTest {
                 .withRequestBody(matchingJsonPath("$.Orders[0].OrderType", equalTo("Limit")))
                 .withRequestBody(matchingJsonPath("$.Orders[0].BuySell", equalTo("Sell")))
                 .withRequestBody(matchingJsonPath("$.Orders[1].OrderType", equalTo("StopIfTraded"))));
+    }
+
+    @Test
+    void bracketWithoutTakeProfitOmitsTheTakeProfitLeg() {
+        // Entry + Stop, no take-profit. The capability existed only inside the far-stop
+        // fallback so far; here it becomes the regular case (Dracul places tranche 2 without
+        // a take-profit because Saxo rejects a 3R target with TooFarFromEntryOrder).
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9003"}]}
+            """)));
+
+        var req = new de.visterion.agora.trading.BracketOrderRequest(
+                "AAPL", "buy", new java.math.BigDecimal("1"), "limit", "gtc",
+                new java.math.BigDecimal("100"), new java.math.BigDecimal("90"), null,
+                null, "ref-no-tp");
+
+        var r = provider.submitBracket(req);
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.brokerOrderId()).isEqualTo("9001");
+
+        var posts = wm.findAll(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        assertThat(posts).hasSize(1);
+        var orders = new tools.jackson.databind.ObjectMapper()
+                .readTree(posts.get(0).getBodyAsString()).path("Orders");
+        assertThat(orders.size()).isEqualTo(1);
+        assertThat(orders.get(0).path("OrderType").asString()).isIn("StopIfTraded", "StopLimit");
+        assertThat(orders.get(0).path("OrderPrice").asString()).isEqualTo("90");
+        assertThat(orders.get(0).path("BuySell").asString()).isEqualTo("Sell");
+    }
+
+    @Test
+    void bracketWithTakeProfitIsUnchanged() {
+        // Backwards compatibility: existing callers keep setting the value.
+        // Leg order stays TP (index 0) then stop (index 1).
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
+            {"OrderId":"9001","Orders":[{"OrderId":"9002"},{"OrderId":"9003"}]}
+            """)));
+
+        var r = provider.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isTrue();
+
+        var posts = wm.findAll(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        assertThat(posts).hasSize(1);
+        var orders = new tools.jackson.databind.ObjectMapper()
+                .readTree(posts.get(0).getBodyAsString()).path("Orders");
+        assertThat(orders.size()).isEqualTo(2);
+        assertThat(orders.get(0).path("OrderType").asString()).isEqualTo("Limit");
+        assertThat(orders.get(0).path("OrderPrice").asString()).isEqualTo("110");
+        assertThat(orders.get(1).path("OrderType").asString()).isEqualTo("StopIfTraded");
     }
 
     @Test
@@ -942,6 +999,143 @@ class SaxoBrokerProviderTest {
         wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
                 .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
                 .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell"))));
+    }
+
+    // ---- X-Request-ID is a per-attempt key, not a business key ----
+
+    @Test
+    void everyAttemptGetsAFreshRequestIdWhileExternalReferenceStaysTheClientRef() {
+        // Dracul passes a DETERMINISTIC clientRef. If that also became the X-Request-ID, the
+        // second attempt would hit Saxo's dedupe cache (observed 2026-07-25: 400 → retry → 409)
+        // and the key would be burned for good. The stable business key is ExternalReference.
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9001\"}")));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("{\"Data\":[]}")));
+
+        provider.submitBracket(bracketReq());
+        provider.submitBracket(bracketReq());
+
+        var posts = wm.findAll(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        assertThat(posts).hasSize(2);
+        String first = posts.get(0).getHeader("X-Request-ID");
+        String second = posts.get(1).getHeader("X-Request-ID");
+        assertThat(first).isNotNull().isNotEqualTo("ref-1");
+        assertThat(second).isNotNull().isNotEqualTo("ref-1").isNotEqualTo(first);
+        assertThat(posts.get(0).getBodyAsString()).contains("\"ExternalReference\":\"ref-1\"");
+        assertThat(posts.get(1).getBodyAsString()).contains("\"ExternalReference\":\"ref-1\"");
+    }
+
+    @Test
+    void farStopFallbackWaitsBeforeRePlacingTheEntry() {
+        // The fallback used to fire ~90 ms after the rejected bracket and tripped Saxo's own
+        // order rate limit every single time (0 of 5 got through in the 14 days before
+        // 2026-07-25). The delay seam mirrors legLookupDelayMillis: a package-private field
+        // that tests neutralize — here the sleep is observed instead of actually slept.
+        stubInstrument();
+        stubBracketRejectTooFar("far-stop-delay");
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-delay")
+                .whenScenarioStateIs("toofar-rejected")
+                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
+                .willSetStateTo("entry-placed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-delay")
+                .whenScenarioStateIs("entry-placed")
+                .willReturn(okJson("{\"OrderId\":\"S1\"}")));
+
+        var sleeps = new java.util.concurrent.atomic.AtomicInteger();
+        var postsSeenAtSleep = new java.util.concurrent.atomic.AtomicInteger(-1);
+        var spy = new SaxoBrokerProvider(cfg, store,
+                RestClient.builder().baseUrl(wm.baseUrl()).build(), resolver()) {
+            @Override void sleepBeforeFarStopFallback() {
+                sleeps.incrementAndGet();
+                postsSeenAtSleep.set(wm.findAll(postRequestedFor(urlEqualTo("/trade/v2/orders"))).size());
+            }
+        };
+        spy.legLookupDelayMillis = 0;
+
+        var r = spy.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(sleeps.get()).isEqualTo(1);
+        // exactly one POST had happened when the wait started: the rejected bracket. The
+        // fallback entry comes AFTER the wait.
+        assertThat(postsSeenAtSleep.get()).isEqualTo(1);
+        // the wait is the configured one, defaulting to the documented constant
+        assertThat(spy.farStopDelayMillis).isEqualTo(SaxoBrokerProvider.FAR_STOP_DELAY_MS);
+    }
+
+    // ---- rejectedLeg: which leg did Saxo actually reject? ----
+
+    /** Echter 400-Body aus dem Vorfall vom 2026-07-25 (Run 8BA7038B…, Symbol STT). */
+    private static final String REAL_REJECT_BODY = """
+        {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order-Preis ist zu weit von der Eingabeorder entfernt."},
+         "ExternalReference":"t2-5016b4d3-db04-42af-b1dc-8399455d618c",
+         "Orders":[{"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order-Preis ist zu weit von der Eingabeorder entfernt."}},
+                   {"ErrorInfo":{"ErrorCode":"OrderNotPlaced","Message":"Order not placed as other order in request was rejected."}}]}
+        """;
+
+    @Test
+    void rejectedLegNamesTakeProfitOnTheRealIncidentBody() {
+        var body = SaxoBrokerProvider.MAPPER.readTree(REAL_REJECT_BODY);
+        assertThat(SaxoBrokerProvider.rejectedLeg(body, true)).isEqualTo("take_profit");
+    }
+
+    @Test
+    void rejectedLegSkipsOrderNotPlacedCollateralAndNamesTheStop() {
+        // Mirror image of the incident: leg 0 is the collateral damage, leg 1 the real cause.
+        var body = SaxoBrokerProvider.MAPPER.readTree("""
+            {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"too far"},
+             "Orders":[{"ErrorInfo":{"ErrorCode":"OrderNotPlaced","Message":"Order not placed as other order in request was rejected."}},
+                       {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"too far"}}]}
+            """);
+        assertThat(SaxoBrokerProvider.rejectedLeg(body, true)).isEqualTo("stop_loss");
+    }
+
+    @Test
+    void rejectedLegWithoutTakeProfitAlwaysNamesTheStop() {
+        // No take-profit was sent, so index 0 IS the stop (see submitBracket's leg-order note).
+        var body = SaxoBrokerProvider.MAPPER.readTree("""
+            {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"too far"},
+             "Orders":[{"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"too far"}}]}
+            """);
+        assertThat(SaxoBrokerProvider.rejectedLeg(body, false)).isEqualTo("stop_loss");
+    }
+
+    @Test
+    void rejectedLegIsNullWhenTheBodyCarriesNoPerLegInfo() {
+        var body = SaxoBrokerProvider.MAPPER.readTree("""
+            {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"too far"}}
+            """);
+        assertThat(SaxoBrokerProvider.rejectedLeg(body, true)).isNull();
+    }
+
+    @Test
+    void fallbackFailureCarriesBothCauses() {
+        // Bracket wird mit 400 TooFarFromEntryOrder abgelehnt, der Fallback-Entry dann
+        // mit 429 — exakt der Ablauf vom 2026-07-25. Der Aufrufer muss BEIDE Ursachen
+        // sehen; bisher gewann die zweite und die erste ging verloren.
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-429")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(aResponse().withStatus(400)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody(REAL_REJECT_BODY))
+                .willSetStateTo("toofar-rejected"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-429")
+                .whenScenarioStateIs("toofar-rejected")
+                .willReturn(aResponse().withStatus(429)));
+
+        // One call only — the WireMock scenario advances, so re-invoking would hit a
+        // different stub.
+        Throwable t = catchThrowable(() -> provider.submitBracket(bracketReq()));
+
+        assertThat(t).isInstanceOf(BrokerException.class);
+        // the 429 mapping (NOT_READY, "retry shortly") must survive unchanged …
+        assertThat(((BrokerException) t).kind()).isEqualTo(BrokerException.Kind.NOT_READY);
+        // … while the message now names BOTH causes: what the bracket was rejected for
+        // (and at which leg), and what the fallback then failed with.
+        assertThat(t).hasMessageContaining("TooFarFromEntryOrder")
+                .hasMessageContaining("take_profit")
+                .hasMessageContaining("rate limited");
     }
 
     // ---- cancel ----

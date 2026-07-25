@@ -50,6 +50,48 @@ class PlaceBracketToolTest {
         assertThat(r.output().has("takeProfitLegId")).isFalse();
     }
 
+    /** takeProfitLimit is optional: omitting it must pass a null through to the provider
+     *  (entry + stop only), not fail the required-argument check. */
+    @Test void missingTakeProfitIsAcceptedAndPassedThroughAsNull() {
+        var seen = new java.util.concurrent.atomic.AtomicReference<BracketOrderRequest>();
+        var r = tool(new StubBroker() {
+            public OrderResult submitBracket(BracketOrderRequest req) {
+                seen.set(req);
+                return OrderResult.accepted("entry-id", req.clientRef(), "accepted", "stop-id", null);
+            }
+        }).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy")
+                .put("qty",1).put("limitPrice",100).put("stopLossStop",95));
+
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("accepted").asBoolean()).isTrue();
+        assertThat(seen.get().takeProfitLimit()).isNull();
+    }
+
+    /** Without a take-profit the entry-vs-stop relation is the remaining safety check —
+     *  it must still be enforced, in both directions. */
+    @Test void missingTakeProfitStillEnforcesEntryVersusStopForBuy() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy")
+                .put("qty",1).put("limitPrice",100).put("stopLossStop",105));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("limitPrice").contains("stopLossStop");
+    }
+
+    @Test void missingTakeProfitStillEnforcesEntryVersusStopForSell() {
+        var r = tool(accepting()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","sell")
+                .put("qty",1).put("limitPrice",100).put("stopLossStop",95));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("limitPrice").contains("stopLossStop");
+    }
+
+    @Test void takeProfitLimitIsNotInTheRequiredSchemaList() {
+        var required = tool(accepting()).inputSchema().get("required");
+        assertThat(required.toString()).doesNotContain("takeProfitLimit");
+        assertThat(required.toString()).contains("stopLossStop");
+    }
+
     @Test void rejectedShape() {
         var r = tool(new StubBroker(){ public OrderResult submitBracket(BracketOrderRequest req){ return OrderResult.rejected("insufficient buying power","403"); }})
                 .call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol","AAPL").put("side","buy").put("qty",1).put("limitPrice",100).put("stopLossStop",95).put("takeProfitLimit",110));

@@ -30,7 +30,8 @@ public class PlaceBracketTool implements AgoraTool {
 
     @Override
     public String description() {
-        return "Place a bracket order (entry + stop-loss + take-profit) on the named connection.";
+        return "Place a bracket order (entry + stop-loss, plus an optional take-profit) "
+                + "on the named connection.";
     }
 
     @Override
@@ -48,9 +49,11 @@ public class PlaceBracketTool implements AgoraTool {
         props.putObject("limitPrice").put("type", "number").put("description", "Limit price (required for limit orders)");
         props.putObject("stopLossStop").put("type", "number").put("description", "Stop-loss stop price");
         props.putObject("stopLossLimit").put("type", "number").put("description", "Stop-loss limit price (optional)");
-        props.putObject("takeProfitLimit").put("type", "number").put("description", "Take-profit limit price");
+        props.putObject("takeProfitLimit").put("type", "number").put("description",
+                "Take-profit limit price (optional; omit to place entry + stop-loss only — "
+                        + "supported on saxo, rejected by alpaca)");
         props.putObject("clientRef").put("type", "string").put("description", "Client reference ID (optional)");
-        schema.putArray("required").add("connection").add("symbol").add("side").add("qty").add("stopLossStop").add("takeProfitLimit");
+        schema.putArray("required").add("connection").add("symbol").add("side").add("qty").add("stopLossStop");
         return schema;
     }
 
@@ -73,7 +76,7 @@ public class PlaceBracketTool implements AgoraTool {
             side = ToolParams.requiredString(args, "side");
             qty = requiredDecimal(args, "qty");
             stopLossStop = requiredDecimal(args, "stopLossStop");
-            takeProfitLimit = requiredDecimal(args, "takeProfitLimit");
+            takeProfitLimit = ToolParams.optionalDecimal(args, "takeProfitLimit");
             limitPrice = ToolParams.optionalDecimal(args, "limitPrice");
             stopLossLimit = ToolParams.optionalDecimal(args, "stopLossLimit");
             type = args.hasNonNull("type") ? args.get("type").asString() : "limit";
@@ -119,7 +122,10 @@ public class PlaceBracketTool implements AgoraTool {
 
         if (qty.signum() <= 0) errors.add("qty must be > 0");
         if (stopLossStop.signum() <= 0) errors.add("stopLossStop must be > 0");
-        if (takeProfitLimit.signum() <= 0) errors.add("takeProfitLimit must be > 0");
+        // takeProfitLimit is optional (since 2026-07-25): null means entry + stop, no
+        // take-profit leg. Only its sign/relation checks are conditional — the entry-stop
+        // relation below always runs, because that is the actual safety check.
+        if (takeProfitLimit != null && takeProfitLimit.signum() <= 0) errors.add("takeProfitLimit must be > 0");
         if (limitPrice != null && limitPrice.signum() <= 0) errors.add("limitPrice must be > 0");
 
         boolean limitTypeMissingPrice = "limit".equals(type) && limitPrice == null;
@@ -127,16 +133,29 @@ public class PlaceBracketTool implements AgoraTool {
 
         // Relational checks only make sense once side/signs/required-price are sane.
         if ((buy || sell) && !limitTypeMissingPrice
-                && qty.signum() > 0 && stopLossStop.signum() > 0 && takeProfitLimit.signum() > 0
+                && qty.signum() > 0 && stopLossStop.signum() > 0
+                && (takeProfitLimit == null || takeProfitLimit.signum() > 0)
                 && (limitPrice == null || limitPrice.signum() > 0)) {
-            if (limitPrice != null) {
+            if (limitPrice != null && takeProfitLimit != null) {
+                // The full chain also covers the entry-vs-stop relation.
                 if (buy && !(takeProfitLimit.compareTo(limitPrice) > 0 && limitPrice.compareTo(stopLossStop) > 0))
                     errors.add("buy requires takeProfitLimit > limitPrice > stopLossStop (got takeProfitLimit="
                             + takeProfitLimit + ", limitPrice=" + limitPrice + ", stopLossStop=" + stopLossStop + ")");
                 if (sell && !(takeProfitLimit.compareTo(limitPrice) < 0 && limitPrice.compareTo(stopLossStop) < 0))
                     errors.add("sell requires takeProfitLimit < limitPrice < stopLossStop (got takeProfitLimit="
                             + takeProfitLimit + ", limitPrice=" + limitPrice + ", stopLossStop=" + stopLossStop + ")");
-            } else {
+            } else if (limitPrice != null) {
+                // No take-profit: the entry-vs-stop relation is the safety check that remains
+                // — it must still be enforced for BOTH directions.
+                if (buy && limitPrice.compareTo(stopLossStop) <= 0)
+                    errors.add("buy requires limitPrice > stopLossStop (got limitPrice="
+                            + limitPrice + ", stopLossStop=" + stopLossStop + ")");
+                if (sell && limitPrice.compareTo(stopLossStop) >= 0)
+                    errors.add("sell requires limitPrice < stopLossStop (got limitPrice="
+                            + limitPrice + ", stopLossStop=" + stopLossStop + ")");
+            } else if (takeProfitLimit != null) {
+                // Market entry: no entry price to relate the stop to, so the only orderable
+                // relation left is take-profit vs stop.
                 if (buy && takeProfitLimit.compareTo(stopLossStop) <= 0)
                     errors.add("buy requires takeProfitLimit > stopLossStop (got takeProfitLimit="
                             + takeProfitLimit + ", stopLossStop=" + stopLossStop + ")");
