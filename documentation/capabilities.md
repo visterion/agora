@@ -195,3 +195,10 @@ search_filings
 
 When adding or removing a tool: update this list, the README tool catalog, and the local
 `CLAUDE.md` index in the same change.
+
+## Deploy checks
+
+- Before deploying a Yahoo UA change: confirm neither `AGORA_DATA_YAHOO_USER_AGENT`
+  nor `AGORA_DATA_YAHOO_CRUMB_USER_AGENT` is set in the environment
+  (`docker exec agora env | grep -i YAHOO` must be empty), so a stale override
+  cannot feed a bot UA to the crumb path.
