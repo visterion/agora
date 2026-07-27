@@ -52,6 +52,24 @@ public class NewsAggregator {
      */
     static final long RATE_LIMIT_WARN_WINDOW_MS = 5 * 60 * 1000L;
 
+    /**
+     * Second, size-based flush trigger, alongside the time window above. Agora's workload is
+     * bounded batch runs (a Strigoi hunt over N symbols), not a continuous stream: the
+     * motivating incident was a genuine 429 at symbol #5 of a 145-symbol run, with the
+     * remaining ~140 skipped inside a single run that then ends — entirely inside one
+     * {@link #RATE_LIMIT_WARN_WINDOW_MS} window, with no further call afterwards to ever
+     * trigger the time-based flush. Relying on the window alone would report zero skips for
+     * exactly the incident this task exists to fix. Once the accumulated skip count for a
+     * provider reaches this threshold, it flushes immediately instead of waiting for the
+     * window to elapse, then resets its own counter (independent of the window's start time,
+     * which is untouched) — so a large burst self-reports promptly in roughly-threshold-sized
+     * chunks, while an isolated skip or two (nowhere near this threshold) still stays quiet.
+     * 20 is comfortably above "isolated retry noise" and comfortably below the ~140-skip scale
+     * of the motivating incident, so that incident would have produced several summary WARNs
+     * instead of zero. Pinned by NewsAggregatorCooldownLoggingTest.
+     */
+    static final int RATE_LIMIT_WARN_BURST_THRESHOLD = 20;
+
     private static final Logger log = LoggerFactory.getLogger(NewsAggregator.class);
     private static final Set<String> KNOWN_SOURCE_TYPES = Set.of("news", "social");
 
@@ -167,11 +185,19 @@ public class NewsAggregator {
     }
 
     /**
-     * Time-windowed summary WARN for rate-limit cooldown skips: every skip is counted silently
-     * (DEBUG-only) while its window is open; only a skip that lands ON OR AFTER the window has
-     * elapsed flushes a single summary WARN for the just-closed window before opening a new one.
+     * Two independent flush triggers for the rate-limit-skip summary WARN, either of which
+     * fires it — every skip is counted silently (DEBUG-only) otherwise:
+     * <ul>
+     *   <li><b>Time</b>: a skip that lands ON OR AFTER the window has elapsed flushes a summary
+     *       for the just-closed window, then opens a fresh window (this skip counted in it).</li>
+     *   <li><b>Size</b>: independently of the window's start time, once the accumulated count
+     *       since the last flush reaches {@link #RATE_LIMIT_WARN_BURST_THRESHOLD}, it flushes
+     *       immediately and resets only the counter (the window's start time is untouched) —
+     *       this is what makes a bounded-batch-run burst self-reporting even when the run ends
+     *       before the window would ever elapse on its own.</li>
+     * </ul>
      * A lone, isolated skip therefore never produces a WARN by itself — only sustained skipping
-     * across a window boundary does, and then at most once per window.
+     * that crosses one of the two thresholds does.
      * Synchronized because concurrent {@link #aggregate} calls (different symbols) can race on
      * the same provider's window state; contention is negligible since this only runs on the
      * rate-limited-cooldown path.
@@ -179,16 +205,23 @@ public class NewsAggregator {
     private synchronized void recordRateLimitSkip(String providerId) {
         long nowMs = clock.getAsLong();
         Long windowStart = rateLimitWindowStartMs.get(providerId);
-        if (windowStart == null || nowMs - windowStart < RATE_LIMIT_WARN_WINDOW_MS) {
-            if (windowStart == null) rateLimitWindowStartMs.put(providerId, nowMs);
-            rateLimitSkipCount.merge(providerId, 1, Integer::sum);
+
+        if (windowStart != null && nowMs - windowStart >= RATE_LIMIT_WARN_WINDOW_MS) {
+            int skippedInClosedWindow = rateLimitSkipCount.getOrDefault(providerId, 0);
+            log.warn("news provider {} rate-limited (cooldown): skipped {} symbol lookup(s) in the last {} ms",
+                    providerId, skippedInClosedWindow, RATE_LIMIT_WARN_WINDOW_MS);
+            rateLimitWindowStartMs.put(providerId, nowMs);
+            rateLimitSkipCount.put(providerId, 1);
             return;
         }
-        int skippedInClosedWindow = rateLimitSkipCount.getOrDefault(providerId, 0);
-        log.warn("news provider {} rate-limited (cooldown): skipped {} symbol lookup(s) in the last {} ms",
-                providerId, skippedInClosedWindow, RATE_LIMIT_WARN_WINDOW_MS);
-        rateLimitWindowStartMs.put(providerId, nowMs);
-        rateLimitSkipCount.put(providerId, 1);
+
+        if (windowStart == null) rateLimitWindowStartMs.put(providerId, nowMs);
+        int count = rateLimitSkipCount.merge(providerId, 1, Integer::sum);
+        if (count >= RATE_LIMIT_WARN_BURST_THRESHOLD) {
+            log.warn("news provider {} rate-limited (cooldown): skipped {} symbol lookup(s) (burst threshold reached)",
+                    providerId, count);
+            rateLimitSkipCount.put(providerId, 0);
+        }
     }
 
     /** URL-dedup first (blank/unparseable URLs excluded from it), then title-dedup;

@@ -144,4 +144,64 @@ class NewsAggregatorCooldownLoggingTest {
         assertThat(warnEvents().get(1).getFormattedMessage())
                 .contains("rss:reddit-stocks").contains("2");
     }
+
+    // ---- burst threshold: the gap the time window alone cannot cover ----
+    //
+    // Agora's workload is bounded batch runs, not a continuous stream: a genuine 429 at
+    // symbol #5 of a 145-symbol run skips the remaining ~140 inside ONE run that then ends,
+    // entirely inside one RATE_LIMIT_WARN_WINDOW_MS window, with no further call afterwards to
+    // ever trigger the time-based flush. These three tests pin the size-based second trigger
+    // that exists specifically to cover that gap.
+
+    @Test void burstReachingThresholdWithNoFurtherCallsFlushesExactlyOnceWithTheCount() {
+        AtomicLong clock = new AtomicLong(0L); // clock never advances: this is the "run ends, no further calls" case
+        NewsAggregator agg = new NewsAggregator(
+                List.of(ok("finnhub", item("a", "https://x/1")), cooldownRejecting("rss:reddit-stocks")),
+                200, NewsAggregator.TOTAL_BUDGET_MS, clock::get);
+
+        for (int i = 0; i < NewsAggregator.RATE_LIMIT_WARN_BURST_THRESHOLD; i++)
+            agg.aggregate("SYM" + i, FROM, TO, Set.of());
+
+        // The motivating incident (~140 skips inside one run) must be self-reporting even
+        // though the window never elapses — this is the primary risk this fix addresses.
+        assertThat(warnEvents()).hasSize(1);
+        assertThat(warnEvents().get(0).getFormattedMessage())
+                .contains("rss:reddit-stocks")
+                .contains(String.valueOf(NewsAggregator.RATE_LIMIT_WARN_BURST_THRESHOLD));
+        assertThat(debugEvents()).hasSize(NewsAggregator.RATE_LIMIT_WARN_BURST_THRESHOLD);
+    }
+
+    @Test void burstBelowThresholdWithNoFurtherCallsStillProducesNoWarn() {
+        AtomicLong clock = new AtomicLong(0L); // never advances, and never reaches the burst threshold either
+        NewsAggregator agg = new NewsAggregator(
+                List.of(ok("finnhub", item("a", "https://x/1")), cooldownRejecting("rss:reddit-stocks")),
+                200, NewsAggregator.TOTAL_BUDGET_MS, clock::get);
+
+        int belowThreshold = NewsAggregator.RATE_LIMIT_WARN_BURST_THRESHOLD - 1;
+        for (int i = 0; i < belowThreshold; i++)
+            agg.aggregate("SYM" + i, FROM, TO, Set.of());
+
+        // The quiet property must survive: staying under the threshold (and never reaching the
+        // time window either) means still zero WARNs — only DEBUG per skip.
+        assertThat(warnEvents()).isEmpty();
+        assertThat(debugEvents()).hasSize(belowThreshold);
+    }
+
+    @Test void crossingThresholdMidBurstFlushesOnceNotOncePerSubsequentSkip() {
+        AtomicLong clock = new AtomicLong(0L);
+        NewsAggregator agg = new NewsAggregator(
+                List.of(ok("finnhub", item("a", "https://x/1")), cooldownRejecting("rss:reddit-stocks")),
+                200, NewsAggregator.TOTAL_BUDGET_MS, clock::get);
+
+        // Overshoot the threshold by 5 skips, all in the same burst, no time advance: crossing
+        // it must flush exactly once, not once for every skip from the crossing point onward.
+        int burstSize = NewsAggregator.RATE_LIMIT_WARN_BURST_THRESHOLD + 5;
+        for (int i = 0; i < burstSize; i++)
+            agg.aggregate("SYM" + i, FROM, TO, Set.of());
+
+        assertThat(warnEvents()).hasSize(1);
+        assertThat(warnEvents().get(0).getFormattedMessage())
+                .contains(String.valueOf(NewsAggregator.RATE_LIMIT_WARN_BURST_THRESHOLD));
+        assertThat(debugEvents()).hasSize(burstSize);
+    }
 }
