@@ -1,5 +1,6 @@
 package de.visterion.agora.fetch.earnings;
 
+import com.github.tomakehurst.wiremock.WireMockServer;
 import de.visterion.agora.data.MarketDataException;
 import org.junit.jupiter.api.Test;
 
@@ -10,6 +11,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
+import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static org.assertj.core.api.Assertions.*;
 
 class EarningsServiceTest {
@@ -218,6 +221,64 @@ class EarningsServiceTest {
         svc.earnings("ZZTOP", FROM, TO);
         svc.earningsWindow(FROM, TO);
 
+        assertThat(finnhub.calls).hasValue(2);
+    }
+
+    // ---- T6 healthy-path rule ----------------------------------------------------
+    // These two restore coverage that Task 5 had to strip out of this file (the skip rule and
+    // the Yahoo page cache did not exist yet) and re-adds it now that they do.
+
+    @Test void yahooSkippedByHealthyPathRuleCountsAsCompleteAndCachesLong() {
+        // Phase 1 (finnhub) already covers the ticker, so the real Yahoo provider must never
+        // be consulted at all -- not even a page-cache read.
+        var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of(ev("ZZTOP", "2026-08-01")));
+        WireMockServer server = new WireMockServer(options().dynamicPort());
+        server.start();
+        try {
+            server.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
+                    .willReturn(okJson("""
+                            {"rows":[{"ticker":"ZZTOP","startdatetime":"2026-08-01T12:00:00.000Z",
+                                      "epsestimate":"1.25","epsactual":null,"epssurprisepct":null}]}""")));
+            var yahoo = new YahooEarningsProvider(
+                    "http://localhost:" + server.port(), "agora-test", 2000L, 3600L, clock::get);
+            var svc = service(List.of(finnhub, yahoo));
+
+            var r = svc.earnings("ZZTOP", FROM, TO);
+
+            assertThat(r.partial()).isFalse();
+            assertThat(r.events()).hasSize(1);
+            assertThat(server.getAllServeEvents()).isEmpty();   // yahoo was never consulted
+
+            // Complete results cache under the LONG TTL: still served, unre-fetched, past the
+            // point where the short partial TTL (600s) would already have expired.
+            clock.set(600_001L);
+            var r2 = svc.earnings("ZZTOP", FROM, TO);
+            assertThat(r2.partial()).isFalse();
+            assertThat(finnhub.calls).hasValue(1);
+            assertThat(server.getAllServeEvents()).isEmpty();
+        } finally {
+            server.stop();
+        }
+    }
+
+    @Test void yahooPageCacheMissMakesResultPartialAndCachesShort() {
+        // Phase 1 (finnhub) has nothing for the ticker, and Yahoo's page cache is cold, so the
+        // result must come back partial rather than blocking on the crawl.
+        var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of());
+        // Unroutable base URL: window() must return empty synchronously regardless of whether
+        // the background warm eventually succeeds or fails.
+        var yahoo = new YahooEarningsProvider(
+                "http://localhost:1", "agora-test", 2000L, 3600L, clock::get);
+        var svc = service(List.of(finnhub, yahoo));
+
+        var r = svc.earnings("ZZTOP", FROM, TO);
+
+        assertThat(r.partial()).isTrue();
+        assertThat(r.events()).isEmpty();
+
+        // Cached under the SHORT (partial) TTL: past it, finnhub is re-queried.
+        clock.set(600_001L);
+        svc.earnings("ZZTOP", FROM, TO);
         assertThat(finnhub.calls).hasValue(2);
     }
 }

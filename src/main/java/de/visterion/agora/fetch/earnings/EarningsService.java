@@ -12,6 +12,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.*;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -102,49 +103,80 @@ public class EarningsService {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "no provider covers the requested earnings window", null);
 
+        // Phase 1: every relevant provider except Yahoo's market-wide pager. Phase 2 (below)
+        // consults Yahoo only for what phase 1 left uncovered — and only from its page cache,
+        // never by crawling inline (D17: the crawl cannot finish inside this budget).
+        List<EarningsProvider> phase1 = new ArrayList<>();
+        YahooEarningsProvider yahoo = null;
+        for (EarningsProvider p : relevant) {
+            if (p instanceof YahooEarningsProvider y) yahoo = y;
+            else phase1.add(p);
+        }
+
         List<List<EarningsEvent>> results = new ArrayList<>();
         boolean anySuccess = false;
         boolean degraded = false;
 
-        long deadlineNanos = System.nanoTime() + budgetMs * 1_000_000L;
-        try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
-            List<Future<List<EarningsEvent>>> futures = new ArrayList<>();
-            List<EarningsProvider> submitted = new ArrayList<>();
-            for (EarningsProvider p : relevant) {
-                if (cooldown.isCooled(p)) { degraded = true; continue; }
-                submitted.add(p);
-                futures.add(pool.submit(() -> p.earnings(symbol, from, to)));
-            }
-            for (int i = 0; i < submitted.size(); i++) {
-                EarningsProvider p = submitted.get(i);
-                long remaining = deadlineNanos - System.nanoTime();
-                try {
-                    results.add(futures.get(i).get(Math.max(remaining, 0L), TimeUnit.NANOSECONDS));
-                    cooldown.recordSuccess(p);
-                    anySuccess = true;
-                } catch (TimeoutException e) {
-                    // Budget cancellation is NOT a provider failure: a healthy-but-slow source
-                    // must not accumulate cooldown strikes. Hangs are caught by the per-attempt
-                    // timeout instead, which surfaces as a real ExecutionException below.
-                    futures.get(i).cancel(true);
-                    degraded = true;
-                } catch (ExecutionException e) {
-                    cooldown.recordFailure(p);
-                    degraded = true;
-                    log.debug("earnings provider {} failed for {}", p.name(), symbol, e.getCause());
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                            "earnings collection interrupted", e);
+        if (!phase1.isEmpty()) {
+            long deadlineNanos = System.nanoTime() + budgetMs * 1_000_000L;
+            try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                List<Future<List<EarningsEvent>>> futures = new ArrayList<>();
+                List<EarningsProvider> submitted = new ArrayList<>();
+                for (EarningsProvider p : phase1) {
+                    if (cooldown.isCooled(p)) { degraded = true; continue; }
+                    submitted.add(p);
+                    futures.add(pool.submit(() -> p.earnings(symbol, from, to)));
                 }
+                for (int i = 0; i < submitted.size(); i++) {
+                    EarningsProvider p = submitted.get(i);
+                    long remaining = deadlineNanos - System.nanoTime();
+                    try {
+                        results.add(futures.get(i).get(Math.max(remaining, 0L), TimeUnit.NANOSECONDS));
+                        cooldown.recordSuccess(p);
+                        anySuccess = true;
+                    } catch (TimeoutException e) {
+                        // Budget cancellation is NOT a provider failure: a healthy-but-slow source
+                        // must not accumulate cooldown strikes. Hangs are caught by the per-attempt
+                        // timeout instead, which surfaces as a real ExecutionException below.
+                        futures.get(i).cancel(true);
+                        degraded = true;
+                    } catch (ExecutionException e) {
+                        cooldown.recordFailure(p);
+                        degraded = true;
+                        log.debug("earnings provider {} failed for {}", p.name(), symbol, e.getCause());
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                                "earnings collection interrupted", e);
+                    }
+                }
+                pool.shutdownNow();
             }
-            pool.shutdownNow();
+        }
+
+        List<EarningsEvent> merged = EarningsMerger.merge(results);
+        boolean uncovered = merged.isEmpty();
+
+        // Phase 2: Yahoo is a healthy-path skip — it is only ever consulted (from its page
+        // cache, read-only) when phase 1 left the window uncovered, so a symbol phase 1 already
+        // answered never pays for Yahoo at all.
+        if (yahoo != null && uncovered && !cooldown.isCooled(yahoo)) {
+            Optional<List<EarningsEvent>> page = yahoo.window(from, to);
+            if (page.isPresent()) {
+                anySuccess = true;
+                List<EarningsEvent> filtered = symbol == null ? page.get()
+                        : page.get().stream()
+                              .filter(e -> e.symbol().equalsIgnoreCase(symbol)).toList();
+                merged = EarningsMerger.merge(List.of(merged, filtered));
+            } else {
+                degraded = true;   // cache still warming — we could not see Yahoo this call
+            }
         }
 
         if (!anySuccess)
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "no earnings provider could serve " + (symbol == null ? "the window" : symbol), null);
 
-        return new EarningsResult(EarningsMerger.merge(results), degraded);
+        return new EarningsResult(merged, degraded);
     }
 }
