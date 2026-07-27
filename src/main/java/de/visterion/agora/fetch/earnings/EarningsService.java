@@ -19,12 +19,10 @@ import java.util.function.Supplier;
 /**
  * Earnings calendar merged across providers, with a three-valued outcome.
  *
- * <p>Providers are queried in priority order under one total budget, stopping as soon as one
- * returns non-empty data — merge (see {@link EarningsMerger}) only matters for the results
- * gathered along the way, not for the providers never reached. This corrects the old
- * first-success chain's real defect: it treated an empty result as "no answer" and fell through
- * to the next provider, so a correct "this symbol has no upcoming earnings" turned into an
- * UNAVAILABLE the moment the fallback was down — and, because {@code TtlCache} never stores a
+ * <p>Providers are queried in parallel under one total budget and their results merged, rather
+ * than the old first-success chain. The chain treated an empty result as "no answer" and fell
+ * through to the next provider, so a correct "this symbol has no upcoming earnings" turned into
+ * an UNAVAILABLE the moment the fallback was down — and, because {@code TtlCache} never stores a
  * throwing load, it re-failed on every single call.
  *
  * <p>An answer is <em>complete</em> when every provider needed for the window either succeeded or
@@ -94,14 +92,6 @@ public class EarningsService {
         return r;
     }
 
-    /**
-     * Providers are consulted in priority order, not all in parallel: once one returns
-     * non-empty data for the window it has answered the question, and a lower-priority
-     * provider consulted anyway would only either duplicate that answer or (per the merge
-     * rules) lose to it — so calling it at all is unnecessary work and an unnecessary
-     * cooldown/latency risk. A provider is only skipped outright when it is cooled down;
-     * failures and timeouts fall through to the next one and mark the answer partial.
-     */
     private EarningsResult collect(String symbol, LocalDate from, LocalDate to) {
         LocalDate today = todayEt.get();
         List<EarningsProvider> relevant = new ArrayList<>();
@@ -118,24 +108,26 @@ public class EarningsService {
 
         long deadlineNanos = System.nanoTime() + budgetMs * 1_000_000L;
         try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+            List<Future<List<EarningsEvent>>> futures = new ArrayList<>();
+            List<EarningsProvider> submitted = new ArrayList<>();
             for (EarningsProvider p : relevant) {
                 if (cooldown.isCooled(p)) { degraded = true; continue; }
+                submitted.add(p);
+                futures.add(pool.submit(() -> p.earnings(symbol, from, to)));
+            }
+            for (int i = 0; i < submitted.size(); i++) {
+                EarningsProvider p = submitted.get(i);
                 long remaining = deadlineNanos - System.nanoTime();
-                if (remaining <= 0) { degraded = true; break; }
-
-                Future<List<EarningsEvent>> future = pool.submit(() -> p.earnings(symbol, from, to));
                 try {
-                    List<EarningsEvent> r = future.get(remaining, TimeUnit.NANOSECONDS);
+                    results.add(futures.get(i).get(Math.max(remaining, 0L), TimeUnit.NANOSECONDS));
                     cooldown.recordSuccess(p);
                     anySuccess = true;
-                    results.add(r);
-                    if (!r.isEmpty()) break;   // satisfied — the remaining providers are unnecessary
                 } catch (TimeoutException e) {
                     // Budget cancellation is NOT a provider failure: a healthy-but-slow source
-                    // must not accumulate cooldown strikes.
-                    future.cancel(true);
+                    // must not accumulate cooldown strikes. Hangs are caught by the per-attempt
+                    // timeout instead, which surfaces as a real ExecutionException below.
+                    futures.get(i).cancel(true);
                     degraded = true;
-                    break; // budget exhausted for this request; do not consult the rest
                 } catch (ExecutionException e) {
                     cooldown.recordFailure(p);
                     degraded = true;
@@ -146,6 +138,7 @@ public class EarningsService {
                             "earnings collection interrupted", e);
                 }
             }
+            pool.shutdownNow();
         }
 
         if (!anySuccess)

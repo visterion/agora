@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -49,6 +50,28 @@ class EarningsServiceTest {
         return new EarningsEvent(sym, LocalDate.parse(date), new BigDecimal("1.0"), null, null, null, null);
     }
 
+    /** Like {@link Fake} but its failure can be toggled after construction, to test a provider
+     *  that recovers between calls under the same cache key. */
+    private static final class Toggle implements EarningsProvider {
+        final String name;
+        final EarningsCoverage coverage;
+        final List<EarningsEvent> events;
+        final AtomicBoolean failing;
+        final AtomicInteger calls = new AtomicInteger();
+
+        Toggle(String name, EarningsCoverage coverage, List<EarningsEvent> events, boolean failing) {
+            this.name = name; this.coverage = coverage; this.events = events;
+            this.failing = new AtomicBoolean(failing);
+        }
+        public String name() { return name; }
+        public EarningsCoverage coverage() { return coverage; }
+        public List<EarningsEvent> earnings(String s, LocalDate f, LocalDate t) {
+            calls.incrementAndGet();
+            if (failing.get()) throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, name + " down", null);
+            return events;
+        }
+    }
+
     private EarningsService service(List<EarningsProvider> providers) {
         return new EarningsService(providers, 21600L, 600L, 3, 600_000L,
                 7000L, clock::get, () -> TODAY);
@@ -77,21 +100,29 @@ class EarningsServiceTest {
         assertThat(finnhub.calls).hasValue(2);
     }
 
-    @Test void skippedUnnecessaryProviderStillCountsAsComplete() {
-        // Finnhub covered the ticker, so Yahoo was never needed — that is not "partial".
-        var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of(ev("ZZTOP", "2026-08-01")));
-        var yahoo = ok("yahoo", EarningsCoverage.FULL_WINDOW, List.of());
+    @Test void mergesAcrossAllHealthyProvidersInsteadOfFirstSuccess() {
+        // THE anti-regression for D3: this is exactly what first-success chains cannot do.
+        // If finnhub answering ZZTOP had silently blocked yahoo, yahoo's QQTEST event and its
+        // epsActual fill-in for ZZTOP would both be missing from the result.
+        var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of(
+                new EarningsEvent("ZZTOP", LocalDate.parse("2026-08-01"),
+                        new BigDecimal("1.0"), null, null, null, null)));
+        var yahoo = ok("yahoo", EarningsCoverage.FULL_WINDOW, List.of(
+                new EarningsEvent("ZZTOP", LocalDate.parse("2026-08-01"),
+                        null, new BigDecimal("1.1"), null, null, null),
+                new EarningsEvent("QQTEST", LocalDate.parse("2026-08-02"),
+                        new BigDecimal("2.0"), null, null, null, null)));
         var svc = service(List.of(finnhub, yahoo));
 
-        var r = svc.earnings("ZZTOP", FROM, TO);
+        var r = svc.earningsWindow(FROM, TO);
 
-        assertThat(r.events()).hasSize(1);
+        assertThat(finnhub.calls).hasValue(1);
+        assertThat(yahoo.calls).hasValue(1);          // both providers were needed and both ran
         assertThat(r.partial()).isFalse();
-        assertThat(yahoo.calls).hasValue(0);
-
-        clock.set(600_001L);                         // past the partial TTL
-        svc.earnings("ZZTOP", FROM, TO);
-        assertThat(finnhub.calls).hasValue(1);       // still cached: complete TTL is 6h
+        assertThat(r.events()).extracting(EarningsEvent::symbol)
+                .containsExactlyInAnyOrder("ZZTOP", "QQTEST");
+        var zztop = r.events().stream().filter(e -> e.symbol().equals("ZZTOP")).findFirst().orElseThrow();
+        assertThat(zztop.epsActual()).isEqualByComparingTo("1.1");   // yahoo's field survived the merge
     }
 
     @Test void allProvidersFailingThrowsAndIsNotCached() {
@@ -153,13 +184,31 @@ class EarningsServiceTest {
     }
 
     @Test void completeResultEvictsAnEarlierPartialUnderTheSameKey() {
+        // No skip rule exists yet in Task 5: yahoo is needed for every call, so a healthy
+        // finnhub alongside a failing yahoo yields a partial (not complete) answer.
         var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of(ev("ZZTOP", "2026-08-01")));
-        var yahoo = new Fake("yahoo", EarningsCoverage.FULL_WINDOW, List.of(), true);
+        var yahoo = new Toggle("yahoo", EarningsCoverage.FULL_WINDOW, List.of(), true);
         var svc = service(List.of(finnhub, yahoo));
 
-        // Finnhub covers the ticker, so yahoo is never consulted -> complete straight away.
-        assertThat(svc.earnings("ZZTOP", FROM, TO).partial()).isFalse();
-        assertThat(svc.earnings("ZZTOP", FROM, TO).partial()).isFalse();
+        var first = svc.earnings("ZZTOP", FROM, TO);
+        assertThat(first.partial()).isTrue();
+
+        // Still within the partial TTL: served from the partial cache, no re-fetch.
+        svc.earnings("ZZTOP", FROM, TO);
+        assertThat(finnhub.calls).hasValue(1);
+
+        // Past the partial TTL, yahoo has recovered -> a complete answer now replaces it.
+        yahoo.failing.set(false);
+        clock.set(600_001L);
+        var second = svc.earnings("ZZTOP", FROM, TO);
+        assertThat(second.partial()).isFalse();
+        assertThat(finnhub.calls).hasValue(2);
+
+        // The complete answer sticks even once the (now moot) partial TTL would elapse again.
+        clock.set(1_200_002L);
+        var third = svc.earnings("ZZTOP", FROM, TO);
+        assertThat(third.partial()).isFalse();
+        assertThat(finnhub.calls).hasValue(2);        // served from the complete cache, not re-fetched
     }
 
     @Test void windowAndSymbolCachesAreSeparateFamilies() {
