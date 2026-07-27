@@ -1,7 +1,7 @@
 # Agora capabilities
 
 Complete inventory of what Agora exposes today. Contract detail for individual tools lives
-in the live MCP/webhook schemas, in [`api.md`](api.md) (fundamentals), and in
+in the live MCP/webhook schemas, in [`api.md`](api.md) (fundamentals, earnings), and in
 [`exit-tools.md`](exit-tools.md) (trading exits). Provider coverage is in
 [`hunting-grounds.md`](hunting-grounds.md).
 

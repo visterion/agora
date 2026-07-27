@@ -1,6 +1,6 @@
 # Hunting grounds: data providers and coverage
 
-Agora's data tools resolve through provider plugins with fallback, so consumers never pick a provider. This page documents which providers back each data domain, their coverage, and their guarantees.
+Agora's data tools resolve through provider plugins, so consumers never pick a provider themselves. Most domains resolve via a fallback chain (first success wins); earnings is the exception — it merges every provider that can see the requested window instead of stopping at the first one that answers (see "Earnings calendar merge" below). This page documents which providers back each data domain, their coverage, and their guarantees.
 
 ## Market data and pricing
 
