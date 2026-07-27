@@ -17,7 +17,46 @@ Agora's data tools resolve through provider plugins with fallback, so consumers 
 | Company profile (name, industry, exchange, cap) | Finnhub (US); Yahoo `quoteSummary` `assetProfile` fallback for non-US suffixed symbols | Finnhub's covered universe (US), global for non-US via Yahoo | Real-time (US); non-US cached 7d (`agora.data.cache.ttl.company-profile-seconds`, `AGORA_DATA_CACHE_TTL_COMPANY_PROFILE`) — degrades to an empty (non-null) profile, uncached, on Yahoo outage |
 | Company news | Finnhub (US) + region-agnostic RSS feeds; Finnhub skipped for non-US suffixed symbols (empty result, RSS providers still serve foreign news) | Finnhub's covered universe (news), global (RSS) | Last 100 headlines, real-time |
 | Analyst estimates, recommendation trend | Finnhub (US); Yahoo `quoteSummary` `recommendationTrend` fallback for non-US suffixed symbols | Finnhub's covered universe (US), global for non-US via Yahoo | Real-time (US); non-US cached 1d (`agora.data.cache.ttl.recommendation-seconds`, `AGORA_DATA_CACHE_TTL_RECOMMENDATION`) — degrades to an empty list, uncached, on Yahoo outage |
-| Earnings calendar (upcoming + recent) | Finnhub, Yahoo fallback | Finnhub coverage or global Yahoo fallback | Real-time |
+| Earnings calendar (upcoming + recent) | Finnhub + Nasdaq (future-only) merged in parallel, Yahoo as a coverage-gap filler | Finnhub coverage plus Nasdaq's forecast-only calendar; Yahoo only for what both left uncovered | Complete answers cached the standard TTL; partial answers cached briefly, see "Earnings calendar merge" below |
+
+### Earnings calendar merge
+
+`get_earnings_calendar` and `get_earnings_window` no longer take the first non-empty
+answer from a fallback chain — every provider that can see the requested window is
+queried in parallel under one shared budget (`agora.fetch.earnings.budget-ms`, default
+7000ms; each provider attempt is separately capped by
+`agora.fetch.earnings.attempt-timeout-ms`, default 4000ms) and their results are merged.
+
+- **Finnhub** — primary source, full history (past actuals + future estimates).
+- **Nasdaq** — key-less, day-granular (one HTTP call per calendar day, cached per day
+  so a wide window is paid for once and shared across every symbol and overlapping
+  window). It declares itself **future-only**: it has no `epsActual`, so past days are
+  never considered "answered" by Nasdaq alone. Its day-by-day fetch is capped at
+  `agora.data.nasdaq.day-cap` (default 95) — **this must stay ≥ 91**, because
+  `get_earnings_calendar` defaults to a `now+90` window, and a lower cap would make the
+  tool's most common call permanently partial.
+- **Yahoo** — consulted only for symbols the above two left uncovered, and only from an
+  asynchronously warmed page cache, never crawled inline (the crawl can take longer than
+  the merge budget). **Yahoo's calendar index is currently broken server-side**: every
+  window and user-agent combination tried returns HTTP 500. The provider is deliberately
+  left wired in behind a failure cooldown (`agora.fetch.earnings.cooldown-threshold`,
+  default 3 consecutive failures; `agora.fetch.earnings.cooldown-ms`, default 600000) so
+  that if Yahoo's index comes back, Agora starts using it again automatically — no code
+  change or redeploy required.
+
+**Three-valued outcome, not a fallback chain.** An empty result from a provider that
+could see the requested window is a valid, cacheable answer ("no earnings scheduled"),
+not an error — the previous first-success chain treated an empty result the same as "no
+answer" and fell through, which turned a correct empty answer into an `unavailable` the
+moment the next provider in the chain was down. Today, the result additionally carries a
+`partial` flag: `partial: true` means a provider that was actually needed for this
+window failed, was cooled down, or ran out of budget, so the returned events cannot be
+trusted as the complete picture. Complete answers are cached for the standard
+fundamentals TTL; partial ones for a short TTL (`agora.fetch.earnings.partial-ttl-seconds`,
+default 600s) — long enough to stop hammering a failing provider, short enough not to
+poison a session once it recovers. The call only throws `unavailable` when nothing
+usable answered at all (no provider covers the window, or every provider that does
+failed).
 
 ## Fundamentals and SEC filings
 
@@ -30,7 +69,7 @@ Agora's data tools resolve through provider plugins with fallback, so consumers 
 | XBRL company-concept (full reported history) | SEC EDGAR (XBRL `us-gaap`, `ifrs-full`, `invest` taxonomies) | US-listed, foreign-filers, mutual funds, investment companies | Per-concept values, units, datapoints | `get_company_concept` for one concept; `get_company_facts` for multiple in one fetch |
 | Reported quarterly EPS | SEC EDGAR (XBRL `us-gaap/NetIncomeLoss`) | US-listed companies | Quarterly only | Via `get_eps_history` |
 | Form-4 insider transactions | SEC EDGAR Form-4 filings, market-wide | US-listed equities | Non-derivative beneficial-ownership changes only | `get_form4_transactions` for date-window scan; `get_form4_owner_history` for multi-year per-owner history |
-| Earnings calendar (events by date) | Finnhub, Yahoo fallback | Finnhub coverage or global fallback | Per-company reported earnings window (actual or estimate) | `get_earnings_calendar` per symbol; `get_earnings_window` market-wide by date |
+| Earnings calendar (events by date) | Finnhub + Nasdaq merged, Yahoo for uncovered gaps | Finnhub coverage plus Nasdaq's forecast-only calendar; Yahoo fills what's left | Per-company reported earnings window (actual or estimate); see "Earnings calendar merge" below for the completeness rules | `get_earnings_calendar` per symbol; `get_earnings_window` market-wide by date |
 
 ### Fundamental scoring (Piotroski F-score)
 

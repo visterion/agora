@@ -52,11 +52,38 @@ consumer. Agora only passes through an opaque `client_ref` on orders.
 
 | Tool | Description |
 |---|---|
-| `get_earnings_calendar` | Recent and upcoming earnings events for a symbol |
-| `get_earnings_window` | Market-wide earnings events in a date window |
+| `get_earnings_calendar` | Recent and upcoming earnings events for a symbol; `partial: true` when the answer may be incomplete |
+| `get_earnings_window` | Market-wide earnings events in a date window; `partial` and `truncated` flags |
 | `get_eps_history` | Reported quarterly EPS (symbol or CIK) |
 
-**Provider chain:** Finnhub → Yahoo.
+**Provider merge (not a fallback chain):** Finnhub (full history) and Nasdaq
+(`agora.data.nasdaq.*`, key-less, future-only, no `epsActual`) are queried in parallel
+under a shared budget and their results merged; Yahoo is consulted only for symbols
+those two left uncovered, and only from its asynchronously warmed page cache — **Yahoo's
+calendar index is currently broken server-side (HTTP 500)**, so it stays behind a
+failure cooldown and self-heals if the upstream index returns. An empty result from a
+provider that could see the window is a valid answer, not an error; `partial: true`
+means a needed provider failed, was cooled, or ran out of budget. See
+[`hunting-grounds.md`](hunting-grounds.md#earnings-calendar-merge) for the full merge
+semantics and cache TTLs, and [`api.md`](api.md#get_earnings_calendar) for the tool
+output contract.
+
+**Configuration (`agora.` prefix):**
+
+| Property | Default | Purpose |
+|---|---|---|
+| `data.yahoo.user-agent` | browser UA string | Single UA for every Yahoo client (crumb, fundamentals-timeseries, price/chart, earnings) |
+| `data.nasdaq.base-url` | `https://api.nasdaq.com` | Nasdaq earnings-calendar endpoint |
+| `data.nasdaq.user-agent` | browser UA string | Nasdaq rejects non-browser agents |
+| `data.nasdaq.day-cap` | `95` | Max calendar days fetched per call; **must stay ≥ 91** — `get_earnings_calendar` defaults to a `now+90` window, so a lower cap would make the tool's most common call permanently partial |
+| `fetch.earnings.attempt-timeout-ms` | `4000` | Per-provider timeout for one earnings fetch attempt; kept below `budget-ms` so a hanging provider becomes a real (cooldown-tripping) failure instead of a silent budget cancellation |
+| `fetch.earnings.budget-ms` | `7000` | Total wall-clock budget for the parallel provider fan-out |
+| `fetch.earnings.partial-ttl-seconds` | `600` | Cache TTL for a `partial` answer (short, to retry soon without hammering) |
+| `fetch.earnings.cooldown-threshold` | `3` | Consecutive provider failures before it is cooled down |
+| `fetch.earnings.cooldown-ms` | `600000` | How long a cooled-down provider is skipped before being retried |
+| `data.finnhub.calls-per-minute` | `60` | Shared rate-limit policy across all eight Finnhub callers (news, fundamentals, estimates, profile, quote, earnings, etc.) — one limiter instance, not per-caller |
+| `data.finnhub.max-wait-ms` | `3000` | Bounded wait for a caller that opts to wait out the limiter (e.g. earnings) instead of failing fast (e.g. quotes) |
+| `data.finnhub.default-retry-after-ms` | `2000` | Fallback wait when a Finnhub 429 carries neither `Retry-After` nor a parseable `x-ratelimit-reset` |
 
 ---
 
