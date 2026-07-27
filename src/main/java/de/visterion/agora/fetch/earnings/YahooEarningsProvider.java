@@ -78,8 +78,29 @@ public class YahooEarningsProvider implements EarningsProvider {
      * finish inside the merge budget. Running it inline would mean it is cancelled every time,
      * the cache never fills, and every uncovered ticker pays the full budget forever — with a
      * perfectly healthy Yahoo. So the request path only ever reads.
+     *
+     * <p>Equivalent to {@link #window(LocalDate, LocalDate, Runnable, Runnable)} with no-op
+     * outcome callbacks; kept for callers (and tests) that don't need to react to a warm's
+     * success/failure.
      */
     public Optional<List<EarningsEvent>> window(LocalDate from, LocalDate to) {
+        return window(from, to, () -> {}, () -> {});
+    }
+
+    /**
+     * Same read-then-warm-async behaviour as {@link #window(LocalDate, LocalDate)}, but reports
+     * the outcome of a freshly <em>started</em> warm via {@code onWarmSuccess}/{@code
+     * onWarmFailure} (a cache hit or an already-in-flight warm for the same key invokes neither).
+     *
+     * <p>This provider has no cooldown of its own — {@link EarningsService} owns the shared
+     * {@link ProviderCooldown} and is the one deciding whether to call this method at all. These
+     * callbacks are how a warm's outcome, which only becomes known asynchronously after this
+     * method has already returned, gets fed back into that cooldown: a chronically failing Yahoo
+     * calendar must stop being re-crawled (up to {@code MAX_PAGES} requests) on every single
+     * cache-miss request instead of retrying forever.
+     */
+    public Optional<List<EarningsEvent>> window(LocalDate from, LocalDate to,
+                                                 Runnable onWarmSuccess, Runnable onWarmFailure) {
         String key = "yahooearn:" + from + ":" + to;
         Optional<List<EarningsEvent>> hit = windowCache.peek(key);
         if (hit.isPresent()) return hit;
@@ -87,8 +108,10 @@ public class YahooEarningsProvider implements EarningsProvider {
             Thread.ofVirtual().name("yahoo-earnings-warm").start(() -> {
                 try {
                     windowCache.put(key, earnings(null, from, to));
+                    onWarmSuccess.run();
                 } catch (RuntimeException e) {
                     log.debug("yahoo earnings warm failed for {}..{}", from, to, e);
+                    onWarmFailure.run();
                 } finally {
                     warming.remove(key);
                 }

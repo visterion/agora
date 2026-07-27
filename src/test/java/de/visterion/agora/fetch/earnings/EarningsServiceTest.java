@@ -5,6 +5,7 @@ import de.visterion.agora.data.MarketDataException;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -14,6 +15,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static org.assertj.core.api.Assertions.*;
+import static org.awaitility.Awaitility.await;
 
 class EarningsServiceTest {
 
@@ -280,5 +282,159 @@ class EarningsServiceTest {
         clock.set(600_001L);
         svc.earnings("ZZTOP", FROM, TO);
         assertThat(finnhub.calls).hasValue(2);
+    }
+
+    // ---- T6 fix round 1: the page-present branch (EarningsService.java:163-170) ---------------
+    // Neither test above reaches this branch: the skip test never calls yahoo.window() at all,
+    // and the miss test only exercises the "page absent" else-branch. These two seed the page
+    // cache directly (as the async warm would) and go through EarningsService so the merge, the
+    // anySuccess deviation and the resulting completeness/TTL are pinned down for real.
+
+    @Test void yahooPageCacheHitMergesIntoResultAndCountsAsComplete() {
+        var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of());   // nothing for ZZTOP
+        WireMockServer server = new WireMockServer(options().dynamicPort());
+        server.start();
+        try {
+            server.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
+                    .willReturn(okJson("""
+                            {"rows":[{"ticker":"ZZTOP","startdatetime":"2026-08-01T12:00:00.000Z",
+                                      "epsestimate":"1.25","epsactual":null,"epssurprisepct":null}]}""")));
+            var yahoo = new YahooEarningsProvider(
+                    "http://localhost:" + server.port(), "agora-test", 2000L, 3600L, clock::get);
+
+            // Seed Yahoo's page cache directly, exactly as the async warm would populate it.
+            yahoo.window(FROM, TO);
+            await().atMost(Duration.ofSeconds(5)).until(() -> yahoo.window(FROM, TO).isPresent());
+
+            var svc = service(List.of(finnhub, yahoo));
+            var r = svc.earnings("ZZTOP", FROM, TO);
+
+            // Yahoo's cache genuinely answered: this is the page-present merge branch, not the
+            // cache-miss "degraded" else-branch.
+            assertThat(r.partial()).isFalse();
+            assertThat(r.events()).hasSize(1);
+            assertThat(r.events().get(0).symbol()).isEqualTo("ZZTOP");
+
+            // Complete results cache under the LONG TTL: still served, unre-fetched, past the
+            // point where the short partial TTL (600s) would already have expired.
+            clock.set(600_001L);
+            var r2 = svc.earnings("ZZTOP", FROM, TO);
+            assertThat(r2.partial()).isFalse();
+            assertThat(finnhub.calls).hasValue(1);
+        } finally {
+            server.stop();
+        }
+    }
+
+    @Test void yahooPageCacheHitFilteredEmptyForRequestedTickerStillCountsAsComplete() {
+        // The deviation's edge case: Yahoo's page is present (a real answer), but it has nothing
+        // for the requested ticker once filtered. That must read as "Yahoo confirmed nothing is
+        // scheduled", i.e. complete with empty events -- not partial, and not mistaken for a miss.
+        var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of());   // nothing for ZZTOP
+        WireMockServer server = new WireMockServer(options().dynamicPort());
+        server.start();
+        try {
+            server.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
+                    .willReturn(okJson("""
+                            {"rows":[{"ticker":"QQTEST","startdatetime":"2026-08-01T12:00:00.000Z",
+                                      "epsestimate":"1.25","epsactual":null,"epssurprisepct":null}]}""")));
+            var yahoo = new YahooEarningsProvider(
+                    "http://localhost:" + server.port(), "agora-test", 2000L, 3600L, clock::get);
+
+            yahoo.window(FROM, TO);
+            await().atMost(Duration.ofSeconds(5)).until(() -> yahoo.window(FROM, TO).isPresent());
+
+            var svc = service(List.of(finnhub, yahoo));
+            var r = svc.earnings("ZZTOP", FROM, TO);
+
+            assertThat(r.partial()).isFalse();
+            assertThat(r.events()).isEmpty();
+        } finally {
+            server.stop();
+        }
+    }
+
+    // ---- T6 fix round 1: Yahoo's cooldown was previously permanently inert --------------------
+    // Yahoo never enters the phase-1 fan-out, so nothing called cooldown.recordFailure/Success
+    // for it; a chronically dead Yahoo was re-crawled (up to MAX_PAGES requests) on every single
+    // cache-miss request forever. These two prove the async warm's outcome now feeds the shared
+    // cooldown, and that the cooldown genuinely gates re-warming.
+
+    @Test void repeatedlyFailingYahooWarmStopsBeingRetriedOnceCooldownTrips() {
+        var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of());
+        WireMockServer server = new WireMockServer(options().dynamicPort());
+        server.start();
+        try {
+            server.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
+                    .willReturn(aResponse().withStatus(500)));
+            var yahoo = new YahooEarningsProvider(
+                    "http://localhost:" + server.port(), "agora-test", 2000L, 3600L, clock::get);
+            // A short partial TTL (100s), deliberately decoupled from the 600s cooldown window,
+            // so bypassing the partial cache between retries cannot also brush past cooldown.
+            var svc = new EarningsService(List.of(finnhub, yahoo), 21600L, 100L, 3, 600_000L,
+                    7000L, clock::get, () -> TODAY);
+
+            // Three consecutive failed warms trip the cooldown (threshold=3).
+            for (int i = 1; i <= 3; i++) {
+                svc.earnings("ZZTOP", FROM, TO);
+                int expected = i;
+                await().atMost(Duration.ofSeconds(5))
+                        .until(() -> server.getAllServeEvents().size() >= expected);
+                clock.addAndGet(100_001L);   // past the partial TTL, forcing a fresh attempt next time
+            }
+            int callsAfterThreeFailures = server.getAllServeEvents().size();
+            assertThat(callsAfterThreeFailures).isEqualTo(3);
+
+            // Cooldown is now tripped. The gate (!cooldown.isCooled(yahoo)) is checked
+            // synchronously before window() is ever called, so this holds immediately -- no
+            // extra wait is needed for it to become true, only enough to prove it stays true.
+            await().atMost(Duration.ofSeconds(2)).during(Duration.ofMillis(300))
+                    .untilAsserted(() -> {
+                        svc.earnings("ZZTOP", FROM, TO);
+                        assertThat(server.getAllServeEvents()).hasSize(callsAfterThreeFailures);
+                    });
+        } finally {
+            server.stop();
+        }
+    }
+
+    @Test void yahooWarmResumesAfterCooldownWindowElapses() {
+        var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of());
+        WireMockServer server = new WireMockServer(options().dynamicPort());
+        server.start();
+        try {
+            server.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
+                    .willReturn(aResponse().withStatus(500)));
+            var yahoo = new YahooEarningsProvider(
+                    "http://localhost:" + server.port(), "agora-test", 2000L, 3600L, clock::get);
+            var svc = new EarningsService(List.of(finnhub, yahoo), 21600L, 100L, 3, 600_000L,
+                    7000L, clock::get, () -> TODAY);
+
+            for (int i = 1; i <= 3; i++) {
+                svc.earnings("ZZTOP", FROM, TO);
+                int expected = i;
+                await().atMost(Duration.ofSeconds(5))
+                        .until(() -> server.getAllServeEvents().size() >= expected);
+                clock.addAndGet(100_001L);
+            }
+            int callsAfterThreeFailures = server.getAllServeEvents().size();
+
+            // Jump the injected clock past the 600s cooldown window (no sleeping) and let Yahoo
+            // "recover" -- the next call must attempt a fresh warm instead of staying gated.
+            // (Deliberately no intermediate still-cooled call here: because finnhub answers with
+            // an empty-but-successful result, such a call would cache as COMPLETE for the full
+            // 6h TTL and mask the resume this test is checking for.)
+            clock.set(800_003L);
+            server.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
+                    .willReturn(okJson("""
+                            {"rows":[{"ticker":"ZZTOP","startdatetime":"2026-08-01T12:00:00.000Z",
+                                      "epsestimate":"1.25","epsactual":null,"epssurprisepct":null}]}""")));
+
+            svc.earnings("ZZTOP", FROM, TO);
+            await().atMost(Duration.ofSeconds(5))
+                    .until(() -> server.getAllServeEvents().size() > callsAfterThreeFailures);
+        } finally {
+            server.stop();
+        }
     }
 }

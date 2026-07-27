@@ -107,11 +107,12 @@ public class EarningsService {
         // consults Yahoo only for what phase 1 left uncovered — and only from its page cache,
         // never by crawling inline (D17: the crawl cannot finish inside this budget).
         List<EarningsProvider> phase1 = new ArrayList<>();
-        YahooEarningsProvider yahoo = null;
+        YahooEarningsProvider yahooProvider = null;
         for (EarningsProvider p : relevant) {
-            if (p instanceof YahooEarningsProvider y) yahoo = y;
+            if (p instanceof YahooEarningsProvider y) yahooProvider = y;
             else phase1.add(p);
         }
+        final YahooEarningsProvider yahoo = yahooProvider;
 
         List<List<EarningsEvent>> results = new ArrayList<>();
         boolean anySuccess = false;
@@ -160,8 +161,16 @@ public class EarningsService {
         // Phase 2: Yahoo is a healthy-path skip — it is only ever consulted (from its page
         // cache, read-only) when phase 1 left the window uncovered, so a symbol phase 1 already
         // answered never pays for Yahoo at all.
+        //
+        // Yahoo never enters the phase-1 fan-out, so nothing else calls cooldown.recordSuccess/
+        // recordFailure for it — without wiring the async warm's outcome back here, a dead Yahoo
+        // calendar would be re-crawled (up to MAX_PAGES requests) on every single cache-miss
+        // request forever. Feeding the warm's outcome into the shared cooldown, and gating the
+        // call to window() on it below, makes Yahoo back off like every other provider and
+        // resume on its own once the cooldown window elapses.
         if (yahoo != null && uncovered && !cooldown.isCooled(yahoo)) {
-            Optional<List<EarningsEvent>> page = yahoo.window(from, to);
+            Optional<List<EarningsEvent>> page = yahoo.window(from, to,
+                    () -> cooldown.recordSuccess(yahoo), () -> cooldown.recordFailure(yahoo));
             if (page.isPresent()) {
                 anySuccess = true;
                 List<EarningsEvent> filtered = symbol == null ? page.get()
