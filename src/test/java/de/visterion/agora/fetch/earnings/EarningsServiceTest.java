@@ -360,6 +360,50 @@ class EarningsServiceTest {
     // cache-miss request forever. These two prove the async warm's outcome now feeds the shared
     // cooldown, and that the cooldown genuinely gates re-warming.
 
+    /**
+     * A {@link YahooEarningsProvider} that counts (a) every {@code window(...)} invocation and
+     * (b) every completed warm outcome (success or failure), independent of the underlying HTTP
+     * transport.
+     *
+     * <p>Two distinct real-call-count hazards make {@code server.getAllServeEvents()} the wrong
+     * signal for either purpose:
+     *
+     * <ul>
+     *   <li>{@code EarningsService} supplies its own {@code cooldown.recordSuccess/recordFailure}
+     *       callbacks to {@code window(...)}; those run asynchronously on the warm thread,
+     *       strictly after the HTTP call completes. Waiting for the serve-event count to grow
+     *       races ahead of {@code cooldown.recordFailure(yahoo)} actually having run -- {@code
+     *       warmOutcomes} (incremented from inside the callback, after it runs) is the correct
+     *       synchronisation point instead.</li>
+     *   <li>The JDK {@code HttpClient} used under {@code RestClient} can silently retry a GET at
+     *       the transport level (e.g. a stale pooled connection race) without that retry ever
+     *       reaching {@code ProviderCallLogger} or the caller -- observed directly: a run where
+     *       WireMock's serve-event journal held 5 entries while {@code window(...)} had provably
+     *       been invoked exactly 3 times. So "no new call was made" must be asserted against
+     *       {@code windowCalls} (one increment per logical {@code window(...)} invocation), not
+     *       against the WireMock journal, which counts physical connections/retries Yahoo's own
+     *       cooldown gate has no way to see or control.</li>
+     * </ul>
+     */
+    private static final class InstrumentedYahoo extends YahooEarningsProvider {
+        final AtomicInteger windowCalls = new AtomicInteger();
+        final AtomicInteger warmOutcomes = new AtomicInteger();
+
+        InstrumentedYahoo(String baseUrl, String userAgent, long timeoutMs, long ttlSeconds,
+                          java.util.function.LongSupplier now) {
+            super(baseUrl, userAgent, timeoutMs, ttlSeconds, now);
+        }
+
+        @Override
+        public java.util.Optional<List<EarningsEvent>> window(LocalDate from, LocalDate to,
+                                                                Runnable onWarmSuccess, Runnable onWarmFailure) {
+            windowCalls.incrementAndGet();
+            return super.window(from, to,
+                    () -> { onWarmSuccess.run(); warmOutcomes.incrementAndGet(); },
+                    () -> { onWarmFailure.run(); warmOutcomes.incrementAndGet(); });
+        }
+    }
+
     @Test void repeatedlyFailingYahooWarmStopsBeingRetriedOnceCooldownTrips() {
         var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of());
         WireMockServer server = new WireMockServer(options().dynamicPort());
@@ -367,31 +411,41 @@ class EarningsServiceTest {
         try {
             server.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
                     .willReturn(aResponse().withStatus(500)));
-            var yahoo = new YahooEarningsProvider(
+            var yahoo = new InstrumentedYahoo(
                     "http://localhost:" + server.port(), "agora-test", 2000L, 3600L, clock::get);
             // A short partial TTL (100s), deliberately decoupled from the 600s cooldown window,
             // so bypassing the partial cache between retries cannot also brush past cooldown.
             var svc = new EarningsService(List.of(finnhub, yahoo), 21600L, 100L, 3, 600_000L,
                     7000L, clock::get, () -> TODAY);
 
-            // Three consecutive failed warms trip the cooldown (threshold=3).
+            // Three consecutive failed warms trip the cooldown (threshold=3). Wait on the warm
+            // OUTCOME (i.e. cooldown.recordFailure(yahoo) has actually run), not on the HTTP call
+            // landing -- those are two different moments and the test must not race ahead of it.
             for (int i = 1; i <= 3; i++) {
                 svc.earnings("ZZTOP", FROM, TO);
                 int expected = i;
                 await().atMost(Duration.ofSeconds(5))
-                        .until(() -> server.getAllServeEvents().size() >= expected);
+                        .until(() -> yahoo.warmOutcomes.get() >= expected);
                 clock.addAndGet(100_001L);   // past the partial TTL, forcing a fresh attempt next time
             }
-            int callsAfterThreeFailures = server.getAllServeEvents().size();
-            assertThat(callsAfterThreeFailures).isEqualTo(3);
+            assertThat(yahoo.windowCalls).hasValue(3);
+            assertThat(yahoo.warmOutcomes).hasValue(3);
 
-            // Cooldown is now tripped. The gate (!cooldown.isCooled(yahoo)) is checked
-            // synchronously before window() is ever called, so this holds immediately -- no
-            // extra wait is needed for it to become true, only enough to prove it stays true.
+            // Cooldown is now tripped -- confirmed above by the 3rd recorded outcome, not merely
+            // the 3rd HTTP call. The gate (!cooldown.isCooled(yahoo)) is checked synchronously
+            // before window() is ever called, so this holds immediately; the `.during(...)` here
+            // only proves it keeps holding, not that it needs time to become true.
+            //
+            // Asserted against yahoo.windowCalls, NOT server.getAllServeEvents(): the JDK
+            // HttpClient underneath RestClient can silently retry a GET at the transport level
+            // (a stale pooled connection race), which inflates WireMock's serve-event journal
+            // without a second window() invocation ever happening -- observed directly in a run
+            // where the journal held 5 entries against exactly 3 real window() calls. windowCalls
+            // is incremented once per logical invocation and is what the cooldown gate controls.
             await().atMost(Duration.ofSeconds(2)).during(Duration.ofMillis(300))
                     .untilAsserted(() -> {
                         svc.earnings("ZZTOP", FROM, TO);
-                        assertThat(server.getAllServeEvents()).hasSize(callsAfterThreeFailures);
+                        assertThat(yahoo.windowCalls).hasValue(3);
                     });
         } finally {
             server.stop();
@@ -405,19 +459,22 @@ class EarningsServiceTest {
         try {
             server.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
                     .willReturn(aResponse().withStatus(500)));
-            var yahoo = new YahooEarningsProvider(
+            var yahoo = new InstrumentedYahoo(
                     "http://localhost:" + server.port(), "agora-test", 2000L, 3600L, clock::get);
             var svc = new EarningsService(List.of(finnhub, yahoo), 21600L, 100L, 3, 600_000L,
                     7000L, clock::get, () -> TODAY);
 
+            // Same rationale as above: wait on the recorded outcome, not the raw HTTP call, so
+            // cooldown.recordFailure(yahoo) has genuinely run by the time the loop advances.
             for (int i = 1; i <= 3; i++) {
                 svc.earnings("ZZTOP", FROM, TO);
                 int expected = i;
                 await().atMost(Duration.ofSeconds(5))
-                        .until(() -> server.getAllServeEvents().size() >= expected);
+                        .until(() -> yahoo.warmOutcomes.get() >= expected);
                 clock.addAndGet(100_001L);
             }
-            int callsAfterThreeFailures = server.getAllServeEvents().size();
+            assertThat(yahoo.windowCalls).hasValue(3);
+            assertThat(yahoo.warmOutcomes).hasValue(3);
 
             // Jump the injected clock past the 600s cooldown window (no sleeping) and let Yahoo
             // "recover" -- the next call must attempt a fresh warm instead of staying gated.
@@ -431,8 +488,10 @@ class EarningsServiceTest {
                                       "epsestimate":"1.25","epsactual":null,"epssurprisepct":null}]}""")));
 
             svc.earnings("ZZTOP", FROM, TO);
+            // Asserted against windowCalls (a fresh, logical warm attempt was made), not the
+            // WireMock journal -- see the sibling test for why the journal is unreliable here.
             await().atMost(Duration.ofSeconds(5))
-                    .until(() -> server.getAllServeEvents().size() > callsAfterThreeFailures);
+                    .until(() -> yahoo.windowCalls.get() > 3);
         } finally {
             server.stop();
         }
