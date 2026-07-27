@@ -50,11 +50,12 @@ public final class EarningsMerger {
 
         for (List<EarningsEvent> providerEvents : byProviderInOrder) {
             if (providerEvents == null) continue;
-            // Sort events canonically to ensure deterministic clustering independent of provider order
+            // Filter out invalid events before sorting to avoid NPE in comparator
             var sorted = new ArrayList<>(providerEvents);
+            sorted.removeIf(e -> e == null || e.symbol() == null || e.date() == null);
+            // Sort events canonically to ensure deterministic clustering independent of provider order
             sorted.sort(Comparator.comparing(EarningsEvent::date).thenComparing(EarningsEvent::symbol));
             for (EarningsEvent e : sorted) {
-                if (e == null || e.symbol() == null || e.date() == null) continue;
                 Cluster target = nearestAnchor(clusters, e);
                 if (target == null) clusters.add(new Cluster(e));
                 else target.merged = fill(target.merged, e);

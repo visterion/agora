@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -151,5 +152,44 @@ class EarningsMergerTest {
 
     @Test void mergeNullOuterListYieldsEmpty() {
         assertThat(EarningsMerger.merge(null)).isEmpty();
+    }
+
+    @Test void providerListWithLiteralNullElementIsSkipped() {
+        var events = new ArrayList<EarningsEvent>();
+        events.add(ev("ZZTOP", "2026-07-29", "1.00", null));
+        events.add(null);  // literal null element
+        events.add(ev("ZZTOP", "2026-07-30", "2.00", null));
+
+        var merged = EarningsMerger.merge(List.of(events));
+
+        // Valid events still merge normally (1 day apart)
+        assertThat(merged).singleElement()
+                .satisfies(e -> assertThat(e.date()).isEqualTo(LocalDate.parse("2026-07-29")));
+    }
+
+    @Test void eventWithNullDateIsSkipped() {
+        var events = new ArrayList<EarningsEvent>();
+        events.add(ev("ZZTOP", "2026-07-29", "1.00", null));
+        events.add(new EarningsEvent("ZZTOP", null, new BigDecimal("1.50"), null, null, null, null));
+        events.add(ev("ZZTOP", "2026-08-01", "2.00", null));  // 3 days apart, won't merge with first
+
+        var merged = EarningsMerger.merge(List.of(events));
+
+        assertThat(merged).hasSize(2);
+        assertThat(merged).extracting(EarningsEvent::date)
+                .containsExactly(LocalDate.parse("2026-07-29"), LocalDate.parse("2026-08-01"));
+    }
+
+    @Test void eventWithNullSymbolIsSkipped() {
+        var events = new ArrayList<EarningsEvent>();
+        events.add(ev("ZZTOP", "2026-07-29", "1.00", null));
+        events.add(new EarningsEvent(null, LocalDate.parse("2026-07-30"), new BigDecimal("1.50"), null, null, null, null));
+        events.add(ev("ZZTOP", "2026-08-01", "2.00", null));  // 3 days apart, won't merge with first
+
+        var merged = EarningsMerger.merge(List.of(events));
+
+        assertThat(merged).hasSize(2);
+        assertThat(merged).extracting(EarningsEvent::date)
+                .containsExactly(LocalDate.parse("2026-07-29"), LocalDate.parse("2026-08-01"));
     }
 }
