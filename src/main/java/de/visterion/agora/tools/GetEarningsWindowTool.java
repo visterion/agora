@@ -2,6 +2,7 @@ package de.visterion.agora.tools;
 
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.fetch.earnings.EarningsEvent;
+import de.visterion.agora.fetch.earnings.EarningsResult;
 import de.visterion.agora.fetch.earnings.EarningsService;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolParams;
@@ -68,7 +69,8 @@ public class GetEarningsWindowTool implements AgoraTool {
         }
         limit = Math.clamp(limit, 1, MAX_LIMIT);
         try {
-            List<EarningsEvent> events = service.earningsWindow(from, to);
+            EarningsResult result = service.earningsWindow(from, to);
+            List<EarningsEvent> events = result.events();
             ObjectNode out = mapper.createObjectNode();
             ArrayNode arr = out.putArray("earnings");
             int n = 0;
@@ -84,14 +86,11 @@ public class GetEarningsWindowTool implements AgoraTool {
                 if (e.revenueActual() != null) o.put("revenueActual", e.revenueActual());
             }
             out.put("truncated", events.size() > limit);
+            if (result.partial()) out.put("partial", true);
+            else if (events.isEmpty())
+                out.put("note", "no earnings in the requested window");
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
-            if (e.kind() == MarketDataException.Kind.NOT_FOUND) {
-                ObjectNode out = mapper.createObjectNode();
-                out.putArray("earnings");
-                out.put("note", "no earnings in the requested window");
-                return ToolResult.ok(out);
-            }
             return ToolResult.unavailable(e.getMessage());
         }
     }

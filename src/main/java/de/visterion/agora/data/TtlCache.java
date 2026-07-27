@@ -90,6 +90,11 @@ public class TtlCache<K, V> {
         map.put(key, new Entry<>(value, now + ttlMillis));
     }
 
+    /** Drops any entry for {@code key}; used when a better-quality value supersedes it. */
+    public void remove(K key) {
+        map.remove(key);
+    }
+
     private void evictToMakeRoom(long now) {
         map.values().removeIf(e -> e.expiresAtMillis() <= now);
         if (map.size() >= maxSize) {
