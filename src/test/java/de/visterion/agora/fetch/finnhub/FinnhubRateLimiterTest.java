@@ -105,6 +105,22 @@ class FinnhubRateLimiterTest {
         assertThat(limiter.resolveWaitMs(headers)).isEqualTo(2_000L);
     }
 
+    // Fix round 2: the clamp (see below) must apply uniformly to every Retry-After shape, not just
+    // x-ratelimit-reset — a huge seconds value or a date far in the future must clamp identically.
+    @Test void retryAfterSecondsFarInTheFutureIsClampedToMaxWait() {
+        var limiter = new FinnhubRateLimiter(1, 60_000L, clock::get, 2_000L);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.RETRY_AFTER, "999999999");
+        assertThat(limiter.resolveWaitMs(headers)).isEqualTo(60_000L);
+    }
+
+    @Test void retryAfterHttpDateFarInTheFutureIsClampedToMaxWait() {
+        var limiter = new FinnhubRateLimiter(1, 60_000L, clock::get, 2_000L);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.RETRY_AFTER, "Fri, 01 Jan 2100 00:00:00 GMT");
+        assertThat(limiter.resolveWaitMs(headers)).isEqualTo(60_000L);
+    }
+
     // Fix round 1, finding 1: x-ratelimit-reset is ambiguous without a captured live 429 —
     // RssNewsProvider's existing precedent for this same header name treats it as a *relative*
     // second count, not an absolute epoch timestamp. A small value must be read as relative
@@ -118,19 +134,43 @@ class FinnhubRateLimiterTest {
         assertThat(limiter.resolveWaitMs(headers)).isEqualTo(5_000L);
     }
 
-    @Test void rateLimitResetJustBelowTheSanityThresholdIsStillRelative() {
+    // Fix round 2: this used to assert the raw (unclamped) arithmetic — 999_999_999 seconds is
+    // ~31.7 years, and taking that literally as the resolved wait would push blockedUntilMs
+    // decades into the future and wedge the shared limiter (every Finnhub caller) for the
+    // remaining life of the process. The point of this test is the clamp, not the raw arithmetic:
+    // whatever branch is taken, the resolved wait must never exceed maxWaitMs.
+    @Test void rateLimitResetJustBelowTheSanityThresholdIsRelativeButClampedToMaxWait() {
         var limiter = new FinnhubRateLimiter(1, 60_000L, clock::get, 2_000L);
         HttpHeaders headers = new HttpHeaders();
-        headers.set("x-ratelimit-reset", "999999999");
-        assertThat(limiter.resolveWaitMs(headers)).isEqualTo(999_999_999L * 1000L);
+        headers.set("x-ratelimit-reset", "999999999"); // ~31.7 years if taken as literal relative seconds
+        assertThat(limiter.resolveWaitMs(headers)).isEqualTo(60_000L);
     }
 
     @Test void rateLimitResetAtOrAboveTheSanityThresholdIsTreatedAsAbsoluteEpochSeconds() {
         clock.set(1_000L);
-        var limiter = new FinnhubRateLimiter(1, 60_000L, clock::get, 2_000L);
+        // maxWaitMs is deliberately huge here (not the production-realistic value used elsewhere in
+        // this file) so the clamp doesn't obscure which branch — absolute vs. relative — was taken;
+        // the clamp itself is covered separately above and below.
+        var limiter = new FinnhubRateLimiter(1, Long.MAX_VALUE / 2, clock::get, 2_000L);
         HttpHeaders headers = new HttpHeaders();
         headers.set("x-ratelimit-reset", "1000000000"); // exactly at the threshold -> absolute
         assertThat(limiter.resolveWaitMs(headers)).isEqualTo(1_000_000_000L * 1000L - 1_000L);
+    }
+
+    // Fix round 2: the property that actually matters — no header value, however absurd, can wedge
+    // the limiter permanently. Applying an absurd cooldown must still let tryAcquire() succeed once
+    // the clock passes the CLAMPED wait, not the raw (multi-decade) one.
+    @Test void limiterRecoversAfterAnAbsurdHeaderInsteadOfWedgingForever() {
+        long maxWaitMs = 2_000L;
+        var limiter = new FinnhubRateLimiter(1, maxWaitMs, clock::get, 2_000L);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("x-ratelimit-reset", "999999999"); // ~31.7 years unclamped
+        limiter.recordCooldown(headers);
+
+        assertThat(limiter.tryAcquire()).isFalse(); // still within the clamped cooldown
+
+        clock.set(maxWaitMs + 1); // just past the clamped cooldown, nowhere near the raw one
+        assertThat(limiter.tryAcquire()).isTrue();
     }
 
     @Test void neitherHeaderPresentFallsBackToTheConfiguredDefault() {

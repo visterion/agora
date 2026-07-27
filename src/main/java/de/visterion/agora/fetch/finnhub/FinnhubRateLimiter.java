@@ -129,8 +129,8 @@ public class FinnhubRateLimiter implements ClientHttpRequestInterceptor {
     }
 
     /** Records a cooldown derived from the 429 response headers, blocking further {@link #tryAcquire()}
-     *  calls until it elapses. */
-    private synchronized void recordCooldown(HttpHeaders headers) {
+     *  calls until it elapses. Package-private (not private) so tests can drive it directly. */
+    synchronized void recordCooldown(HttpHeaders headers) {
         long waitMs = resolveWaitMs(headers);
         blockedUntilMs = Math.max(blockedUntilMs, now.getAsLong() + waitMs);
     }
@@ -144,14 +144,28 @@ public class FinnhubRateLimiter implements ClientHttpRequestInterceptor {
      *       forms directly, so no heuristic is needed here.</li>
      *   <li>{@code x-ratelimit-reset} — ambiguous, see {@link #parseRateLimitResetMs}.</li>
      * </ul>
+     *
+     * <p>Fix round 2 (M-D23 follow-up): every branch — including the configured default — is
+     * clamped to {@code maxWaitMs}, the same ceiling {@link #acquire} already uses for a bounded
+     * {@link Mode#WAIT}. Without this, a malformed or absurd header (e.g. a relative-seconds value
+     * just under {@link #EPOCH_SECONDS_SANITY_THRESHOLD}, ~31.7 years) would push
+     * {@code blockedUntilMs} decades into the future and wedge the shared limiter — and therefore
+     * every Finnhub caller — for the remaining lifetime of the process, with no thread blocking and
+     * no obvious log line to explain why. Reusing {@code maxWaitMs} rather than adding a second
+     * "max cooldown" knob keeps there being exactly one place that bounds how long this limiter can
+     * ever make a caller wait, for any reason.
      */
     long resolveWaitMs(HttpHeaders headers) {
         long nowMs = now.getAsLong();
         Long retryAfter = parseRetryAfterMs(headers.getFirst(HttpHeaders.RETRY_AFTER), nowMs);
-        if (retryAfter != null) return retryAfter;
+        if (retryAfter != null) return clampToMaxWait(retryAfter);
         Long reset = parseRateLimitResetMs(headers.getFirst("x-ratelimit-reset"), nowMs);
-        if (reset != null) return reset;
-        return defaultRetryAfterMs;
+        if (reset != null) return clampToMaxWait(reset);
+        return clampToMaxWait(defaultRetryAfterMs);
+    }
+
+    private long clampToMaxWait(long waitMs) {
+        return Math.min(waitMs, maxWaitMs);
     }
 
     private static Long parseRetryAfterMs(String value, long nowMs) {
