@@ -1,7 +1,7 @@
 package de.visterion.agora.data;
 
 public class MarketDataException extends RuntimeException {
-    public enum Kind { NOT_FOUND, UNAVAILABLE }
+    public enum Kind { NOT_FOUND, UNAVAILABLE, RATE_LIMITED }
     private final Kind kind;
     public MarketDataException(Kind kind, String message, Throwable cause) {
         super(message, cause);

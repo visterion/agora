@@ -14,13 +14,16 @@ import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.LongSupplier;
 
 /**
  * Fans out one company-news request to all configured {@link NewsProvider}s in parallel,
@@ -41,6 +44,14 @@ public class NewsAggregator {
      */
     public static final long TOTAL_BUDGET_MS = 7000;
 
+    /**
+     * NewsAggregator is invoked once per symbol and has no concept of a "run", so "one WARN
+     * per run" isn't implementable here. Instead: at most one summary WARN per provider per
+     * this many ms of rate-limited (cooldown) skips, so one real 429 upstream never turns into
+     * one WARN per subsequent symbol. Pinned by NewsAggregatorCooldownLoggingTest.
+     */
+    static final long RATE_LIMIT_WARN_WINDOW_MS = 5 * 60 * 1000L;
+
     private static final Logger log = LoggerFactory.getLogger(NewsAggregator.class);
     private static final Set<String> KNOWN_SOURCE_TYPES = Set.of("news", "social");
 
@@ -50,15 +61,27 @@ public class NewsAggregator {
     private final List<NewsProvider> providers;
     private final int maxItems;
     private final long budgetMs;
+    private final LongSupplier clock;
+
+    // Per-provider rate-limit-skip summary window state. NewsAggregator is a Spring singleton
+    // (one instance for the process lifetime, called once per symbol), so this state
+    // accumulates across calls by design.
+    private final Map<String, Long> rateLimitWindowStartMs = new ConcurrentHashMap<>();
+    private final Map<String, Integer> rateLimitSkipCount = new ConcurrentHashMap<>();
 
     public NewsAggregator(List<NewsProvider> providers, int maxItems) {
-        this(providers, maxItems, TOTAL_BUDGET_MS);
+        this(providers, maxItems, TOTAL_BUDGET_MS, System::currentTimeMillis);
     }
 
     NewsAggregator(List<NewsProvider> providers, int maxItems, long budgetMs) {
+        this(providers, maxItems, budgetMs, System::currentTimeMillis);
+    }
+
+    NewsAggregator(List<NewsProvider> providers, int maxItems, long budgetMs, LongSupplier clock) {
         this.providers = List.copyOf(providers);
         this.maxItems = maxItems;
         this.budgetMs = budgetMs;
+        this.clock = clock;
     }
 
     /** Provider chain in dedup-priority order (for wiring tests). */
@@ -117,8 +140,17 @@ public class NewsAggregator {
                     warnings.add(p.id() + ": timeout");
                     log.warn("news provider {} dropped: over total budget ({} ms)", p.id(), budgetMs);
                 } catch (ExecutionException e) {
-                    warnings.add(warningFor(p, e.getCause() == null ? e : e.getCause()));
-                    log.warn("news provider {} failed for {}", p.id(), symbol, e.getCause());
+                    Throwable cause = e.getCause() == null ? e : e.getCause();
+                    warnings.add(warningFor(p, cause));
+                    if (isRateLimitCooldown(cause)) {
+                        // Silent-by-design rejection (RssNewsProvider's shared host cooldown
+                        // after an earlier real 429) — never worth a WARN per symbol. Still
+                        // client-visible via the warning above; only the log level moves.
+                        log.debug("news provider {} skipped for {}: rate limited (cooldown)", p.id(), symbol);
+                        recordRateLimitSkip(p.id());
+                    } else {
+                        log.warn("news provider {} failed for {}", p.id(), symbol, cause);
+                    }
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
@@ -128,6 +160,35 @@ public class NewsAggregator {
             pool.shutdownNow(); // interrupt stragglers BEFORE implicit close() awaits them
         }
         return results;
+    }
+
+    private static boolean isRateLimitCooldown(Throwable cause) {
+        return cause instanceof MarketDataException m && m.kind() == MarketDataException.Kind.RATE_LIMITED;
+    }
+
+    /**
+     * Time-windowed summary WARN for rate-limit cooldown skips: every skip is counted silently
+     * (DEBUG-only) while its window is open; only a skip that lands ON OR AFTER the window has
+     * elapsed flushes a single summary WARN for the just-closed window before opening a new one.
+     * A lone, isolated skip therefore never produces a WARN by itself — only sustained skipping
+     * across a window boundary does, and then at most once per window.
+     * Synchronized because concurrent {@link #aggregate} calls (different symbols) can race on
+     * the same provider's window state; contention is negligible since this only runs on the
+     * rate-limited-cooldown path.
+     */
+    private synchronized void recordRateLimitSkip(String providerId) {
+        long nowMs = clock.getAsLong();
+        Long windowStart = rateLimitWindowStartMs.get(providerId);
+        if (windowStart == null || nowMs - windowStart < RATE_LIMIT_WARN_WINDOW_MS) {
+            if (windowStart == null) rateLimitWindowStartMs.put(providerId, nowMs);
+            rateLimitSkipCount.merge(providerId, 1, Integer::sum);
+            return;
+        }
+        int skippedInClosedWindow = rateLimitSkipCount.getOrDefault(providerId, 0);
+        log.warn("news provider {} rate-limited (cooldown): skipped {} symbol lookup(s) in the last {} ms",
+                providerId, skippedInClosedWindow, RATE_LIMIT_WARN_WINDOW_MS);
+        rateLimitWindowStartMs.put(providerId, nowMs);
+        rateLimitSkipCount.put(providerId, 1);
     }
 
     /** URL-dedup first (blank/unparseable URLs excluded from it), then title-dedup;

@@ -328,8 +328,10 @@ class RssNewsProviderTest {
 
         // Second call still inside the 30s cooldown: no HTTP request at all.
         assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO))
-                .isInstanceOfSatisfying(MarketDataException.class, e ->
-                        assertThat(e.getMessage()).isEqualTo("rss:reddit-stocks rate limited (cooldown)"));
+                .isInstanceOfSatisfying(MarketDataException.class, e -> {
+                    assertThat(e.kind()).isEqualTo(MarketDataException.Kind.RATE_LIMITED);
+                    assertThat(e.getMessage()).isEqualTo("rss:reddit-stocks rate limited (cooldown)");
+                });
         wm.verify(1, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
 
         // Advance the fake clock past the reset window: request goes out again.
@@ -350,8 +352,10 @@ class RssNewsProviderTest {
 
         clock.addAndGet(14_000L);
         assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO))
-                .isInstanceOfSatisfying(MarketDataException.class, e ->
-                        assertThat(e.getMessage()).isEqualTo("rss:reddit-stocks rate limited (cooldown)"));
+                .isInstanceOfSatisfying(MarketDataException.class, e -> {
+                    assertThat(e.kind()).isEqualTo(MarketDataException.Kind.RATE_LIMITED);
+                    assertThat(e.getMessage()).isEqualTo("rss:reddit-stocks rate limited (cooldown)");
+                });
         wm.verify(1, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
 
         clock.addAndGet(1_000L);
@@ -367,8 +371,10 @@ class RssNewsProviderTest {
 
         clock.addAndGet(59_000L);
         assertThatThrownBy(() -> p.companyNews("AAPL", FROM, TO))
-                .isInstanceOfSatisfying(MarketDataException.class, e ->
-                        assertThat(e.getMessage()).isEqualTo("rss:reddit-stocks rate limited (cooldown)"));
+                .isInstanceOfSatisfying(MarketDataException.class, e -> {
+                    assertThat(e.kind()).isEqualTo(MarketDataException.Kind.RATE_LIMITED);
+                    assertThat(e.getMessage()).isEqualTo("rss:reddit-stocks rate limited (cooldown)");
+                });
         wm.verify(1, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
 
         clock.addAndGet(1_000L);
@@ -389,8 +395,10 @@ class RssNewsProviderTest {
 
         // Sister feed shares the same host: skips via cooldown, no second request.
         assertThatThrownBy(() -> sister.companyNews("AAPL", FROM, TO))
-                .isInstanceOfSatisfying(MarketDataException.class, e ->
-                        assertThat(e.getMessage()).isEqualTo("rss:reddit-wsb rate limited (cooldown)"));
+                .isInstanceOfSatisfying(MarketDataException.class, e -> {
+                    assertThat(e.kind()).isEqualTo(MarketDataException.Kind.RATE_LIMITED);
+                    assertThat(e.getMessage()).isEqualTo("rss:reddit-wsb rate limited (cooldown)");
+                });
         wm.verify(1, getRequestedFor(urlEqualTo("/rss?s=AAPL")));
 
         // Past the min-interval, the sister feed's request goes out.
