@@ -16,6 +16,12 @@ import java.util.List;
  * provider that returned data; every other event joins the nearest anchor within one day for
  * the same ticker, or becomes an anchor itself.
  *
+ * <p>Clustering is deterministic and independent of input order within each provider. Events
+ * from each provider are processed in a canonical order (date ascending, then symbol ascending),
+ * ensuring that the same logical events produce identical results regardless of provider ordering
+ * and field values are stable. When an event is equidistant from multiple clusters (e.g., one day
+ * from both D and D+2 dates), it joins the cluster with the earlier date, deterministically.
+ *
  * <p>On field conflict the higher-priority provider wins, except that a populated value always
  * beats {@code null} — that is how a secondary source fills gaps instead of merely duplicating.
  */
@@ -38,11 +44,16 @@ public final class EarningsMerger {
 
     /** @param byProviderInOrder per-provider results, ordered by provider priority ascending. */
     public static List<EarningsEvent> merge(List<List<EarningsEvent>> byProviderInOrder) {
+        if (byProviderInOrder == null) return List.of();
+
         List<Cluster> clusters = new ArrayList<>();
 
         for (List<EarningsEvent> providerEvents : byProviderInOrder) {
             if (providerEvents == null) continue;
-            for (EarningsEvent e : providerEvents) {
+            // Sort events canonically to ensure deterministic clustering independent of provider order
+            var sorted = new ArrayList<>(providerEvents);
+            sorted.sort(Comparator.comparing(EarningsEvent::date).thenComparing(EarningsEvent::symbol));
+            for (EarningsEvent e : sorted) {
                 if (e == null || e.symbol() == null || e.date() == null) continue;
                 Cluster target = nearestAnchor(clusters, e);
                 if (target == null) clusters.add(new Cluster(e));
@@ -56,7 +67,8 @@ public final class EarningsMerger {
         return out;
     }
 
-    /** Nearest existing cluster for this ticker within one day, or null. */
+    /** Nearest existing cluster for this ticker within one day, or null.
+     *  When equidistant, ties break toward the earlier cluster date for determinism. */
     private static Cluster nearestAnchor(List<Cluster> clusters, EarningsEvent e) {
         String sym = e.symbol().toUpperCase();
         Cluster best = null;
@@ -65,7 +77,10 @@ public final class EarningsMerger {
             if (!c.symbol.equals(sym)) continue;
             long d = Math.abs(c.date.toEpochDay() - e.date().toEpochDay());
             if (d > 1) continue;
-            if (d < bestDistance) { bestDistance = d; best = c; }
+            if (d < bestDistance || (d == bestDistance && best != null && c.date.isBefore(best.date))) {
+                bestDistance = d;
+                best = c;
+            }
         }
         return best;
     }

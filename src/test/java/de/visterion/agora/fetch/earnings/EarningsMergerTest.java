@@ -105,4 +105,51 @@ class EarningsMergerTest {
     @Test void emptyInputYieldsEmptyOutput() {
         assertThat(EarningsMerger.merge(List.of(List.of(), List.of()))).isEmpty();
     }
+
+    @Test void clusteringIsDeterministicIndependentOfProviderEventOrder() {
+        // One provider, ascending order
+        var ascending = EarningsMerger.merge(List.of(
+                List.of(
+                        ev("ZZTOP", "2026-07-28", null, null),
+                        ev("ZZTOP", "2026-07-29", "2.00", null),
+                        ev("ZZTOP", "2026-07-30", "3.00", null))));
+
+        // Same provider, descending order
+        var descending = EarningsMerger.merge(List.of(
+                List.of(
+                        ev("ZZTOP", "2026-07-30", "3.00", null),
+                        ev("ZZTOP", "2026-07-29", "2.00", null),
+                        ev("ZZTOP", "2026-07-28", null, null))));
+
+        assertThat(ascending).hasSize(2);
+        assertThat(descending).hasSize(2);
+        assertThat(ascending).extracting(EarningsEvent::date)
+                .containsExactly(LocalDate.parse("2026-07-28"), LocalDate.parse("2026-07-30"));
+        assertThat(descending).extracting(EarningsEvent::date)
+                .containsExactly(LocalDate.parse("2026-07-28"), LocalDate.parse("2026-07-30"));
+        // Both should have D+1 merged into D, so D should have epsEstimate=2.00
+        assertThat(ascending.get(0).epsEstimate()).isEqualByComparingTo("2.00");
+        assertThat(descending.get(0).epsEstimate()).isEqualByComparingTo("2.00");
+    }
+
+    @Test void equidistantEventsTieTowardEarlierDate() {
+        // Clusters at D and D+2, event at D+1 should join D (earlier), not D+2
+        var merged = EarningsMerger.merge(List.of(
+                List.of(
+                        ev("ZZTOP", "2026-07-28", "1.00", null),
+                        ev("ZZTOP", "2026-07-30", "3.00", null)),
+                List.of(
+                        ev("ZZTOP", "2026-07-29", "2.00", null))));
+
+        assertThat(merged).hasSize(2);
+        assertThat(merged).extracting(EarningsEvent::date)
+                .containsExactly(LocalDate.parse("2026-07-28"), LocalDate.parse("2026-07-30"));
+        // D+1 should join D (earlier date), not D+2
+        assertThat(merged.get(0).epsEstimate()).isEqualByComparingTo("1.00");
+        assertThat(merged.get(1).epsEstimate()).isEqualByComparingTo("3.00");
+    }
+
+    @Test void mergeNullOuterListYieldsEmpty() {
+        assertThat(EarningsMerger.merge(null)).isEmpty();
+    }
 }
