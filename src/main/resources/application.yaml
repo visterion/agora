@@ -78,6 +78,8 @@ agora:
       # trips the cooldown instead of being silently budget-cancelled forever (D16).
       attempt-timeout-ms: ${AGORA_FETCH_EARNINGS_ATTEMPT_TIMEOUT_MS:4000}
       budget-ms: ${AGORA_FETCH_EARNINGS_BUDGET_MS:7000}
+      cooldown-threshold: ${AGORA_FETCH_EARNINGS_COOLDOWN_THRESHOLD:3}
+      cooldown-ms: ${AGORA_FETCH_EARNINGS_COOLDOWN_MS:600000}
   data:
     # per-request read timeout for all market-data HTTP providers (fail fast into the next provider)
     provider-timeout-ms: ${AGORA_DATA_PROVIDER_TIMEOUT_MS:4000}
