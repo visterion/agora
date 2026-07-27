@@ -73,6 +73,11 @@ agora:
     # timeout bounds time-to-headers (and time between subsequent reads), NOT the total time
     # to receive the full body — a slow-but-steady multi-MB body can still take much longer.
     timeout-ms: ${AGORA_FETCH_TIMEOUT_MS:15000}
+    earnings:
+      # Strictly below the merge budget, so a hanging provider becomes a real failure that
+      # trips the cooldown instead of being silently budget-cancelled forever (D16).
+      attempt-timeout-ms: ${AGORA_FETCH_EARNINGS_ATTEMPT_TIMEOUT_MS:4000}
+      budget-ms: ${AGORA_FETCH_EARNINGS_BUDGET_MS:7000}
   data:
     # per-request read timeout for all market-data HTTP providers (fail fast into the next provider)
     provider-timeout-ms: ${AGORA_DATA_PROVIDER_TIMEOUT_MS:4000}
@@ -109,6 +114,12 @@ agora:
     finnhub:
       base-url: ${AGORA_DATA_FINNHUB_BASE_URL:https://finnhub.io/api/v1}
       key: ${AGORA_DATA_FINNHUB_KEY:}
+    nasdaq:
+      base-url: ${AGORA_DATA_NASDAQ_BASE_URL:https://api.nasdaq.com}
+      user-agent: ${AGORA_DATA_NASDAQ_USER_AGENT:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36}
+      # Must stay >= 91: get_earnings_calendar defaults to now+90, and a lower cap would make
+      # the tool's most common call permanently partial (D21).
+      day-cap: ${AGORA_DATA_NASDAQ_DAY_CAP:95}
     alpaca:
       base-url: ${AGORA_DATA_ALPACA_BASE_URL:https://data.alpaca.markets}
       key-id: ${AGORA_DATA_ALPACA_KEY_ID:}
