@@ -47,8 +47,14 @@ public class FinnhubRateLimiter implements ClientHttpRequestInterceptor {
     private final LongSupplier now;
     private final long defaultRetryAfterMs;
 
-    private long windowStart = 0L;
-    private int count = 0;
+    // Continuous-refill token bucket (fix round 1): a fixed-window counter that resets its count
+    // only when `ts - windowStart >= WINDOW_MS` has a boundary cliff — callsPerMinute calls just
+    // before the reset plus callsPerMinute more just after it lets 2x the configured rate through
+    // in a few milliseconds, which is exactly the burst shape most likely to trigger a 429. Tokens
+    // instead refill continuously at callsPerMinute/WINDOW_MS per millisecond, capped at
+    // callsPerMinute, so there is no instant at which the whole budget resets at once.
+    private double tokens;
+    private long lastRefillMs;
     private long blockedUntilMs = 0L;
 
     /** Spring-bound constructor: real wall clock, configured limit/bound/default. */
@@ -70,18 +76,22 @@ public class FinnhubRateLimiter implements ClientHttpRequestInterceptor {
         this.maxWaitMs = maxWaitMs;
         this.now = now;
         this.defaultRetryAfterMs = defaultRetryAfterMs;
+        this.tokens = callsPerMinute;
+        this.lastRefillMs = now.getAsLong();
     }
 
     /** Non-blocking: true if a slot was available and consumed, false if the caller is exhausted. */
     public synchronized boolean tryAcquire() {
         long ts = now.getAsLong();
         if (ts < blockedUntilMs) return false;
-        if (ts - windowStart >= WINDOW_MS) {
-            windowStart = ts;
-            count = 0;
+        long elapsedMs = ts - lastRefillMs;
+        if (elapsedMs > 0) {
+            double refill = elapsedMs * ((double) callsPerMinute / WINDOW_MS);
+            tokens = Math.min(callsPerMinute, tokens + refill);
+            lastRefillMs = ts;
         }
-        if (count < callsPerMinute) {
-            count++;
+        if (tokens >= 1.0) {
+            tokens -= 1.0;
             return true;
         }
         return false;
@@ -130,15 +140,16 @@ public class FinnhubRateLimiter implements ClientHttpRequestInterceptor {
      * variants this codebase has already seen are supported, with a configured default when
      * neither is present or parseable:
      * <ul>
-     *   <li>{@code Retry-After} — seconds, or an HTTP date.</li>
-     *   <li>{@code x-ratelimit-reset} — epoch seconds (the form {@code RssNewsProvider} handles).</li>
+     *   <li>{@code Retry-After} — seconds, or an HTTP date. Unambiguous: RFC 9110 defines both
+     *       forms directly, so no heuristic is needed here.</li>
+     *   <li>{@code x-ratelimit-reset} — ambiguous, see {@link #parseRateLimitResetMs}.</li>
      * </ul>
      */
     long resolveWaitMs(HttpHeaders headers) {
         long nowMs = now.getAsLong();
         Long retryAfter = parseRetryAfterMs(headers.getFirst(HttpHeaders.RETRY_AFTER), nowMs);
         if (retryAfter != null) return retryAfter;
-        Long reset = parseEpochSecondsToDeltaMs(headers.getFirst("x-ratelimit-reset"), nowMs);
+        Long reset = parseRateLimitResetMs(headers.getFirst("x-ratelimit-reset"), nowMs);
         if (reset != null) return reset;
         return defaultRetryAfterMs;
     }
@@ -160,14 +171,36 @@ public class FinnhubRateLimiter implements ClientHttpRequestInterceptor {
         }
     }
 
-    private static Long parseEpochSecondsToDeltaMs(String value, long nowMs) {
+    /**
+     * A value below this (well under any plausible current epoch-seconds value — this threshold
+     * corresponds to 2001-09-09) is treated as a relative second count; a value at or above it is
+     * treated as an absolute epoch-seconds timestamp.
+     *
+     * <p>This heuristic exists because {@code x-ratelimit-reset}'s semantics are genuinely
+     * ambiguous without a captured live 429 from Finnhub: the header name suggests an absolute
+     * "reset at" timestamp (as e.g. GitHub's rate-limit headers use it), but the only precedent
+     * already in this codebase — {@code RssNewsProvider.parseSecondsToMillis}, which also reads an
+     * {@code x-ratelimit-reset} header — treats the raw value as a relative second count. Picking
+     * the wrong interpretation unconditionally is a silent failure mode, not a loud one: absolute
+     * epoch-seconds minus real epoch-millis for a small relative number goes deeply negative, gets
+     * clamped to zero, and the 429 backoff becomes a no-op exactly when backoff is needed. The
+     * magnitude split disambiguates both known shapes without guessing which one Finnhub sends.
+     */
+    private static final long EPOCH_SECONDS_SANITY_THRESHOLD = 1_000_000_000L;
+
+    private static Long parseRateLimitResetMs(String value, long nowMs) {
         if (value == null || value.isBlank()) return null;
+        long raw;
         try {
-            long epochMs = Long.parseLong(value.trim()) * 1000L;
-            return Math.max(0L, epochMs - nowMs);
+            raw = Long.parseLong(value.trim());
         } catch (NumberFormatException e) {
             return null;
         }
+        if (raw < 0) return null;
+        if (raw < EPOCH_SECONDS_SANITY_THRESHOLD) {
+            return raw * 1000L; // relative seconds
+        }
+        return Math.max(0L, raw * 1000L - nowMs); // absolute epoch seconds
     }
 
     /** Default interceptor behaviour: {@link Mode#WAIT} (used directly by callers with no

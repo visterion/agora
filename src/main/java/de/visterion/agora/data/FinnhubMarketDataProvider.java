@@ -37,12 +37,10 @@ public class FinnhubMarketDataProvider implements MarketDataProvider {
      * timeout ({@code agora.data.provider-timeout-ms}) so a slow Finnhub call fails fast into the
      * next provider instead of stalling the chain. Reuses the same
      * {@code agora.fundamentals.non-us-suffixes} property fundamentals routing reads, so the two
-     * never drift.
-     */
-    /**
-     * Registers the shared {@link FinnhubRateLimiter} in {@link FinnhubRateLimiter.Mode#FAIL_FAST}
-     * mode: this path has an alternative provider to fall through to, so exhaustion throws
-     * immediately instead of waiting (unlike the fetch/earnings path, which has none).
+     * never drift. Registers the shared {@link FinnhubRateLimiter} in
+     * {@link FinnhubRateLimiter.Mode#FAIL_FAST} mode: this path has an alternative provider to
+     * fall through to, so exhaustion throws immediately instead of waiting (unlike the
+     * fetch/earnings path, which has none).
      */
     @Autowired
     public FinnhubMarketDataProvider(

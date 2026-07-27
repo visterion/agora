@@ -30,6 +30,27 @@ class FinnhubRateLimiterTest {
         assertThat(limiter.tryAcquire()).isTrue();
     }
 
+    // Fix round 1, finding 2: a fixed-window counter that only resets when the window rolls over
+    // lets callsPerMinute calls through just before the boundary AND callsPerMinute more just
+    // after it — 2x the configured rate in a few milliseconds. A continuous-refill bucket must not
+    // have this cliff: draining the bucket right before the old window boundary and trying again
+    // 1ms later (barely any continuous refill in 1ms) must still be refused.
+    @Test void burstAcrossTheOldFixedWindowBoundaryIsStillThrottled() {
+        var limiter = new FinnhubRateLimiter(3, 2_000L, clock::get);
+        clock.set(59_999L);
+        for (int i = 0; i < 3; i++) assertThat(limiter.tryAcquire()).isTrue();
+        clock.set(60_000L); // 1ms later: a fixed-window reset would wrongly allow a fresh burst here
+        assertThat(limiter.tryAcquire()).isFalse();
+    }
+
+    @Test void tokensRefillProportionallyToElapsedTimeNotInDiscreteWindowJumps() {
+        var limiter = new FinnhubRateLimiter(3, 2_000L, clock::get);
+        for (int i = 0; i < 3; i++) limiter.tryAcquire(); // drains the bucket at t=0
+        clock.set(20_000L); // a third of the window: exactly 1 token should have refilled
+        assertThat(limiter.tryAcquire()).isTrue();
+        assertThat(limiter.tryAcquire()).isFalse();
+    }
+
     @Test void failFastModeThrowsImmediatelyWhenExhausted() {
         var limiter = new FinnhubRateLimiter(1, 2_000L, clock::get);
         limiter.tryAcquire();
@@ -84,12 +105,32 @@ class FinnhubRateLimiterTest {
         assertThat(limiter.resolveWaitMs(headers)).isEqualTo(2_000L);
     }
 
-    @Test void rateLimitResetEpochSecondsIsUsedWhenRetryAfterIsAbsent() {
+    // Fix round 1, finding 1: x-ratelimit-reset is ambiguous without a captured live 429 —
+    // RssNewsProvider's existing precedent for this same header name treats it as a *relative*
+    // second count, not an absolute epoch timestamp. A small value must be read as relative
+    // seconds, not as "epoch seconds minus now" (which would go deeply negative and silently
+    // clamp to zero — a no-op backoff at exactly the moment backoff is needed).
+    @Test void rateLimitResetBelowSanityThresholdIsTreatedAsRelativeSeconds() {
         clock.set(1_000L);
         var limiter = new FinnhubRateLimiter(1, 60_000L, clock::get, 2_000L);
         HttpHeaders headers = new HttpHeaders();
-        headers.set("x-ratelimit-reset", "4"); // epoch seconds -> 4000ms, delta from 1000ms = 3000ms
-        assertThat(limiter.resolveWaitMs(headers)).isEqualTo(3_000L);
+        headers.set("x-ratelimit-reset", "5"); // relative seconds -> 5000ms, NOT epoch-minus-now
+        assertThat(limiter.resolveWaitMs(headers)).isEqualTo(5_000L);
+    }
+
+    @Test void rateLimitResetJustBelowTheSanityThresholdIsStillRelative() {
+        var limiter = new FinnhubRateLimiter(1, 60_000L, clock::get, 2_000L);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("x-ratelimit-reset", "999999999");
+        assertThat(limiter.resolveWaitMs(headers)).isEqualTo(999_999_999L * 1000L);
+    }
+
+    @Test void rateLimitResetAtOrAboveTheSanityThresholdIsTreatedAsAbsoluteEpochSeconds() {
+        clock.set(1_000L);
+        var limiter = new FinnhubRateLimiter(1, 60_000L, clock::get, 2_000L);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("x-ratelimit-reset", "1000000000"); // exactly at the threshold -> absolute
+        assertThat(limiter.resolveWaitMs(headers)).isEqualTo(1_000_000_000L * 1000L - 1_000L);
     }
 
     @Test void neitherHeaderPresentFallsBackToTheConfiguredDefault() {
