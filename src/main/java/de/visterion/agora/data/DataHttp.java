@@ -1,6 +1,7 @@
 package de.visterion.agora.data;
 
 import de.visterion.agora.observability.ProviderCallLogger;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
@@ -34,6 +35,15 @@ public final class DataHttp {
     public static RestClient.Builder clientBuilder(long readTimeoutMs) {
         return RestClient.builder()
                 .requestFactory(requestFactory(readTimeoutMs))
+                .requestInterceptor(ProviderCallLogger.INSTANCE);
+    }
+
+    /** Same as {@link #clientBuilder(long)} but with {@code first} ahead of the call logger, so
+     *  a throttle's wait is not billed to the provider's measured latency. */
+    public static RestClient.Builder clientBuilder(long readTimeoutMs, ClientHttpRequestInterceptor first) {
+        return RestClient.builder()
+                .requestFactory(requestFactory(readTimeoutMs))
+                .requestInterceptor(first)
                 .requestInterceptor(ProviderCallLogger.INSTANCE);
     }
 }

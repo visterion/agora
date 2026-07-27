@@ -1,6 +1,7 @@
 package de.visterion.agora.data;
 
 import de.visterion.agora.fetch.finnhub.FinnhubClient;
+import de.visterion.agora.fetch.finnhub.FinnhubRateLimiter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,22 +39,29 @@ public class FinnhubMarketDataProvider implements MarketDataProvider {
      * {@code agora.fundamentals.non-us-suffixes} property fundamentals routing reads, so the two
      * never drift.
      */
+    /**
+     * Registers the shared {@link FinnhubRateLimiter} in {@link FinnhubRateLimiter.Mode#FAIL_FAST}
+     * mode: this path has an alternative provider to fall through to, so exhaustion throws
+     * immediately instead of waiting (unlike the fetch/earnings path, which has none).
+     */
     @Autowired
     public FinnhubMarketDataProvider(
             @Value("${agora.data.finnhub.base-url}") String baseUrl,
             @Value("${agora.data.finnhub.key}") String key,
             @Value("${agora.data.provider-timeout-ms:4000}") long timeoutMs,
-            @Value("${agora.fundamentals.non-us-suffixes:" + NonUsSuffixes.DEFAULT_CSV + "}") String nonUsSuffixesCsv) {
-        this.client = DataHttp.clientBuilder(timeoutMs)
+            @Value("${agora.fundamentals.non-us-suffixes:" + NonUsSuffixes.DEFAULT_CSV + "}") String nonUsSuffixesCsv,
+            FinnhubRateLimiter rateLimiter) {
+        this.client = DataHttp.clientBuilder(timeoutMs, rateLimiter.withMode(FinnhubRateLimiter.Mode.FAIL_FAST))
                 .baseUrl(baseUrl)
                 .build();
         this.key = key;
         this.nonUsSuffixes = NonUsSuffixes.parse(nonUsSuffixesCsv);
     }
 
-    /** Test constructor: explicit timeout, default non-US suffix set. */
+    /** Test constructor: explicit timeout, default non-US suffix set, no-op rate limiting. */
     FinnhubMarketDataProvider(String baseUrl, String key, long timeoutMs) {
-        this(baseUrl, key, timeoutMs, NonUsSuffixes.DEFAULT_CSV);
+        this(baseUrl, key, timeoutMs, NonUsSuffixes.DEFAULT_CSV,
+                new FinnhubRateLimiter(Integer.MAX_VALUE, 0L, System::currentTimeMillis));
     }
 
     /** Test constructor: explicit base-url + key, default timeout + default non-US suffix set. */

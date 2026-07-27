@@ -117,6 +117,15 @@ agora:
     finnhub:
       base-url: ${AGORA_DATA_FINNHUB_BASE_URL:https://finnhub.io/api/v1}
       key: ${AGORA_DATA_FINNHUB_KEY:}
+      # Shared rate-limit policy (M-D23) across every Finnhub caller: FinnhubClient (news/split/
+      # fundamentals/estimates/profile/earnings-estimates), FinnhubMarketDataProvider (quote,
+      # fail-fast) and FinnhubEarningsProvider (calendar, bounded wait) all inject the same
+      # FinnhubRateLimiter singleton, so this throttles the combined call rate, not per-caller.
+      calls-per-minute: ${AGORA_DATA_FINNHUB_CALLS_PER_MINUTE:60}
+      max-wait-ms: ${AGORA_DATA_FINNHUB_MAX_WAIT_MS:3000}
+      # Finnhub's exact rate-limit header is unverified; used only when neither Retry-After nor
+      # x-ratelimit-reset is present/parseable on a 429.
+      default-retry-after-ms: ${AGORA_DATA_FINNHUB_DEFAULT_RETRY_AFTER_MS:2000}
     nasdaq:
       base-url: ${AGORA_DATA_NASDAQ_BASE_URL:https://api.nasdaq.com}
       user-agent: ${AGORA_DATA_NASDAQ_USER_AGENT:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36}

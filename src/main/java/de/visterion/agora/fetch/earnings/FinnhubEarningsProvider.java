@@ -4,6 +4,7 @@ import de.visterion.agora.data.DataHttp;
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.ProviderErrors;
 import de.visterion.agora.fetch.finnhub.FinnhubClient;
+import de.visterion.agora.fetch.finnhub.FinnhubRateLimiter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,24 +36,33 @@ public class FinnhubEarningsProvider implements EarningsProvider {
     private final String key;
 
     /**
-     * Constructor bound by Spring via {@code @Value} and also invoked directly from WireMock tests
-     * with an explicit base-url + key + timeout (all parameters are plain values, so no separate
-     * test ctor is needed).
+     * Constructor bound by Spring via {@code @Value}. Uses {@code agora.fetch.earnings.attempt-timeout-ms}
+     * (not the generic {@code agora.fetch.timeout-ms} the shared {@link FinnhubClient} uses) — this
+     * provider is merged under {@code EarningsService}'s per-attempt budget. Registers the shared
+     * {@link FinnhubRateLimiter} in {@link FinnhubRateLimiter.Mode#WAIT} mode: unlike the quote path
+     * there is no alternative Finnhub-free fallback for this call, so exhaustion waits (bounded)
+     * instead of failing immediately.
      */
     @Autowired
     public FinnhubEarningsProvider(
             @Value("${agora.data.finnhub.base-url}") String baseUrl,
             @Value("${agora.data.finnhub.key}") String key,
-            @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
-        this.client = DataHttp.clientBuilder(timeoutMs)
+            @Value("${agora.fetch.earnings.attempt-timeout-ms:4000}") long timeoutMs,
+            FinnhubRateLimiter rateLimiter) {
+        this.client = DataHttp.clientBuilder(timeoutMs, rateLimiter.withMode(FinnhubRateLimiter.Mode.WAIT))
                 .baseUrl(baseUrl)
                 .build();
         this.key = key;
     }
 
-    /** Convenience constructor (default per-request timeout); used by tests. */
+    /** Test constructor: explicit timeout, no-op rate limiting. */
+    public FinnhubEarningsProvider(String baseUrl, String key, long timeoutMs) {
+        this(baseUrl, key, timeoutMs, new FinnhubRateLimiter(Integer.MAX_VALUE, 0L, System::currentTimeMillis));
+    }
+
+    /** Convenience constructor (default per-request timeout, no-op rate limiting); used by tests. */
     public FinnhubEarningsProvider(String baseUrl, String key) {
-        this(baseUrl, key, 15_000L);
+        this(baseUrl, key, 4_000L);
     }
 
     @Override
