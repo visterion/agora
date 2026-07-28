@@ -17,7 +17,15 @@ import java.time.Duration;
  */
 public final class DataHttp {
 
-    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(3);
+    /**
+     * TCP connect timeout applied to every client built here. Public because it is a real,
+     * non-optional term in any "one attempt fits inside budget X" arithmetic: a caller that
+     * budgets only for its read timeout under-counts a slow or blackholed connect by exactly
+     * this much (see {@code de.visterion.agora.fetch.earnings.EarningsBudgetPolicy}).
+     */
+    public static final long CONNECT_TIMEOUT_MS = 3_000L;
+
+    private static final Duration CONNECT_TIMEOUT = Duration.ofMillis(CONNECT_TIMEOUT_MS);
 
     private DataHttp() {}
 

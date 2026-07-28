@@ -187,6 +187,39 @@ class NewsAggregatorCooldownLoggingTest {
         assertThat(debugEvents()).hasSize(belowThreshold);
     }
 
+    /**
+     * M6: the two flush triggers interact. A burst flush zeroes the counter without touching the
+     * window's start time, so the next skip after that window elapses closes a window that
+     * genuinely counted zero skips — and used to log the self-contradictory "skipped 0 symbol
+     * lookup(s)". The window still rolls over; only the empty summary is suppressed.
+     */
+    @Test void aWindowClosingWithZeroSkipsAfterABurstFlushLogsNoEmptySummary() {
+        AtomicLong clock = new AtomicLong(0L);
+        NewsAggregator agg = new NewsAggregator(
+                List.of(ok("finnhub", item("a", "https://x/1")), cooldownRejecting("rss:reddit-stocks")),
+                200, NewsAggregator.TOTAL_BUDGET_MS, clock::get);
+
+        for (int i = 0; i < NewsAggregator.RATE_LIMIT_WARN_BURST_THRESHOLD; i++)
+            agg.aggregate("SYM" + i, FROM, TO, Set.of());
+        assertThat(warnEvents()).hasSize(1);        // the burst flush, which reset the counter
+
+        // Window elapses; the next lone skip closes a window that counted nothing.
+        clock.addAndGet(NewsAggregator.RATE_LIMIT_WARN_WINDOW_MS);
+        agg.aggregate("LATE", FROM, TO, Set.of());
+
+        assertThat(warnEvents()).hasSize(1);
+        assertThat(warnEvents()).noneSatisfy(e ->
+                assertThat(e.getFormattedMessage()).contains("skipped 0 symbol lookup(s)"));
+
+        // The window did roll over: a fresh burst still reports, and counts from the roll-over
+        // (the LATE skip opened the new window and is counted in it).
+        for (int i = 0; i < NewsAggregator.RATE_LIMIT_WARN_BURST_THRESHOLD - 1; i++)
+            agg.aggregate("AFTER" + i, FROM, TO, Set.of());
+        assertThat(warnEvents()).hasSize(2);
+        assertThat(warnEvents().get(1).getFormattedMessage())
+                .contains(String.valueOf(NewsAggregator.RATE_LIMIT_WARN_BURST_THRESHOLD));
+    }
+
     @Test void crossingThresholdMidBurstFlushesOnceNotOncePerSubsequentSkip() {
         AtomicLong clock = new AtomicLong(0L);
         NewsAggregator agg = new NewsAggregator(

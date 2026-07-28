@@ -189,8 +189,9 @@ class EarningsServiceTest {
     }
 
     @Test void completeResultEvictsAnEarlierPartialUnderTheSameKey() {
-        // No skip rule exists yet in Task 5: yahoo is needed for every call, so a healthy
-        // finnhub alongside a failing yahoo yields a partial (not complete) answer.
+        // Both fakes are phase-1 providers (the healthy-path skip applies only to the real
+        // YahooEarningsProvider, which phase 2 handles), so this "yahoo" is needed on every
+        // call: a healthy finnhub alongside a failing yahoo yields a partial, not complete, answer.
         var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of(ev("ZZTOP", "2026-08-01")));
         var yahoo = new Toggle("yahoo", EarningsCoverage.FULL_WINDOW, List.of(), true);
         var svc = service(List.of(finnhub, yahoo));
@@ -214,6 +215,41 @@ class EarningsServiceTest {
         var third = svc.earnings("ZZTOP", FROM, TO);
         assertThat(third.partial()).isFalse();
         assertThat(finnhub.calls).hasValue(2);        // served from the complete cache, not re-fetched
+    }
+
+    /** A provider that answers, but only for part of the window it was asked about. */
+    private static final class Truncating implements EarningsProvider {
+        final AtomicInteger calls = new AtomicInteger();
+        public String name() { return "nasdaq"; }
+        public EarningsCoverage coverage() { return EarningsCoverage.FUTURE_ONLY; }
+        public List<EarningsEvent> earnings(String s, LocalDate f, LocalDate t) {
+            return earnings(s, f, t, Long.MAX_VALUE).events();
+        }
+        public ProviderEarnings earnings(String s, LocalDate f, LocalDate t, long budgetMs) {
+            calls.incrementAndGet();
+            return new ProviderEarnings(List.of(ev("ZZTOP", "2026-07-28")), true);
+        }
+    }
+
+    @Test void aTruncatedProviderWindowYieldsPartialAndCachesShort() {
+        // Spec §5 item 4: a provider that reached only part of the window answered for less than
+        // it was asked about, so the merged answer must not pass as complete and must not occupy
+        // the 6h cache. Nasdaq truncates exactly this way -- day cap or budget.
+        var nasdaq = new Truncating();
+        var svc = service(List.of(nasdaq));
+
+        var r = svc.earningsWindow(TODAY, TODAY.plusDays(300));
+
+        assertThat(r.events()).hasSize(1);        // it did answer -- this is not an outage
+        assertThat(r.partial()).isTrue();
+        assertThat(nasdaq.calls).hasValue(1);
+
+        // Short TTL, not the 6h one.
+        svc.earningsWindow(TODAY, TODAY.plusDays(300));
+        assertThat(nasdaq.calls).hasValue(1);     // still inside the partial TTL
+        clock.set(600_001L);
+        svc.earningsWindow(TODAY, TODAY.plusDays(300));
+        assertThat(nasdaq.calls).hasValue(2);     // ...but re-collected once it elapses
     }
 
     @Test void windowAndSymbolCachesAreSeparateFamilies() {
@@ -452,6 +488,62 @@ class EarningsServiceTest {
         }
     }
 
+    /**
+     * C1: a cooled Yahoo must still degrade the result.
+     *
+     * <p>The cooldown check used to live in the phase-2 condition itself
+     * ({@code uncovered && !cooldown.isCooled(yahoo)}), so a Yahoo that was needed but
+     * deliberately skipped took the {@code degraded} marker with it: the caller got
+     * {@code events: []} with {@code partial} absent — a confident "no earnings scheduled" — and
+     * it was cached for the full 6 h TTL. With Yahoo's calendar 500ing for every window (its state
+     * throughout this branch's motivating outage) the cooldown re-trips on every window, so that
+     * was every uncovered symbol, permanently.
+     */
+    @Test void cooledYahooStillYieldsPartialInsteadOfAConfidentNoEarnings() {
+        var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of());   // empty BUT successful
+        WireMockServer server = new WireMockServer(options().dynamicPort());
+        server.start();
+        try {
+            server.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
+                    .willReturn(aResponse().withStatus(500)));
+            var yahoo = new InstrumentedYahoo(
+                    "http://localhost:" + server.port(), "agora-test", 2000L, 3600L, clock::get);
+            // Partial TTL (100s) deliberately decoupled from the 600s cooldown, so stepping past
+            // the cache between calls cannot also step past the cooldown.
+            var svc = new EarningsService(List.of(finnhub, yahoo), 21600L, 100L, 3, 600_000L,
+                    7000L, clock::get, () -> TODAY);
+
+            // Trip the cooldown: three consecutive failed warms (waiting on the recorded OUTCOME,
+            // i.e. cooldown.recordFailure(yahoo) having actually run -- not on the HTTP call).
+            for (int i = 1; i <= 3; i++) {
+                svc.earnings("ZZTOP", FROM, TO);
+                int expected = i;
+                await().atMost(Duration.ofSeconds(5)).until(() -> yahoo.warmOutcomes.get() >= expected);
+                clock.addAndGet(100_001L);
+            }
+            assertThat(yahoo.windowCalls).hasValue(3);
+
+            // Yahoo is now cooled: needed for this uncovered symbol, but skipped.
+            int finnhubCallsBefore = finnhub.calls.get();
+            var cooled = svc.earnings("ZZTOP", FROM, TO);
+
+            assertThat(yahoo.windowCalls).hasValue(3);          // genuinely skipped, not consulted
+            assertThat(cooled.events()).isEmpty();
+            assertThat(cooled.partial())
+                    .as("a cooled-but-needed Yahoo cannot be vouched for, so the answer is partial")
+                    .isTrue();
+
+            // ...and therefore lands in the SHORT-TTL cache, not the 6h one: past 100s the call
+            // is re-collected. (Under the bug this was a complete answer, immune to re-collection
+            // for six hours.)
+            clock.addAndGet(100_001L);
+            svc.earnings("ZZTOP", FROM, TO);
+            assertThat(finnhub.calls).hasValue(finnhubCallsBefore + 2);
+        } finally {
+            server.stop();
+        }
+    }
+
     @Test void yahooWarmResumesAfterCooldownWindowElapses() {
         var finnhub = ok("finnhub", EarningsCoverage.FULL_WINDOW, List.of());
         WireMockServer server = new WireMockServer(options().dynamicPort());
@@ -476,11 +568,16 @@ class EarningsServiceTest {
             assertThat(yahoo.windowCalls).hasValue(3);
             assertThat(yahoo.warmOutcomes).hasValue(3);
 
+            // An intermediate call while the cooldown still holds: no fresh warm is attempted,
+            // and the answer is flagged partial, so it lands in the 100s partial cache and cannot
+            // mask the resume below. (Before the C1 fix a cooled Yahoo produced a COMPLETE empty
+            // answer cached for the full 6h TTL, which is why this call could not be made here.)
+            var whileCooled = svc.earnings("ZZTOP", FROM, TO);
+            assertThat(whileCooled.partial()).isTrue();
+            assertThat(yahoo.windowCalls).hasValue(3);
+
             // Jump the injected clock past the 600s cooldown window (no sleeping) and let Yahoo
             // "recover" -- the next call must attempt a fresh warm instead of staying gated.
-            // (Deliberately no intermediate still-cooled call here: because finnhub answers with
-            // an empty-but-successful result, such a call would cache as COMPLETE for the full
-            // 6h TTL and mask the resume this test is checking for.)
             clock.set(800_003L);
             server.stubFor(get(urlPathEqualTo("/v1/finance/calendar/earnings"))
                     .willReturn(okJson("""

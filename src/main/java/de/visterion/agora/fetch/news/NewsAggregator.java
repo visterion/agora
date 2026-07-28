@@ -189,7 +189,10 @@ public class NewsAggregator {
      * fires it — every skip is counted silently (DEBUG-only) otherwise:
      * <ul>
      *   <li><b>Time</b>: a skip that lands ON OR AFTER the window has elapsed flushes a summary
-     *       for the just-closed window, then opens a fresh window (this skip counted in it).</li>
+     *       for the just-closed window, then opens a fresh window (this skip counted in it).
+     *       The summary is suppressed when the just-closed window counted zero skips — which
+     *       happens whenever a burst flush already drained the counter — since "skipped 0
+     *       symbol lookup(s)" reads as a bug in the logs.</li>
      *   <li><b>Size</b>: independently of the window's start time, once the accumulated count
      *       since the last flush reaches {@link #RATE_LIMIT_WARN_BURST_THRESHOLD}, it flushes
      *       immediately and resets only the counter (the window's start time is untouched) —
@@ -208,8 +211,14 @@ public class NewsAggregator {
 
         if (windowStart != null && nowMs - windowStart >= RATE_LIMIT_WARN_WINDOW_MS) {
             int skippedInClosedWindow = rateLimitSkipCount.getOrDefault(providerId, 0);
-            log.warn("news provider {} rate-limited (cooldown): skipped {} symbol lookup(s) in the last {} ms",
-                    providerId, skippedInClosedWindow, RATE_LIMIT_WARN_WINDOW_MS);
+            // Zero is a real possibility, not a defensive nicety: a burst flush resets the counter
+            // without touching the window start, so a lone skip arriving after that window elapses
+            // would otherwise log the self-contradictory "skipped 0 symbol lookup(s)". The window
+            // still rolls over — only the empty summary is suppressed.
+            if (skippedInClosedWindow > 0) {
+                log.warn("news provider {} rate-limited (cooldown): skipped {} symbol lookup(s) in the last {} ms",
+                        providerId, skippedInClosedWindow, RATE_LIMIT_WARN_WINDOW_MS);
+            }
             rateLimitWindowStartMs.put(providerId, nowMs);
             rateLimitSkipCount.put(providerId, 1);
             return;

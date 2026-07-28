@@ -36,20 +36,28 @@ public class FinnhubEarningsProvider implements EarningsProvider {
     private final String key;
 
     /**
-     * Constructor bound by Spring via {@code @Value}. Uses {@code agora.fetch.earnings.attempt-timeout-ms}
-     * (not the generic {@code agora.fetch.timeout-ms} the shared {@link FinnhubClient} uses) — this
-     * provider is merged under {@code EarningsService}'s per-attempt budget. Registers the shared
-     * {@link FinnhubRateLimiter} in {@link FinnhubRateLimiter.Mode#WAIT} mode: unlike the quote path
-     * there is no alternative Finnhub-free fallback for this call, so exhaustion waits (bounded)
-     * instead of failing immediately.
+     * Constructor bound by Spring. Every timing term comes from {@link EarningsBudgetPolicy} (not
+     * the generic {@code agora.fetch.timeout-ms} the shared {@link FinnhubClient} uses), because
+     * this provider runs under {@code EarningsService}'s merge budget and all of them have to fit
+     * inside it together. Registers the shared {@link FinnhubRateLimiter} in
+     * {@link FinnhubRateLimiter.Mode#WAIT} mode — unlike the quote path there is no Finnhub-free
+     * fallback here, so exhaustion waits instead of failing immediately — but with the policy's
+     * budget-derived ceiling rather than the limiter's global {@code max-wait-ms}, which belongs
+     * to callers that have no merge budget to fit inside (spec §6).
      */
     @Autowired
     public FinnhubEarningsProvider(
             @Value("${agora.data.finnhub.base-url}") String baseUrl,
             @Value("${agora.data.finnhub.key}") String key,
-            @Value("${agora.fetch.earnings.attempt-timeout-ms:4000}") long timeoutMs,
+            EarningsBudgetPolicy budget,
             FinnhubRateLimiter rateLimiter) {
-        this.client = DataHttp.clientBuilder(timeoutMs, rateLimiter.withMode(FinnhubRateLimiter.Mode.WAIT))
+        this(baseUrl, key, budget.attemptTimeoutMs(),
+                rateLimiter.withMode(FinnhubRateLimiter.Mode.WAIT, budget.limiterWaitMs()));
+    }
+
+    private FinnhubEarningsProvider(String baseUrl, String key, long timeoutMs,
+                                    org.springframework.http.client.ClientHttpRequestInterceptor limiter) {
+        this.client = DataHttp.clientBuilder(timeoutMs, limiter)
                 .baseUrl(baseUrl)
                 .build();
         this.key = key;
@@ -57,12 +65,14 @@ public class FinnhubEarningsProvider implements EarningsProvider {
 
     /** Test constructor: explicit timeout, no-op rate limiting. */
     public FinnhubEarningsProvider(String baseUrl, String key, long timeoutMs) {
-        this(baseUrl, key, timeoutMs, new FinnhubRateLimiter(Integer.MAX_VALUE, 0L, System::currentTimeMillis));
+        this(baseUrl, key, timeoutMs,
+                new FinnhubRateLimiter(Integer.MAX_VALUE, 0L, System::currentTimeMillis)
+                        .withMode(FinnhubRateLimiter.Mode.WAIT));
     }
 
     /** Convenience constructor (default per-request timeout, no-op rate limiting); used by tests. */
     public FinnhubEarningsProvider(String baseUrl, String key) {
-        this(baseUrl, key, 4_000L);
+        this(baseUrl, key, 2_500L);
     }
 
     @Override

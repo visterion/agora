@@ -104,17 +104,28 @@ public class FinnhubRateLimiter implements ClientHttpRequestInterceptor {
      * interrupt flag and throws — never swallows it.
      */
     public void acquire(Mode mode) {
+        acquire(mode, maxWaitMs);
+    }
+
+    /**
+     * As {@link #acquire(Mode)}, but with a caller-supplied ceiling on a {@link Mode#WAIT} block
+     * instead of this limiter's global {@code max-wait-ms}. Callers that run inside a total call
+     * budget (the earnings merge) must cap the wait below that budget, while callers without one
+     * (e.g. {@code FinnhubClient}) keep the global bound — one shared token bucket, two different
+     * legitimate answers to "how long may I block".
+     */
+    public void acquire(Mode mode, long waitCeilingMs) {
         if (tryAcquire()) return;
         if (mode == Mode.FAIL_FAST) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                     "finnhub rate limit exceeded", null);
         }
-        long deadlineNanos = System.nanoTime() + maxWaitMs * 1_000_000L;
+        long deadlineNanos = System.nanoTime() + waitCeilingMs * 1_000_000L;
         while (true) {
             long remainingNanos = deadlineNanos - System.nanoTime();
             if (remainingNanos <= 0) {
                 throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                        "finnhub rate limit wait exceeded " + maxWaitMs + "ms", null);
+                        "finnhub rate limit wait exceeded " + waitCeilingMs + "ms", null);
             }
             long sleepMs = Math.max(1L, Math.min(POLL_INTERVAL_MS, remainingNanos / 1_000_000L));
             try {
@@ -222,18 +233,26 @@ public class FinnhubRateLimiter implements ClientHttpRequestInterceptor {
     @Override
     public ClientHttpResponse intercept(HttpRequest request, byte[] body, ClientHttpRequestExecution execution)
             throws IOException {
-        return interceptWithMode(Mode.WAIT, request, body, execution);
+        return interceptWithMode(Mode.WAIT, maxWaitMs, request, body, execution);
     }
 
     /** Returns an interceptor view sharing this limiter's token-bucket state, for callers that
      *  need {@link Mode#FAIL_FAST} instead of the default {@link Mode#WAIT} (the quote path). */
     public ClientHttpRequestInterceptor withMode(Mode mode) {
-        return (request, body, execution) -> interceptWithMode(mode, request, body, execution);
+        return withMode(mode, maxWaitMs);
     }
 
-    private ClientHttpResponse interceptWithMode(Mode mode, HttpRequest request, byte[] body,
-                                                  ClientHttpRequestExecution execution) throws IOException {
-        acquire(mode);
+    /** As {@link #withMode(Mode)}, but with a caller-specific ceiling on the bounded wait — used
+     *  by callers that must fit inside a total call budget (see {@link #acquire(Mode, long)}). */
+    public ClientHttpRequestInterceptor withMode(Mode mode, long waitCeilingMs) {
+        return (request, body, execution) ->
+                interceptWithMode(mode, waitCeilingMs, request, body, execution);
+    }
+
+    private ClientHttpResponse interceptWithMode(Mode mode, long waitCeilingMs, HttpRequest request,
+                                                  byte[] body, ClientHttpRequestExecution execution)
+            throws IOException {
+        acquire(mode, waitCeilingMs);
         ClientHttpResponse response = execution.execute(request, body);
         if (response.getStatusCode().value() == 429) {
             recordCooldown(response.getHeaders());

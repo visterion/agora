@@ -24,8 +24,17 @@ Agora's data tools resolve through provider plugins, so consumers never pick a p
 `get_earnings_calendar` and `get_earnings_window` no longer take the first non-empty
 answer from a fallback chain — every provider that can see the requested window is
 queried in parallel under one shared budget (`agora.fetch.earnings.budget-ms`, default
-7000ms; each provider attempt is separately capped by
-`agora.fetch.earnings.attempt-timeout-ms`, default 4000ms) and their results are merged.
+9000ms; each provider attempt is separately capped by
+`agora.fetch.earnings.attempt-timeout-ms`, default 2500ms) and their results are merged.
+
+Those two values are not independent knobs. A worst-case attempt is the Finnhub limiter
+wait **plus** the 3000ms connect timeout **plus** the read timeout, and the sum has to fit
+*strictly* inside the budget: otherwise a hanging provider can only ever be
+budget-cancelled, and a budget cancellation deliberately does not trip the cooldown, so it
+is re-attempted on every request forever. The earnings limiter wait is therefore **derived**
+from the other two rather than configured separately (`budget − connect − attempt − 500ms
+margin`, i.e. 3000ms at the defaults); a combination that leaves no usable wait fails
+startup with an explicit message instead of silently voiding the guarantee.
 
 - **Finnhub** — primary source, full history (past actuals + future estimates).
 - **Nasdaq** — key-less, day-granular (one HTTP call per calendar day, cached per day
@@ -34,7 +43,12 @@ queried in parallel under one shared budget (`agora.fetch.earnings.budget-ms`, d
   never considered "answered" by Nasdaq alone. Its day-by-day fetch is capped at
   `agora.data.nasdaq.day-cap` (default 95) — **this must stay ≥ 91**, because
   `get_earnings_calendar` defaults to a `now+90` window, and a lower cap would make the
-  tool's most common call permanently partial.
+  tool's most common call permanently partial. The loop is also **time-aware**: it stops
+  before starting a day whose worst case would outrun the shared budget. Either stop —
+  day cap or budget — is reported with the data and makes the merged answer `partial`, so
+  a truncated window is short-TTL cached and retried rather than passing as complete. On a
+  cold cache a wide window therefore converges over successive calls (each call keeps the
+  days it reached in the shared day cache) instead of being cancelled and starting over.
 - **Yahoo** — consulted only for symbols the above two left uncovered, and only from an
   asynchronously warmed page cache, never crawled inline (the crawl can take longer than
   the merge budget). **Yahoo's calendar index is currently broken server-side**: every
@@ -50,8 +64,11 @@ not an error — the previous first-success chain treated an empty result the sa
 answer" and fell through, which turned a correct empty answer into an `unavailable` the
 moment the next provider in the chain was down. Today, the result additionally carries a
 `partial` flag: `partial: true` means a provider that was actually needed for this
-window failed, was cooled down, or ran out of budget, so the returned events cannot be
-trusted as the complete picture. Complete answers are cached for the standard
+window failed, was cooled down, ran out of budget, or could only cover part of the window,
+so the returned events cannot be trusted as the complete picture. A **cooled** provider
+counts here exactly like a failing one — being deliberately skipped is still "we could not
+see it this call", and an empty result must never be reported as a definitive "no earnings
+scheduled" on data Agora could not see. Complete answers are cached for the standard
 fundamentals TTL; partial ones for a short TTL (`agora.fetch.earnings.partial-ttl-seconds`,
 default 600s) — long enough to stop hammering a failing provider, short enough not to
 poison a session once it recovers. The call only throws `unavailable` when nothing

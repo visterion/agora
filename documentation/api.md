@@ -225,8 +225,10 @@ Both tools below use the same three-valued outcome:
 - **Complete, empty** — every provider that could see the window answered and none had
   anything to report. This is a valid answer, not an error: `earnings` is `[]` and a
   `note` field states `"no earnings in the requested window"`.
-- **Partial** — a provider that was needed for this window failed, was cooled down, or
-  ran out of the shared fetch budget, so the result cannot be trusted as complete.
+- **Partial** — a provider that was needed for this window failed, was cooled down, ran
+  out of the shared fetch budget, or could only cover part of the requested window (the
+  day-granular Nasdaq source stops at its day cap, or when too little budget is left to
+  fetch another day), so the result cannot be trusted as complete.
   `partial: true` is set and the `note` field is **omitted** even if `earnings` is
   empty — an empty-and-partial result means "we could not see everything", not "nothing
   is scheduled", so it must not read like the confident empty case above.

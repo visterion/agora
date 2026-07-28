@@ -40,21 +40,30 @@ public class NasdaqEarningsProvider implements EarningsProvider {
     private final int dayCap;
     private final TtlCache<String, List<EarningsEvent>> dayCache;
     private final Supplier<LocalDate> todayEt;
-    private volatile boolean lastCallTruncated;
+    private final LongSupplier now;
+    private final long attemptWorstCaseMs;
 
     @Autowired
     public NasdaqEarningsProvider(
             @Value("${agora.data.nasdaq.base-url}") String baseUrl,
             @Value("${agora.data.nasdaq.user-agent}") String userAgent,
-            @Value("${agora.fetch.earnings.attempt-timeout-ms:4000}") long timeoutMs,
+            EarningsBudgetPolicy budget,
             @Value("${agora.data.nasdaq.day-cap:95}") int dayCap,
             @Value("${agora.data.cache.ttl.fundamentals-seconds:21600}") long ttlSeconds) {
-        this(baseUrl, userAgent, timeoutMs, dayCap, ttlSeconds,
-                System::currentTimeMillis, () -> LocalDate.now(EXCHANGE_ZONE));
+        this(baseUrl, userAgent, budget.attemptTimeoutMs(), dayCap, ttlSeconds,
+                System::currentTimeMillis, () -> LocalDate.now(EXCHANGE_ZONE),
+                budget.unthrottledAttemptWorstCaseMs());
     }
 
     NasdaqEarningsProvider(String baseUrl, String userAgent, long timeoutMs, int dayCap,
                            long ttlSeconds, LongSupplier now, Supplier<LocalDate> todayEt) {
+        this(baseUrl, userAgent, timeoutMs, dayCap, ttlSeconds, now, todayEt,
+                DataHttp.CONNECT_TIMEOUT_MS + timeoutMs);
+    }
+
+    NasdaqEarningsProvider(String baseUrl, String userAgent, long timeoutMs, int dayCap,
+                           long ttlSeconds, LongSupplier now, Supplier<LocalDate> todayEt,
+                           long attemptWorstCaseMs) {
         this.client = DataHttp.clientBuilder(timeoutMs)
                 .baseUrl(baseUrl)
                 .defaultHeader("User-Agent", userAgent)
@@ -62,17 +71,40 @@ public class NasdaqEarningsProvider implements EarningsProvider {
         this.dayCap = dayCap;
         this.dayCache = new TtlCache<>(ttlSeconds * 1000L, 4096, now);
         this.todayEt = todayEt;
+        this.now = now;
+        this.attemptWorstCaseMs = attemptWorstCaseMs;
     }
 
     @Override public String name() { return "nasdaq"; }
 
     @Override public EarningsCoverage coverage() { return EarningsCoverage.FUTURE_ONLY; }
 
-    /** True when the most recent call hit the day cap and therefore returned a partial view. */
-    public boolean lastCallTruncated() { return lastCallTruncated; }
-
+    /**
+     * Unbudgeted entry point (kept for callers outside the merge): the day cap still applies, but
+     * nothing stops the loop on elapsed time. Truncation is reported through
+     * {@link #earnings(String, LocalDate, LocalDate, long)}; this overload discards it, which is
+     * why {@link EarningsService} never calls it.
+     */
     @Override
     public List<EarningsEvent> earnings(String symbol, LocalDate from, LocalDate to) {
+        return earnings(symbol, from, to, Long.MAX_VALUE).events();
+    }
+
+    /**
+     * Day-by-day fetch bounded by both the day cap and {@code budgetMs}.
+     *
+     * <p>The time bound is not decoration. A cold cache over the default {@code
+     * get_earnings_calendar} window is 91 sequential requests and over {@code get_earnings_window}
+     * up to 366 — neither finishes inside the merge budget at any realistic latency. Without the
+     * bound every early call was budget-<em>cancelled</em>: the days it had already fetched were
+     * discarded with the cancelled future, and a cancellation deliberately does not trip the
+     * cooldown, so the call burned the whole budget and repeated. Stopping one worst-case attempt
+     * short of the budget instead means the call returns real data plus {@code truncated=true},
+     * the days reached stay in the shared day cache, and successive calls converge.
+     */
+    @Override
+    public ProviderEarnings earnings(String symbol, LocalDate from, LocalDate to, long budgetMs) {
+        long startedAt = now.getAsLong();
         LocalDate today = todayEt.get();
         LocalDate start = from.isBefore(today) ? today : from;   // future days only
         boolean marketWide = symbol == null || symbol.isBlank();
@@ -88,6 +120,12 @@ public class NasdaqEarningsProvider implements EarningsProvider {
             List<EarningsEvent> day = dayCache.peek(key).orElse(null);
             if (day == null) {
                 if (fetched >= dayCap) { truncated = true; break; }
+                // Do not START a request that could still be running when the budget expires:
+                // the worst case for one day is a full connect plus a full read timeout.
+                if (now.getAsLong() - startedAt + attemptWorstCaseMs > budgetMs) {
+                    truncated = true;
+                    break;
+                }
                 day = fetchDay(d);
                 dayCache.put(key, day);
                 fetched++;
@@ -95,8 +133,7 @@ public class NasdaqEarningsProvider implements EarningsProvider {
             for (EarningsEvent e : day)
                 if (marketWide || e.symbol().equals(want)) out.add(e);
         }
-        this.lastCallTruncated = truncated;
-        return out;
+        return new ProviderEarnings(out, truncated);
     }
 
     private List<EarningsEvent> fetchDay(LocalDate day) {

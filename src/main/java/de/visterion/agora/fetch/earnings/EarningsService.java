@@ -50,8 +50,8 @@ public class EarningsService {
                            @Value("${agora.fetch.earnings.partial-ttl-seconds:600}") long partialTtlSeconds,
                            @Value("${agora.fetch.earnings.cooldown-threshold:3}") int cooldownThreshold,
                            @Value("${agora.fetch.earnings.cooldown-ms:600000}") long cooldownMs,
-                           @Value("${agora.fetch.earnings.budget-ms:7000}") long budgetMs) {
-        this(providers, ttlSeconds, partialTtlSeconds, cooldownThreshold, cooldownMs, budgetMs,
+                           EarningsBudgetPolicy budget) {
+        this(providers, ttlSeconds, partialTtlSeconds, cooldownThreshold, cooldownMs, budget.budgetMs(),
                 System::currentTimeMillis, () -> LocalDate.now(EXCHANGE_ZONE));
     }
 
@@ -121,18 +121,23 @@ public class EarningsService {
         if (!phase1.isEmpty()) {
             long deadlineNanos = System.nanoTime() + budgetMs * 1_000_000L;
             try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
-                List<Future<List<EarningsEvent>>> futures = new ArrayList<>();
+                List<Future<ProviderEarnings>> futures = new ArrayList<>();
                 List<EarningsProvider> submitted = new ArrayList<>();
                 for (EarningsProvider p : phase1) {
                     if (cooldown.isCooled(p)) { degraded = true; continue; }
                     submitted.add(p);
-                    futures.add(pool.submit(() -> p.earnings(symbol, from, to)));
+                    futures.add(pool.submit(() -> p.earnings(symbol, from, to, budgetMs)));
                 }
                 for (int i = 0; i < submitted.size(); i++) {
                     EarningsProvider p = submitted.get(i);
                     long remaining = deadlineNanos - System.nanoTime();
                     try {
-                        results.add(futures.get(i).get(Math.max(remaining, 0L), TimeUnit.NANOSECONDS));
+                        ProviderEarnings answer =
+                                futures.get(i).get(Math.max(remaining, 0L), TimeUnit.NANOSECONDS);
+                        results.add(answer.events());
+                        // A provider that cut the window short answered, but only for part of the
+                        // window asked about — that is exactly what `partial` is for (spec §5.4).
+                        if (answer.truncated()) degraded = true;
                         cooldown.recordSuccess(p);
                         anySuccess = true;
                     } catch (TimeoutException e) {
@@ -168,17 +173,31 @@ public class EarningsService {
         // request forever. Feeding the warm's outcome into the shared cooldown, and gating the
         // call to window() on it below, makes Yahoo back off like every other provider and
         // resume on its own once the cooldown window elapses.
-        if (yahoo != null && uncovered && !cooldown.isCooled(yahoo)) {
-            Optional<List<EarningsEvent>> page = yahoo.window(from, to,
-                    () -> cooldown.recordSuccess(yahoo), () -> cooldown.recordFailure(yahoo));
-            if (page.isPresent()) {
-                anySuccess = true;
-                List<EarningsEvent> filtered = symbol == null ? page.get()
-                        : page.get().stream()
-                              .filter(e -> e.symbol().equalsIgnoreCase(symbol)).toList();
-                merged = EarningsMerger.merge(List.of(merged, filtered));
+        //
+        // The cooldown gate sits INSIDE this block, not in its condition. It used to read
+        // `uncovered && !cooldown.isCooled(yahoo)`, which silently conflated "Yahoo was not
+        // needed" with "Yahoo was needed but deliberately skipped": a cooled Yahoo dropped out of
+        // the condition and took the `degraded` marker with it, so an uncovered symbol came back
+        // COMPLETE with an empty event list and was cached for the full 6 h TTL. With Yahoo's
+        // calendar 500ing for every window — its state throughout the outage this branch was
+        // written for — the cooldown re-trips every window, so that was a permanent, confident
+        // "no earnings scheduled" for every symbol phase 1 left uncovered. A definitive absence is
+        // exactly what this system must never assert on data it could not see (spec §8).
+        if (yahoo != null && uncovered) {
+            if (cooldown.isCooled(yahoo)) {
+                degraded = true;   // needed, but skipped — we could not see Yahoo this call
             } else {
-                degraded = true;   // cache still warming — we could not see Yahoo this call
+                Optional<List<EarningsEvent>> page = yahoo.window(from, to,
+                        () -> cooldown.recordSuccess(yahoo), () -> cooldown.recordFailure(yahoo));
+                if (page.isPresent()) {
+                    anySuccess = true;
+                    List<EarningsEvent> filtered = symbol == null ? page.get()
+                            : page.get().stream()
+                                  .filter(e -> e.symbol().equalsIgnoreCase(symbol)).toList();
+                    merged = EarningsMerger.merge(List.of(merged, filtered));
+                } else {
+                    degraded = true;   // cache still warming — we could not see Yahoo this call
+                }
             }
         }
 
