@@ -73,6 +73,19 @@ agora:
     # timeout bounds time-to-headers (and time between subsequent reads), NOT the total time
     # to receive the full body — a slow-but-steady multi-MB body can still take much longer.
     timeout-ms: ${AGORA_FETCH_TIMEOUT_MS:15000}
+    earnings:
+      # These two are NOT independent knobs. D16 requires one worst-case provider attempt to fit
+      # strictly inside the merge budget, and a worst-case attempt is
+      #   finnhub limiter wait + DataHttp connect timeout (3000) + attempt-timeout-ms
+      # — the first two of which the original 4000/7000 pairing never counted, so the guarantee
+      # was void. EarningsBudgetPolicy now DERIVES the earnings limiter wait from these two
+      # (9000 - 3000 connect - 2500 attempt - 500 margin = 3000) and refuses to start the context
+      # if nothing usable is left. Change either value and re-read that class.
+      attempt-timeout-ms: ${AGORA_FETCH_EARNINGS_ATTEMPT_TIMEOUT_MS:2500}
+      budget-ms: ${AGORA_FETCH_EARNINGS_BUDGET_MS:9000}
+      cooldown-threshold: ${AGORA_FETCH_EARNINGS_COOLDOWN_THRESHOLD:3}
+      cooldown-ms: ${AGORA_FETCH_EARNINGS_COOLDOWN_MS:600000}
+      partial-ttl-seconds: ${AGORA_FETCH_EARNINGS_PARTIAL_TTL_SECONDS:600}
   data:
     # per-request read timeout for all market-data HTTP providers (fail fast into the next provider)
     provider-timeout-ms: ${AGORA_DATA_PROVIDER_TIMEOUT_MS:4000}
@@ -98,15 +111,32 @@ agora:
       timeseries-base-url: ${AGORA_DATA_YAHOO_TIMESERIES_BASE_URL:https://query2.finance.yahoo.com}
       fc-base-url: ${AGORA_DATA_YAHOO_FC_BASE_URL:https://fc.yahoo.com}
       finance-base-url: ${AGORA_DATA_YAHOO_FINANCE_BASE_URL:https://finance.yahoo.com}
-      user-agent: ${AGORA_DATA_YAHOO_USER_AGENT:agora/0.1 (+https://github.com/visterion/agora)}
-      # fundamentals-timeseries/crumb endpoints 429 non-browser UAs — this client presents a browser UA
-      crumb-user-agent: ${AGORA_DATA_YAHOO_CRUMB_USER_AGENT:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36}
+      # A browser UA is required by Yahoo's crumb + fundamentals-timeseries endpoints, which
+      # 429 non-browser agents; the price/chart/earnings endpoints accept it too. One property
+      # for every Yahoo client — a second one drifted for months and is pinned against by
+      # YahooUserAgentPinTest.
+      user-agent: ${AGORA_DATA_YAHOO_USER_AGENT:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36}
     twelvedata:
       base-url: ${AGORA_DATA_TWELVEDATA_BASE_URL:https://api.twelvedata.com}
       key: ${AGORA_DATA_TWELVEDATA_KEY:}
     finnhub:
       base-url: ${AGORA_DATA_FINNHUB_BASE_URL:https://finnhub.io/api/v1}
       key: ${AGORA_DATA_FINNHUB_KEY:}
+      # Shared rate-limit policy (M-D23) across every Finnhub caller: FinnhubClient (news/split/
+      # fundamentals/estimates/profile/earnings-estimates), FinnhubMarketDataProvider (quote,
+      # fail-fast) and FinnhubEarningsProvider (calendar, bounded wait) all inject the same
+      # FinnhubRateLimiter singleton, so this throttles the combined call rate, not per-caller.
+      calls-per-minute: ${AGORA_DATA_FINNHUB_CALLS_PER_MINUTE:60}
+      max-wait-ms: ${AGORA_DATA_FINNHUB_MAX_WAIT_MS:3000}
+      # Finnhub's exact rate-limit header is unverified; used only when neither Retry-After nor
+      # x-ratelimit-reset is present/parseable on a 429.
+      default-retry-after-ms: ${AGORA_DATA_FINNHUB_DEFAULT_RETRY_AFTER_MS:2000}
+    nasdaq:
+      base-url: ${AGORA_DATA_NASDAQ_BASE_URL:https://api.nasdaq.com}
+      user-agent: ${AGORA_DATA_NASDAQ_USER_AGENT:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36}
+      # Must stay >= 91: get_earnings_calendar defaults to now+90, and a lower cap would make
+      # the tool's most common call permanently partial (D21).
+      day-cap: ${AGORA_DATA_NASDAQ_DAY_CAP:95}
     alpaca:
       base-url: ${AGORA_DATA_ALPACA_BASE_URL:https://data.alpaca.markets}
       key-id: ${AGORA_DATA_ALPACA_KEY_ID:}

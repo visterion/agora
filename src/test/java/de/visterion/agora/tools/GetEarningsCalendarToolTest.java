@@ -2,6 +2,7 @@ package de.visterion.agora.tools;
 
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.fetch.earnings.EarningsEvent;
+import de.visterion.agora.fetch.earnings.EarningsResult;
 import de.visterion.agora.fetch.earnings.EarningsService;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
@@ -20,9 +21,9 @@ class GetEarningsCalendarToolTest {
 
     @Test void returnsEarnings() {
         EarningsService svc = Mockito.mock(EarningsService.class);
-        when(svc.earnings(any(), any(LocalDate.class), any(LocalDate.class))).thenReturn(List.of(
+        when(svc.earnings(any(), any(LocalDate.class), any(LocalDate.class))).thenReturn(new EarningsResult(List.of(
                 new EarningsEvent("AAPL", LocalDate.parse("2025-05-01"),
-                        new BigDecimal("1.4"), new BigDecimal("1.5"), new BigDecimal("7.1"), null, null)));
+                        new BigDecimal("1.4"), new BigDecimal("1.5"), new BigDecimal("7.1"), null, null)), false));
         var r = new GetEarningsCalendarTool(svc).call(mapper.createObjectNode().put("symbol", "AAPL"));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("earnings").get(0).get("epsActual").decimalValue()).isEqualByComparingTo("1.5");
@@ -50,11 +51,30 @@ class GetEarningsCalendarToolTest {
     @Test void notFoundQuietWindowReturnsAvailableEmpty() {
         EarningsService svc = Mockito.mock(EarningsService.class);
         when(svc.earnings(any(), any(LocalDate.class), any(LocalDate.class)))
-                .thenThrow(new MarketDataException(MarketDataException.Kind.NOT_FOUND, "no earnings", null));
+                .thenReturn(new EarningsResult(List.of(), false));
         var r = new GetEarningsCalendarTool(svc).call(mapper.createObjectNode().put("symbol", "AAPL"));
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("earnings")).isNotNull();
         assertThat(r.output().get("earnings")).isEmpty();
         assertThat(r.output().get("note")).isNotNull();
+    }
+
+    @Test void completeEmptyResultKeepsTheNote() {
+        EarningsService svc = Mockito.mock(EarningsService.class);
+        when(svc.earnings(any(), any(LocalDate.class), any(LocalDate.class)))
+                .thenReturn(new EarningsResult(List.of(), false));
+        var r = new GetEarningsCalendarTool(svc).call(mapper.createObjectNode().put("symbol", "AAPL"));
+        assertThat(r.output().get("note").asString("")).isEqualTo("no earnings in the requested window");
+        assertThat(r.output().has("partial")).isFalse();
+    }
+
+    @Test void partialEmptyResultOmitsTheNoteAndFlagsPartial() {
+        // "no earnings in the requested window" would assert an absence we cannot vouch for.
+        EarningsService svc = Mockito.mock(EarningsService.class);
+        when(svc.earnings(any(), any(LocalDate.class), any(LocalDate.class)))
+                .thenReturn(new EarningsResult(List.of(), true));
+        var r = new GetEarningsCalendarTool(svc).call(mapper.createObjectNode().put("symbol", "AAPL"));
+        assertThat(r.output().has("note")).isFalse();
+        assertThat(r.output().get("partial").asBoolean(false)).isTrue();
     }
 }

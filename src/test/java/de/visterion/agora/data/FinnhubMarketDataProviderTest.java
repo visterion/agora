@@ -101,4 +101,18 @@ class FinnhubMarketDataProviderTest {
                 .isInstanceOfSatisfying(MarketDataException.class,
                         e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
+
+    // M-D23: provider-timeout-ms (4000) must win over the shared FinnhubClient's timeout (15000) —
+    // this path deliberately fails fast into the next provider instead of stalling the chain.
+    @Test void slowFinnhubStillFailsFastForTheQuotePath() {
+        wm.stubFor(get(urlPathMatching("/quote.*"))
+                .willReturn(aResponse().withFixedDelay(6_000).withStatus(200)));
+
+        var provider = withKey("k");
+        long start = System.nanoTime();
+        assertThatThrownBy(() -> provider.quote("ZZTOP")).isInstanceOf(MarketDataException.class);
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000L;
+
+        assertThat(elapsedMs).isLessThan(5_000L);   // provider-timeout-ms is 4000, not 15000
+    }
 }

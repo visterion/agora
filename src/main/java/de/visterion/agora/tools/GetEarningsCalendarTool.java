@@ -2,6 +2,7 @@ package de.visterion.agora.tools;
 
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.fetch.earnings.EarningsEvent;
+import de.visterion.agora.fetch.earnings.EarningsResult;
 import de.visterion.agora.fetch.earnings.EarningsService;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolResult;
@@ -13,7 +14,6 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeParseException;
-import java.util.List;
 
 @Component
 public class GetEarningsCalendarTool implements AgoraTool {
@@ -50,11 +50,11 @@ public class GetEarningsCalendarTool implements AgoraTool {
             return ToolResult.unavailable("invalid date");
         }
         try {
-            List<EarningsEvent> events = service.earnings(symbol, from, to);
+            EarningsResult result = service.earnings(symbol, from, to);
             ObjectNode out = mapper.createObjectNode();
             out.put("symbol", symbol);
             ArrayNode arr = out.putArray("earnings");
-            for (EarningsEvent e : events) {
+            for (EarningsEvent e : result.events()) {
                 ObjectNode o = arr.addObject();
                 if (e.date() != null) o.put("date", e.date().toString());
                 if (e.epsEstimate() != null) o.put("epsEstimate", e.epsEstimate());
@@ -63,15 +63,11 @@ public class GetEarningsCalendarTool implements AgoraTool {
                 if (e.revenueEstimate() != null) o.put("revenueEstimate", e.revenueEstimate());
                 if (e.revenueActual() != null) o.put("revenueActual", e.revenueActual());
             }
+            if (result.partial()) out.put("partial", true);
+            else if (result.events().isEmpty())
+                out.put("note", "no earnings in the requested window");
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
-            if (e.kind() == MarketDataException.Kind.NOT_FOUND) {
-                ObjectNode out = mapper.createObjectNode();
-                out.put("symbol", symbol);
-                out.putArray("earnings");
-                out.put("note", "no earnings in the requested window");
-                return ToolResult.ok(out);
-            }
             return ToolResult.unavailable(e.getMessage());
         }
     }

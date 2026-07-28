@@ -60,6 +60,29 @@ This prints one line per `(provider, status)` pair with a count, sorted descendi
 useful for spotting an unexpected fallback chain (e.g. Yahoo being hit far more than
 expected because Saxo is failing) or a provider returning non-200 statuses repeatedly.
 
+## News provider rate-limit summary logging
+
+This is separate from the `agora.providercall` logging above: it is a per-provider
+business-level summary, not a per-HTTP-call structured line, and is logged under the
+`NewsAggregator` class logger instead.
+
+When a news provider rejects a symbol lookup because it is in a rate-limit cooldown
+(after an earlier real 429), that individual skip is logged at `DEBUG` only — one WARN
+per skipped symbol would flood the log during a run over many symbols. Instead,
+`NewsAggregator` accumulates skips per provider and emits one `WARN`-level summary line,
+`news provider {id} rate-limited (cooldown): skipped {N} symbol lookup(s) ...`, whichever
+of two triggers fires first:
+
+- a 5-minute window elapses since the first skip in the current window, or
+- the accumulated skip count for that provider reaches **20** (the burst threshold) —
+  this is what makes a large burst inside a single bounded batch run (e.g. a Strigoi
+  hunt over many symbols that starts and ends well within 5 minutes) self-report instead
+  of silently finishing with zero WARNs.
+
+An isolated skip or two never crosses either threshold and stays at `DEBUG` only.
+Client-visible tool output (`AggregatedNews.warnings`) still carries the per-call
+warning regardless of this summary; only the server-log verbosity is affected.
+
 ## Redaction guarantee
 
 Provider-call log lines never contain secrets or PII. Redaction happens before the line

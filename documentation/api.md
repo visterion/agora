@@ -1,6 +1,6 @@
 # API Reference
 
-This reference covers the fundamentals and trading tools in detail; other Agora tools are self-describing via their MCP inputSchema.
+This reference covers the fundamentals, earnings and trading tools in detail; other Agora tools are self-describing via their MCP inputSchema.
 
 ---
 
@@ -206,6 +206,92 @@ a failing or slow provider degrades to a `warnings` entry instead of failing the
 - Items are deduplicated (normalized URL first, then normalized title; first source wins),
   sorted by `datetime` descending, and capped at `agora.data.news.max-items` (default 200).
 - The call is `unavailable` only when every configured provider fails.
+
+**Availability:** MCP, webhook, catalog
+
+---
+
+## Earnings
+
+Results are merged in parallel from every provider that can see the requested window
+(Finnhub, Nasdaq, and — only for gaps the others left uncovered — a Yahoo page cache),
+not taken from the first non-empty provider in a fallback chain. See
+[`hunting-grounds.md`](hunting-grounds.md#earnings-calendar-merge) for the full merge
+and coverage rules.
+
+Both tools below use the same three-valued outcome:
+
+- **Complete, non-empty** — `earnings` has rows, no `partial`, no `note`.
+- **Complete, empty** — every provider that could see the window answered and none had
+  anything to report. This is a valid answer, not an error: `earnings` is `[]` and a
+  `note` field states `"no earnings in the requested window"`.
+- **Partial** — a provider that was needed for this window failed, was cooled down, ran
+  out of the shared fetch budget, or could only cover part of the requested window (the
+  day-granular Nasdaq source stops at its day cap, or when too little budget is left to
+  fetch another day), so the result cannot be trusted as complete.
+  `partial: true` is set and the `note` field is **omitted** even if `earnings` is
+  empty — an empty-and-partial result means "we could not see everything", not "nothing
+  is scheduled", so it must not read like the confident empty case above.
+
+The call only returns `unavailable` when nothing usable answered at all (no provider
+covers the window, or every provider that does failed).
+
+### `get_earnings_calendar`
+
+Recent and upcoming earnings events for one symbol.
+
+**Input**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `symbol` | string | yes | ticker symbol |
+| `from` | string | no | start date (YYYY-MM-DD), inclusive; default 90 days ago |
+| `to` | string | no | end date (YYYY-MM-DD), inclusive; default 90 days ahead |
+
+**Output**
+
+```json
+{ "symbol": "AAPL",
+  "earnings": [ { "date": "2026-10-30", "epsEstimate": 1.60, "epsActual": 1.64,
+                  "epsSurprisePct": 2.5, "revenueEstimate": 94500000000,
+                  "revenueActual": 94900000000 } ] }
+```
+
+- On a complete, empty result: `"earnings": [], "note": "no earnings in the requested window"`.
+- On a partial result: `"partial": true` is added and `note` is omitted, regardless of
+  whether `earnings` is empty.
+- Numeric fields (`epsEstimate`, `epsActual`, `epsSurprisePct`, `revenueEstimate`,
+  `revenueActual`) are omitted per-event when the underlying provider didn't report them
+  (e.g. Nasdaq never reports `epsActual`).
+
+**Availability:** MCP, webhook, catalog
+
+### `get_earnings_window`
+
+Market-wide earnings events in a date window; one row per company with its symbol.
+
+**Input**
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `from` | string | no | start date (YYYY-MM-DD), inclusive; default 30 days ago |
+| `to` | string | no | end date (YYYY-MM-DD), inclusive; default today |
+| `limit` | integer | no | max rows (default 100, max 100) |
+
+**Output**
+
+```json
+{ "earnings": [ { "symbol": "AAPL", "date": "2026-10-30", "epsEstimate": 1.60,
+                  "epsActual": 1.64, "epsSurprisePct": 2.5 } ],
+  "truncated": false }
+```
+
+- `truncated` is `true` when the merged result had more rows than `limit`; it is present
+  and `false` on an empty result too (there is nothing to truncate, but the field is
+  never omitted).
+- Same complete/empty/partial semantics as `get_earnings_calendar`: a complete empty
+  result adds `"note": "no earnings in the requested window"`; a partial result adds
+  `"partial": true` instead, with `note` omitted.
 
 **Availability:** MCP, webhook, catalog
 

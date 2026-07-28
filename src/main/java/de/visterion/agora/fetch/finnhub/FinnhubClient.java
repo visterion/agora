@@ -16,8 +16,9 @@ public class FinnhubClient {
     @Autowired
     public FinnhubClient(@Value("${agora.data.finnhub.base-url:https://finnhub.io/api/v1}") String baseUrl,
                          @Value("${agora.data.finnhub.key:}") String apiKey,
-                         @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
-        this.http = DataHttp.clientBuilder(timeoutMs)
+                         @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs,
+                         FinnhubRateLimiter rateLimiter) {
+        this.http = DataHttp.clientBuilder(timeoutMs, rateLimiter)
                 .baseUrl(baseUrl)
                 .build();
         this.apiKey = apiKey;

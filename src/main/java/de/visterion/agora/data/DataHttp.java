@@ -1,6 +1,7 @@
 package de.visterion.agora.data;
 
 import de.visterion.agora.observability.ProviderCallLogger;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
@@ -16,7 +17,15 @@ import java.time.Duration;
  */
 public final class DataHttp {
 
-    private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(3);
+    /**
+     * TCP connect timeout applied to every client built here. Public because it is a real,
+     * non-optional term in any "one attempt fits inside budget X" arithmetic: a caller that
+     * budgets only for its read timeout under-counts a slow or blackholed connect by exactly
+     * this much (see {@code de.visterion.agora.fetch.earnings.EarningsBudgetPolicy}).
+     */
+    public static final long CONNECT_TIMEOUT_MS = 3_000L;
+
+    private static final Duration CONNECT_TIMEOUT = Duration.ofMillis(CONNECT_TIMEOUT_MS);
 
     private DataHttp() {}
 
@@ -34,6 +43,15 @@ public final class DataHttp {
     public static RestClient.Builder clientBuilder(long readTimeoutMs) {
         return RestClient.builder()
                 .requestFactory(requestFactory(readTimeoutMs))
+                .requestInterceptor(ProviderCallLogger.INSTANCE);
+    }
+
+    /** Same as {@link #clientBuilder(long)} but with {@code first} ahead of the call logger, so
+     *  a throttle's wait is not billed to the provider's measured latency. */
+    public static RestClient.Builder clientBuilder(long readTimeoutMs, ClientHttpRequestInterceptor first) {
+        return RestClient.builder()
+                .requestFactory(requestFactory(readTimeoutMs))
+                .requestInterceptor(first)
                 .requestInterceptor(ProviderCallLogger.INSTANCE);
     }
 }

@@ -119,7 +119,10 @@ public class RssNewsProvider implements NewsProvider {
         if (notBefore != null && nowMs < notBefore) {
             // Host is in a cooldown recorded by an earlier 429 (possibly from a sister feed on
             // the same host) — skip the HTTP call entirely rather than hammer into it again.
-            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+            // RATE_LIMITED (not UNAVAILABLE): lets NewsAggregator tell a silent cooldown skip
+            // apart from a genuine provider failure, so it can log this at DEBUG instead of WARN
+            // without matching on the message text.
+            throw new MarketDataException(MarketDataException.Kind.RATE_LIMITED,
                     id() + " rate limited (cooldown)", null);
         }
 

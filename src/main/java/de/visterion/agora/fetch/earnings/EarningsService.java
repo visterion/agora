@@ -9,71 +9,202 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.concurrent.*;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /**
- * Earnings calendar with provider fallback (Finnhub → Yahoo), per-family TTL cache.
+ * Earnings calendar merged across providers, with a three-valued outcome.
  *
- * <p>A provider returning an empty list is treated as "no answer", not success — the chain
- * tries the next provider. Only a non-empty result is cached. If every provider is either
- * unavailable or returns empty, {@link #firstSuccess} throws instead of returning/caching
- * an empty list, so a transient all-empty outcome (e.g. a quiet window queried right as a
- * provider's data lags) is retried on the next call rather than poisoning the cache for
- * the full TTL.
+ * <p>Providers are queried in parallel under one total budget and their results merged, rather
+ * than the old first-success chain. The chain treated an empty result as "no answer" and fell
+ * through to the next provider, so a correct "this symbol has no upcoming earnings" turned into
+ * an UNAVAILABLE the moment the fallback was down — and, because {@code TtlCache} never stores a
+ * throwing load, it re-failed on every single call.
+ *
+ * <p>An answer is <em>complete</em> when every provider needed for the window either succeeded or
+ * was unnecessary; <em>partial</em> when a needed one failed, cooled or timed out; and an outright
+ * failure only when nothing usable answered at all. Complete answers cache for the full TTL,
+ * partial ones for a short one — long enough to stop hammering, short enough not to poison a session.
  */
 @Component
 public class EarningsService {
 
     private static final Logger log = LoggerFactory.getLogger(EarningsService.class);
+    private static final ZoneId EXCHANGE_ZONE = ZoneId.of("America/New_York");
 
     private final List<EarningsProvider> providers;
-    private final TtlCache<String, List<EarningsEvent>> cache;
+    private final TtlCache<String, EarningsResult> completeCache;
+    private final TtlCache<String, EarningsResult> partialCache;
+    private final ProviderCooldown cooldown;
+    private final long budgetMs;
+    private final Supplier<LocalDate> todayEt;
 
     @Autowired
     public EarningsService(List<EarningsProvider> providers,
-                           @Value("${agora.data.cache.ttl.fundamentals-seconds:21600}") long ttlSeconds) {
-        this(providers, ttlSeconds, System::currentTimeMillis);
+                           @Value("${agora.data.cache.ttl.fundamentals-seconds:21600}") long ttlSeconds,
+                           @Value("${agora.fetch.earnings.partial-ttl-seconds:600}") long partialTtlSeconds,
+                           @Value("${agora.fetch.earnings.cooldown-threshold:3}") int cooldownThreshold,
+                           @Value("${agora.fetch.earnings.cooldown-ms:600000}") long cooldownMs,
+                           EarningsBudgetPolicy budget) {
+        this(providers, ttlSeconds, partialTtlSeconds, cooldownThreshold, cooldownMs, budget.budgetMs(),
+                System::currentTimeMillis, () -> LocalDate.now(EXCHANGE_ZONE));
     }
 
-    EarningsService(List<EarningsProvider> providers, long ttlSeconds, LongSupplier now) {
+    EarningsService(List<EarningsProvider> providers, long ttlSeconds, long partialTtlSeconds,
+                    int cooldownThreshold, long cooldownMs, long budgetMs,
+                    LongSupplier now, Supplier<LocalDate> todayEt) {
         this.providers = List.copyOf(providers);
-        // Keyed by symbol+date-range, so cardinality grows with distinct windows queried.
-        this.cache = new TtlCache<>(ttlSeconds * 1000L, 4096, now);
+        this.completeCache = new TtlCache<>(ttlSeconds * 1000L, 4096, now);
+        this.partialCache = new TtlCache<>(partialTtlSeconds * 1000L, 4096, now);
+        this.cooldown = new ProviderCooldown(cooldownThreshold, cooldownMs, now);
+        this.budgetMs = budgetMs;
+        this.todayEt = todayEt;
     }
 
-    public List<EarningsEvent> earnings(String symbol, LocalDate from, LocalDate to) {
-        return cache.get("earn:" + symbol + ":" + from + ":" + to, () -> firstSuccess(symbol, from, to));
+    public EarningsResult earnings(String symbol, LocalDate from, LocalDate to) {
+        String key = "earn:" + symbol.toUpperCase() + ":" + from + ":" + to;
+        return cached(key, () -> collect(symbol, from, to));
     }
 
     /** Market-wide earnings for the window (no symbol). Distinct cache family from symbol lookups. */
-    public List<EarningsEvent> earningsWindow(LocalDate from, LocalDate to) {
-        return cache.get("earnwin:" + from + ":" + to, () -> firstSuccess(null, from, to));
+    public EarningsResult earningsWindow(LocalDate from, LocalDate to) {
+        String key = "earnwin:" + from + ":" + to;
+        return cached(key, () -> collect(null, from, to));
     }
 
-    private List<EarningsEvent> firstSuccess(String symbol, LocalDate from, LocalDate to) {
-        MarketDataException last = null;
-        for (EarningsProvider p : providers) {
-            try {
-                List<EarningsEvent> result = p.earnings(symbol, from, to);
-                if (!result.isEmpty()) return result;
-                // Empty is "no answer", not success — try the next provider.
-            } catch (MarketDataException e) {
-                last = e;
-            } catch (RuntimeException e) {
-                log.warn("earnings provider {} failed for {}: {}", p.name(), symbol, e.toString());
-                last = new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                        p.name() + " failed: " + e.getMessage(), e);
+    /**
+     * Complete cache wins over partial, so a stale partial can never shadow a fresher complete
+     * answer; storing a complete result drops any partial entry for the same key.
+     */
+    private EarningsResult cached(String key, Supplier<EarningsResult> loader) {
+        var complete = completeCache.peek(key);
+        if (complete.isPresent()) return complete.get();
+        var partial = partialCache.peek(key);
+        if (partial.isPresent()) return partial.get();
+
+        EarningsResult r = loader.get();
+        if (r.partial()) partialCache.put(key, r);
+        else { completeCache.put(key, r); partialCache.remove(key); }
+        return r;
+    }
+
+    private EarningsResult collect(String symbol, LocalDate from, LocalDate to) {
+        LocalDate today = todayEt.get();
+        List<EarningsProvider> relevant = new ArrayList<>();
+        for (EarningsProvider p : providers)
+            if (p.coverage().covers(from, to, today)) relevant.add(p);
+
+        if (relevant.isEmpty())
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    "no provider covers the requested earnings window", null);
+
+        // Phase 1: every relevant provider except Yahoo's market-wide pager. Phase 2 (below)
+        // consults Yahoo only for what phase 1 left uncovered — and only from its page cache,
+        // never by crawling inline (D17: the crawl cannot finish inside this budget).
+        List<EarningsProvider> phase1 = new ArrayList<>();
+        YahooEarningsProvider yahooProvider = null;
+        for (EarningsProvider p : relevant) {
+            if (p instanceof YahooEarningsProvider y) yahooProvider = y;
+            else phase1.add(p);
+        }
+        final YahooEarningsProvider yahoo = yahooProvider;
+
+        List<List<EarningsEvent>> results = new ArrayList<>();
+        boolean anySuccess = false;
+        boolean degraded = false;
+
+        if (!phase1.isEmpty()) {
+            long deadlineNanos = System.nanoTime() + budgetMs * 1_000_000L;
+            try (ExecutorService pool = Executors.newVirtualThreadPerTaskExecutor()) {
+                List<Future<ProviderEarnings>> futures = new ArrayList<>();
+                List<EarningsProvider> submitted = new ArrayList<>();
+                for (EarningsProvider p : phase1) {
+                    if (cooldown.isCooled(p)) { degraded = true; continue; }
+                    submitted.add(p);
+                    futures.add(pool.submit(() -> p.earnings(symbol, from, to, budgetMs)));
+                }
+                for (int i = 0; i < submitted.size(); i++) {
+                    EarningsProvider p = submitted.get(i);
+                    long remaining = deadlineNanos - System.nanoTime();
+                    try {
+                        ProviderEarnings answer =
+                                futures.get(i).get(Math.max(remaining, 0L), TimeUnit.NANOSECONDS);
+                        results.add(answer.events());
+                        // A provider that cut the window short answered, but only for part of the
+                        // window asked about — that is exactly what `partial` is for (spec §5.4).
+                        if (answer.truncated()) degraded = true;
+                        cooldown.recordSuccess(p);
+                        anySuccess = true;
+                    } catch (TimeoutException e) {
+                        // Budget cancellation is NOT a provider failure: a healthy-but-slow source
+                        // must not accumulate cooldown strikes. Hangs are caught by the per-attempt
+                        // timeout instead, which surfaces as a real ExecutionException below.
+                        futures.get(i).cancel(true);
+                        degraded = true;
+                    } catch (ExecutionException e) {
+                        cooldown.recordFailure(p);
+                        degraded = true;
+                        log.debug("earnings provider {} failed for {}", p.name(), symbol, e.getCause());
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                                "earnings collection interrupted", e);
+                    }
+                }
+                pool.shutdownNow();
             }
         }
-        if (last != null) {
-            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                    "no provider could serve earnings " + symbol, last);
+
+        List<EarningsEvent> merged = EarningsMerger.merge(results);
+        boolean uncovered = merged.isEmpty();
+
+        // Phase 2: Yahoo is a healthy-path skip — it is only ever consulted (from its page
+        // cache, read-only) when phase 1 left the window uncovered, so a symbol phase 1 already
+        // answered never pays for Yahoo at all.
+        //
+        // Yahoo never enters the phase-1 fan-out, so nothing else calls cooldown.recordSuccess/
+        // recordFailure for it — without wiring the async warm's outcome back here, a dead Yahoo
+        // calendar would be re-crawled (up to MAX_PAGES requests) on every single cache-miss
+        // request forever. Feeding the warm's outcome into the shared cooldown, and gating the
+        // call to window() on it below, makes Yahoo back off like every other provider and
+        // resume on its own once the cooldown window elapses.
+        //
+        // The cooldown gate sits INSIDE this block, not in its condition. It used to read
+        // `uncovered && !cooldown.isCooled(yahoo)`, which silently conflated "Yahoo was not
+        // needed" with "Yahoo was needed but deliberately skipped": a cooled Yahoo dropped out of
+        // the condition and took the `degraded` marker with it, so an uncovered symbol came back
+        // COMPLETE with an empty event list and was cached for the full 6 h TTL. With Yahoo's
+        // calendar 500ing for every window — its state throughout the outage this branch was
+        // written for — the cooldown re-trips every window, so that was a permanent, confident
+        // "no earnings scheduled" for every symbol phase 1 left uncovered. A definitive absence is
+        // exactly what this system must never assert on data it could not see (spec §8).
+        if (yahoo != null && uncovered) {
+            if (cooldown.isCooled(yahoo)) {
+                degraded = true;   // needed, but skipped — we could not see Yahoo this call
+            } else {
+                Optional<List<EarningsEvent>> page = yahoo.window(from, to,
+                        () -> cooldown.recordSuccess(yahoo), () -> cooldown.recordFailure(yahoo));
+                if (page.isPresent()) {
+                    anySuccess = true;
+                    List<EarningsEvent> filtered = symbol == null ? page.get()
+                            : page.get().stream()
+                                  .filter(e -> e.symbol().equalsIgnoreCase(symbol)).toList();
+                    merged = EarningsMerger.merge(List.of(merged, filtered));
+                } else {
+                    degraded = true;   // cache still warming — we could not see Yahoo this call
+                }
+            }
         }
-        // Every provider answered but none had data. Throw rather than cache an empty
-        // list: a genuinely quiet window looks identical to a transient upstream gap,
-        // and caching the latter for the full TTL would poison subsequent lookups.
-        throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
-                "no earnings data for " + symbol, null);
+
+        if (!anySuccess)
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    "no earnings provider could serve " + (symbol == null ? "the window" : symbol), null);
+
+        return new EarningsResult(merged, degraded);
     }
 }
