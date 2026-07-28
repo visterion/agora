@@ -59,7 +59,7 @@ public class EdgarService {
                         EdgarCikResolver cikResolver,
                         @Value("${agora.data.cache.ttl.filings-seconds:3600}") long ttlSeconds,
                         @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
-        this(buildHttp(userAgent, timeoutMs), cikResolver, ttlSeconds, System::currentTimeMillis);
+        this(buildHttp(EdgarUserAgent.checked(userAgent), timeoutMs), cikResolver, ttlSeconds, System::currentTimeMillis);
     }
 
     private static RestClient buildHttp(String userAgent, long timeoutMs) {

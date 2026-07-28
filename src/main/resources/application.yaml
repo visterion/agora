@@ -145,7 +145,10 @@ agora:
       # trading-connection slot whose session feeds market data ("falls vorhanden")
       connection: ${AGORA_DATA_SAXO_CONNECTION:saxo-live}
     edgar:
-      user-agent: ${AGORA_DATA_EDGAR_USER_AGENT:agora agora@visterion.de}
+      # SEC requires a contact User-Agent header on every EDGAR request (else HTTP 403).
+      # Must be supplied via the AGORA_DATA_EDGAR_USER_AGENT environment variable — a real
+      # contact address must never be committed here as a default.
+      user-agent: ${AGORA_DATA_EDGAR_USER_AGENT:}
       efts-base-url: ${AGORA_DATA_EDGAR_EFTS_BASE_URL:https://efts.sec.gov}
       archive-base: ${AGORA_DATA_EDGAR_ARCHIVE_BASE:https://www.sec.gov}
     wikipedia:

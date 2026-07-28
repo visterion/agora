@@ -93,7 +93,7 @@ public class EdgarSearchService {
             @Value("${agora.data.edgar.archive-base:https://www.sec.gov}") String archiveBase,
             @Value("${agora.data.cache.ttl.filings-seconds:3600}") long ttlSeconds,
             @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
-        this(buildHttp(eftsBase, userAgent, timeoutMs),
+        this(buildHttp(eftsBase, EdgarUserAgent.checked(userAgent), timeoutMs),
                 buildHttp(archiveBase, userAgent, timeoutMs),
                 archiveBase, ttlSeconds, System::currentTimeMillis);
     }

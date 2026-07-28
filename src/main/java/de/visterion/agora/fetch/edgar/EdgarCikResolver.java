@@ -50,7 +50,7 @@ public class EdgarCikResolver {
     @Autowired
     public EdgarCikResolver(@Value("${agora.data.edgar.user-agent}") String userAgent,
                             @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
-        this(buildHttpClient(userAgent, timeoutMs), System::currentTimeMillis);
+        this(buildHttpClient(EdgarUserAgent.checked(userAgent), timeoutMs), System::currentTimeMillis);
     }
 
     private static RestClient buildHttpClient(String userAgent, long timeoutMs) {

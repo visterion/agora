@@ -68,14 +68,14 @@ class ProviderLogRedactorTest {
         // reach the provider_call log unredacted -- redactHeaderValue is the single choke
         // point the interceptor calls for every header, so the UA email masking must happen
         // there, not just in the untested-in-practice redactUserAgent() helper.
-        String redacted = ProviderLogRedactor.redactHeaderValue("User-Agent", "agora agora@visterion.de");
+        String redacted = ProviderLogRedactor.redactHeaderValue("User-Agent", "agora synthetic@example.com");
         assertThat(redacted).isEqualTo("agora ***@***");
-        assertThat(redacted).doesNotContain("agora@visterion.de");
+        assertThat(redacted).doesNotContain("synthetic@example.com");
     }
 
     @Test
     void redactHeaderValueLowercaseUserAgentAlsoMasksEmail() {
-        assertThat(ProviderLogRedactor.redactHeaderValue("user-agent", "agora agora@visterion.de"))
+        assertThat(ProviderLogRedactor.redactHeaderValue("user-agent", "agora synthetic@example.com"))
                 .isEqualTo("agora ***@***");
     }
 
