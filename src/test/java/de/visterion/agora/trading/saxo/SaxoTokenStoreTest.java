@@ -231,4 +231,76 @@ class SaxoTokenStoreTest {
         assertThat(applied).isFalse();
         assertThat(s.dead()).isFalse();
     }
+
+    // --- refresh-token deadline (Saxo: refresh_token_expires_in) ---
+
+    @Test
+    void refreshWindowIsUnknownUntilAResponseCarriesIt() {
+        var s = store("saxo-sim");
+        s.update("acc-1", 1200, "ref-1");                  // no figure given
+        now.addAndGet(10 * 3_600_000L);
+        assertThat(s.refreshWindowExpired()).isFalse();    // unknown never kills a session
+    }
+
+    @Test
+    void refreshWindowExpiresAfterTheGrantedLifetime() {
+        var s = store("saxo-sim");
+        s.update("acc-1", 1200, "ref-1", 3600);
+        now.addAndGet(3_599_000L);
+        assertThat(s.refreshWindowExpired()).isFalse();
+        now.addAndGet(2_000L);
+        assertThat(s.refreshWindowExpired()).isTrue();
+    }
+
+    @Test
+    void refreshWindowRollsForwardOnEveryRefresh() {
+        var s = store("saxo-sim");
+        s.update("acc-1", 1200, "ref-1", 3600);
+        now.addAndGet(3_000_000L);                         // 50 min in
+        s.update("acc-2", 1200, "ref-2", 3600);            // rolls
+        now.addAndGet(3_000_000L);
+        assertThat(s.refreshWindowExpired()).isFalse();
+    }
+
+    @Test
+    void responseWithoutAFigureKeepsTheExistingDeadline() {
+        var s = store("saxo-sim");
+        s.update("acc-1", 1200, "ref-1", 3600);
+        now.addAndGet(1_000L);
+        s.update("acc-2", 1200, "ref-2");                  // no figure — must not extend
+        now.addAndGet(3_600_000L);
+        assertThat(s.refreshWindowExpired()).isTrue();
+    }
+
+    @Test
+    void refreshWindowSurvivesPersistAndReload() {
+        var s = store("saxo-sim");
+        s.update("acc-1", 1200, "ref-1", 3600);
+
+        var reloaded = store("saxo-sim");                  // same dir, fresh instance
+        assertThat(reloaded.refreshWindowExpired()).isFalse();
+        now.addAndGet(3_601_000L);
+        assertThat(reloaded.refreshWindowExpired()).isTrue();
+    }
+
+    @Test
+    void legacyTokenFileWithoutDeadlineIsNeverConsideredExpired() throws Exception {
+        Files.writeString(dir.resolve("saxo-sim.token"),
+                "{\"refreshToken\":\"ref-legacy\",\"obtainedAtMillis\":1000000}");
+
+        var s = store("saxo-sim");
+
+        assertThat(s.hasRefreshToken()).isTrue();
+        now.addAndGet(10 * 3_600_000L);
+        assertThat(s.refreshWindowExpired()).isFalse();    // backward compatible deploy
+    }
+
+    @Test
+    void updateIfCurrentCarriesTheDeadlineToo() {
+        var s = store("saxo-sim");
+        s.update("acc-1", 1200, "ref-1", 3600);
+        assertThat(s.updateIfCurrent("ref-1", "acc-2", 1200, "ref-2", 3600)).isTrue();
+        now.addAndGet(3_599_000L);
+        assertThat(s.refreshWindowExpired()).isFalse();
+    }
 }

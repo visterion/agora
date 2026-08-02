@@ -54,13 +54,14 @@ public final class SaxoTokenStore {
     private static final FileAttribute<Set<PosixFilePermission>> OWNER_RWX_ATTR =
             PosixFilePermissions.asFileAttribute(OWNER_RWX);
 
-    private static final TokenState UNAUTHENTICATED = new TokenState(null, 0L, 0L, null, null);
+    private static final TokenState UNAUTHENTICATED = new TokenState(null, 0L, 0L, null, 0L, null);
 
     private record TokenState(
             String accessToken,
             long accessExpiresAtMillis,
             long accessTtlMillis,
             String refreshToken,
+            long refreshExpiresAtMillis,
             String deadReason) {
     }
 
@@ -79,7 +80,13 @@ public final class SaxoTokenStore {
     }
 
     public synchronized void update(String accessToken, long expiresInSeconds, String newRefreshToken) {
-        applyUpdate(accessToken, expiresInSeconds, newRefreshToken);
+        applyUpdate(accessToken, expiresInSeconds, newRefreshToken, 0L);
+    }
+
+    /** As {@link #update(String, long, String)}, with Saxo's refresh_token_expires_in. */
+    public synchronized void update(String accessToken, long expiresInSeconds,
+            String newRefreshToken, long refreshExpiresInSeconds) {
+        applyUpdate(accessToken, expiresInSeconds, newRefreshToken, refreshExpiresInSeconds);
     }
 
     /**
@@ -90,23 +97,37 @@ public final class SaxoTokenStore {
      */
     public synchronized boolean updateIfCurrent(String expectedRefreshToken, String accessToken,
             long expiresInSeconds, String newRefreshToken) {
+        return updateIfCurrent(expectedRefreshToken, accessToken, expiresInSeconds,
+                newRefreshToken, 0L);
+    }
+
+    /** As {@link #updateIfCurrent(String, String, long, String)}, carrying the refresh deadline. */
+    public synchronized boolean updateIfCurrent(String expectedRefreshToken, String accessToken,
+            long expiresInSeconds, String newRefreshToken, long refreshExpiresInSeconds) {
         if (!Objects.equals(expectedRefreshToken, state.refreshToken())) {
             return false;
         }
-        applyUpdate(accessToken, expiresInSeconds, newRefreshToken);
+        applyUpdate(accessToken, expiresInSeconds, newRefreshToken, refreshExpiresInSeconds);
         return true;
     }
 
-    private void applyUpdate(String accessToken, long expiresInSeconds, String newRefreshToken) {
+    private void applyUpdate(String accessToken, long expiresInSeconds, String newRefreshToken,
+            long refreshExpiresInSeconds) {
         // C6: Saxo may legally omit refresh_token on a refresh response (RFC 6749 §6) —
         // that means "keep the one you have", not "the session no longer has one".
         if (newRefreshToken == null || newRefreshToken.isBlank()) {
             newRefreshToken = state.refreshToken();
         }
+        // Same rule for the refresh-token deadline: a response without refresh_token_expires_in
+        // grants no new lifetime, so keep the one in hand rather than inventing a TTL. 0
+        // therefore means "unknown", and an unknown deadline never kills a session.
+        long refreshExpiresAt = refreshExpiresInSeconds > 0
+                ? nowMillis.getAsLong() + refreshExpiresInSeconds * 1000L
+                : state.refreshExpiresAtMillis();
         // M-T8: persist first so a successful write is never lost, but a persist failure
         // must not prevent the in-memory swap — see class-level comment.
         try {
-            persistRefreshToken(newRefreshToken);
+            persistRefreshToken(newRefreshToken, refreshExpiresAt);
         } catch (UncheckedIOException e) {
             log.error("Saxo token persist failed for '{}' — session survives in memory only: {}",
                     connectionId, e.getMessage());
@@ -117,6 +138,7 @@ public final class SaxoTokenStore {
                 nowMillis.getAsLong() + ttl,
                 ttl,
                 newRefreshToken,
+                refreshExpiresAt,
                 null);
     }
 
@@ -169,7 +191,8 @@ public final class SaxoTokenStore {
     public synchronized void markDead(String reason) {
         TokenState s = this.state;
         this.state = new TokenState(
-                s.accessToken(), s.accessExpiresAtMillis(), s.accessTtlMillis(), s.refreshToken(), reason);
+                s.accessToken(), s.accessExpiresAtMillis(), s.accessTtlMillis(), s.refreshToken(),
+                s.refreshExpiresAtMillis(), reason);
     }
 
     /**
@@ -184,15 +207,27 @@ public final class SaxoTokenStore {
             return false;
         }
         this.state = new TokenState(
-                s.accessToken(), s.accessExpiresAtMillis(), s.accessTtlMillis(), s.refreshToken(), reason);
+                s.accessToken(), s.accessExpiresAtMillis(), s.accessTtlMillis(), s.refreshToken(),
+                s.refreshExpiresAtMillis(), reason);
         return true;
+    }
+
+    /**
+     * Whether the refresh token's own lifetime (Saxo: refresh_token_expires_in) has run out.
+     * A store that never received a figure returns false: an unknown deadline must never kill
+     * a session — that is what makes a deploy over a token file written by an older version
+     * safe.
+     */
+    public boolean refreshWindowExpired() {
+        TokenState s = state;
+        return s.refreshExpiresAtMillis() > 0 && nowMillis.getAsLong() >= s.refreshExpiresAtMillis();
     }
 
     public boolean dead() { return state.deadReason() != null; }
     public String deadReason() { return state.deadReason(); }
     public String connectionId() { return connectionId; }
 
-    private void persistRefreshToken(String token) {
+    private void persistRefreshToken(String token, long refreshExpiresAtMillis) {
         try {
             createDirectoryOwnerOnly(file.getParent());
             Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
@@ -201,6 +236,7 @@ public final class SaxoTokenStore {
             ObjectNode json = MAPPER.createObjectNode();
             json.put("refreshToken", token);
             json.put("obtainedAtMillis", nowMillis.getAsLong());
+            json.put("refreshExpiresAtMillis", refreshExpiresAtMillis);
             byte[] bytes = json.toString().getBytes(StandardCharsets.UTF_8);
             // fsync the tmp file's content before the atomic move so a crash right after
             // rename can never observe a file whose bytes didn't actually make it to disk.
@@ -225,7 +261,10 @@ public final class SaxoTokenStore {
             JsonNode rt = n.path("refreshToken");
             if (!rt.isMissingNode() && !rt.isNull()) {
                 String refreshToken = rt.asString(null);
-                this.state = new TokenState(null, 0L, 0L, refreshToken, null);
+                // Files written before the deadline existed carry no such field: 0 = unknown,
+                // and the first successful refresh after start fills it in.
+                long refreshExpiresAt = n.path("refreshExpiresAtMillis").asLong(0L);
+                this.state = new TokenState(null, 0L, 0L, refreshToken, refreshExpiresAt, null);
             }
         } catch (Exception e) {
             log.warn("Saxo token file for '{}' unreadable — treating as unauthorized", connectionId);
