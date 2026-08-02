@@ -385,6 +385,71 @@ class SaxoTokenRefresherTest {
         assertThat(store.validAccessToken()).contains("acc-fresh");
     }
 
+    // --- only state changes are logged, not every attempt ---
+
+    @Test
+    void repeatedFailuresLogWarnOnlyOnce() {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(SaxoTokenRefresher.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+            SaxoTokenStore store = stores.forConnection("saxo-sim");
+            store.update("acc-0", 1200, "ref-0", 3600);
+            now.addAndGet(1_300_000L);
+            SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+            when(oauth.refresh(any(), eq("ref-0")))
+                    .thenThrow(new IllegalStateException("token endpoint unreachable: I/O error"));
+            SaxoTokenRefresher refresher = new SaxoTokenRefresher(registry(), stores, oauth);
+
+            refresher.tick();
+            refresher.tick();
+            refresher.tick();
+
+            var warns = appender.list.stream()
+                    .filter(e -> e.getLevel() == ch.qos.logback.classic.Level.WARN).toList();
+            assertThat(warns).hasSize(1);
+            assertThat(warns.getFirst().getFormattedMessage()).contains("unreachable");
+            verify(oauth, times(3)).refresh(any(), eq("ref-0"));    // still retrying, just quietly
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    @Test
+    void recoveryIsLoggedWithTheFailureCount() {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(SaxoTokenRefresher.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+            SaxoTokenStore store = stores.forConnection("saxo-sim");
+            store.update("acc-0", 1200, "ref-0", 3600);
+            now.addAndGet(1_300_000L);
+            SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+            when(oauth.refresh(any(), eq("ref-0")))
+                    .thenThrow(new IllegalStateException("token endpoint unreachable: I/O error"))
+                    .thenThrow(new IllegalStateException("token endpoint unreachable: I/O error"))
+                    .thenReturn(new SaxoOAuthClient.SaxoTokens("acc-1", 1200, "ref-1", 3600));
+            SaxoTokenRefresher refresher = new SaxoTokenRefresher(registry(), stores, oauth);
+
+            refresher.tick();
+            refresher.tick();
+            refresher.tick();
+
+            assertThat(appender.list.stream().map(e -> e.getFormattedMessage()))
+                    .anyMatch(m -> m.contains("token refreshed") && m.contains("2"));
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
     @Test
     void refreshCarriesTheNewDeadlineIntoTheStore() {
         SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);

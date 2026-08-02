@@ -12,6 +12,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Keeps Saxo sessions alive: Saxo access tokens live ~20min and refresh tokens roll on
@@ -29,6 +31,14 @@ public class SaxoTokenRefresher {
     private final ConnectionRegistry registry;
     private final SaxoTokenStores stores;
     private final SaxoOAuthClient oauth;
+
+    /**
+     * Consecutive failed refreshes per connection. Only state CHANGES are logged: the first
+     * failure of a phase (WARN), the recovery (INFO, with the count) and the death (ERROR,
+     * once). The 2026-08-01 incident produced 2712 identical WARN lines, which is part of why
+     * a five-hour outage stayed invisible. tick() is synchronized, so a plain map suffices.
+     */
+    private final Map<String, Integer> consecutiveFailures = new HashMap<>();
 
     public SaxoTokenRefresher(ConnectionRegistry registry, SaxoTokenStores stores, SaxoOAuthClient oauth) {
         this.registry = registry;
@@ -67,6 +77,7 @@ public class SaxoTokenRefresher {
                     log.error("Saxo connection '{}' session expired — re-authorize via "
                             + "/auth/saxo/login?connection={}", c.id(), c.id());
                 }
+                consecutiveFailures.remove(c.id());   // a later re-auth starts from a clean slate
                 continue;
             }
             boolean noAccess = store.validAccessToken().isEmpty();
@@ -87,7 +98,13 @@ public class SaxoTokenRefresher {
                     continue;
                 }
                 c.setProbeStatus(ProbeStatus.ok(Instant.now()));
-                log.info("Saxo connection '{}' token refreshed", c.id());
+                Integer failed = consecutiveFailures.remove(c.id());
+                if (failed != null && failed > 0) {
+                    log.info("Saxo connection '{}' token refreshed after {} failed attempts",
+                            c.id(), failed);
+                } else {
+                    log.info("Saxo connection '{}' token refreshed", c.id());
+                }
             } catch (SaxoOAuthClient.InvalidGrantException e) {
                 boolean applied = store.markDeadIfCurrent(inHand, "refresh rejected");
                 if (!applied) {
@@ -100,11 +117,15 @@ public class SaxoTokenRefresher {
                         c.id(), c.id());
             } catch (Exception e) {
                 // Log the cause (SaxoOAuthClient categorises to "token endpoint HTTP 401",
-                // "saxo app credentials rejected", "token endpoint unreachable: ..." etc.) so a
-                // dead session is diagnosable — the Saxo token endpoint carries no secret in the
-                // URL (Basic-auth header), so the message is safe to log.
-                log.warn("Saxo connection '{}' token refresh failed (will retry): {}",
-                        c.id(), e.toString());
+                // "saxo token endpoint rejected the request", "token endpoint unreachable: ..."
+                // etc.) so a dead session is diagnosable — the Saxo token endpoint carries no
+                // secret in the URL (Basic-auth header), so the message is safe to log. Only the
+                // first failure of a phase is logged; the retry cadence itself is unchanged.
+                int failures = consecutiveFailures.merge(c.id(), 1, Integer::sum);
+                if (failures == 1) {
+                    log.warn("Saxo connection '{}' token refresh failed (will retry): {}",
+                            c.id(), e.toString());
+                }
             }
         }
     }
