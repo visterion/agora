@@ -21,12 +21,25 @@ import java.time.Duration;
 @Component
 public class SaxoOAuthClient {
 
-    public record SaxoTokens(String accessToken, long expiresInSeconds, String refreshToken) {}
+    /**
+     * Token response. {@code refreshExpiresInSeconds} is Saxo's own
+     * {@code refresh_token_expires_in} (3600s in production, sent on both the
+     * authorization-code and the refresh grant); {@code 0} means the response carried no
+     * figure — callers must then keep whatever deadline they already have rather than
+     * inventing one.
+     */
+    public record SaxoTokens(String accessToken, long expiresInSeconds, String refreshToken,
+            long refreshExpiresInSeconds) {
+
+        public SaxoTokens(String accessToken, long expiresInSeconds, String refreshToken) {
+            this(accessToken, expiresInSeconds, refreshToken, 0L);
+        }
+    }
 
     /**
-     * Refresh/auth code definitively rejected (HTTP 400) — re-auth required. Distinct from
-     * HTTP 401 (bad app key/secret on the Basic-Auth header of this request), which is a
-     * transient/config problem, not session death — see {@link #post}.
+     * Refresh/auth code definitively rejected (HTTP 400) — re-auth required. HTTP 401 is
+     * deliberately NOT mapped here: Saxo uses it for a dead grant as well as for bad app
+     * credentials, so it cannot carry that meaning on its own — see {@link #post}.
      */
     public static class InvalidGrantException extends RuntimeException {
         public InvalidGrantException(String message) { super(message); }
@@ -80,19 +93,23 @@ public class SaxoOAuthClient {
             return new SaxoTokens(
                     n.path("access_token").asString(null),
                     n.path("expires_in").asLong(1200),
-                    n.path("refresh_token").asString(null));
+                    n.path("refresh_token").asString(null),
+                    n.path("refresh_token_expires_in").asLong(0L));
         } catch (RestClientResponseException e) {
             int status = e.getStatusCode().value();
             if (status == 400) {
                 throw new InvalidGrantException("token grant rejected (HTTP " + status + ")");
             }
             if (status == 401) {
-                // Bad app key/secret (Basic Auth on this same request), not a bad grant —
-                // the refresh/auth-code token is still fine, so this must NOT be treated as
-                // session death like InvalidGrantException. It's a transient/config problem:
-                // retry on the next tick until the app credentials are fixed.
+                // Saxo answers 401 for BOTH a rejected app key/secret (Basic Auth on this
+                // request) and a dead refresh token — verified in production on 2026-08-01,
+                // where the body was Saxo's generic HTML error page, not a JSON invalid_grant.
+                // So 401 alone cannot tell session death from misconfiguration: it stays
+                // retryable, and SaxoTokenRefresher decides death by the refresh-token
+                // deadline instead.
                 throw new IllegalStateException(
-                        "saxo app credentials rejected (HTTP 401) — check app key/secret");
+                        "saxo token endpoint rejected the request (HTTP 401) — dead grant or "
+                                + "wrong app credentials");
             }
             throw new IllegalStateException("token endpoint HTTP " + status, e);
         } catch (ResourceAccessException e) {

@@ -84,13 +84,46 @@ class SaxoOAuthClientTest {
                 .isInstanceOf(SaxoOAuthClient.InvalidGrantException.class);
     }
 
+    /**
+     * Saxo answers 401 for a dead refresh token as well as for wrong app credentials — in
+     * production (2026-08-01) with a generic HTML body in both cases. So 401 stays retryable
+     * (only SaxoTokenRefresher's refresh-window deadline decides death), but the message must
+     * not assert either cause.
+     */
     @Test
-    void http401MeansAppCredentialsRejectedNotSessionDeath() {
-        wm.stubFor(post(urlEqualTo("/token")).willReturn(aResponse().withStatus(401)));
+    void http401NamesBothPossibleCausesAndIsNotSessionDeath() {
+        wm.stubFor(post(urlEqualTo("/token")).willReturn(aResponse().withStatus(401)
+                .withHeader("Content-Type", "text/html")
+                .withBody("<!DOCTYPE html><html><body>Unauthorized</body></html>")));
         assertThatThrownBy(() -> client.refresh(cfg, "ref-1"))
                 .isInstanceOf(IllegalStateException.class)
                 .isNotInstanceOf(SaxoOAuthClient.InvalidGrantException.class)
-                .hasMessageContaining("saxo app credentials rejected (HTTP 401)");
+                .hasMessageContaining("HTTP 401")
+                .hasMessageContaining("grant")
+                .hasMessageContaining("app credentials");
+    }
+
+    @Test
+    void refreshParsesRefreshTokenExpiresIn() {
+        wm.stubFor(post(urlEqualTo("/token")).willReturn(okJson("""
+            {"access_token":"acc-2","token_type":"Bearer","expires_in":1200,
+             "refresh_token":"ref-2","refresh_token_expires_in":3600}
+            """)));
+
+        var t = client.refresh(cfg, "ref-1");
+
+        assertThat(t.refreshExpiresInSeconds()).isEqualTo(3600L);
+    }
+
+    @Test
+    void missingRefreshTokenExpiresInYieldsZero() {
+        wm.stubFor(post(urlEqualTo("/token")).willReturn(okJson("""
+            {"access_token":"acc-2","token_type":"Bearer","expires_in":1200,"refresh_token":"ref-2"}
+            """)));
+
+        var t = client.refresh(cfg, "ref-1");
+
+        assertThat(t.refreshExpiresInSeconds()).isZero();
     }
 
     @Test
