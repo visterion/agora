@@ -15,9 +15,11 @@ import java.time.Instant;
 
 /**
  * Keeps Saxo sessions alive: Saxo access tokens live ~20min and refresh tokens roll on
- * every use, so each active saxo connection is refreshed before expiry. A definitively
- * rejected refresh (invalid_grant) marks the store dead — healing requires a human
- * re-auth via /auth/saxo/login. Transient failures retry on the next tick.
+ * every use, so each active saxo connection is refreshed before expiry. A session dies in
+ * two ways, both requiring a human re-auth via /auth/saxo/login: a definitively rejected
+ * refresh (invalid_grant, HTTP 400), or an elapsed refresh-token lifetime — the latter
+ * covers every failure that simply lasts too long, HTTP 401 and network outages included.
+ * Anything short of that retries on the next tick.
  */
 @Component
 public class SaxoTokenRefresher {
@@ -52,6 +54,21 @@ public class SaxoTokenRefresher {
             if (!"saxo".equals(c.config().getProvider())) continue;
             SaxoTokenStore store = stores.forConnection(c.id());
             if (store.dead() || !store.hasRefreshToken()) continue;
+            // The refresh token has its own lifetime (Saxo: refresh_token_expires_in). Once it
+            // has run out, no retry can revive the session — no matter what the last failure
+            // looked like (HTTP 401, DNS outage, ...). Say so instead of polling forever: on
+            // 2026-08-01 a 9h outage outlasted the window and the connection then reported
+            // "refresh pending — retry shortly" for five more hours.
+            if (store.refreshWindowExpired()) {
+                String expired = store.refreshToken();
+                if (store.markDeadIfCurrent(expired, "refresh token expired")) {
+                    c.setProbeStatus(ProbeStatus.unreachable(Instant.now(),
+                            "refresh token expired — re-authorize via /auth/saxo/login"));
+                    log.error("Saxo connection '{}' session expired — re-authorize via "
+                            + "/auth/saxo/login?connection={}", c.id(), c.id());
+                }
+                continue;
+            }
             boolean noAccess = store.validAccessToken().isEmpty();
             boolean expiringSoon = !noAccess && store.accessRemainingMillis() < store.accessTtlMillis() / 3;
             if (!noAccess && !expiringSoon) continue;
@@ -63,7 +80,8 @@ public class SaxoTokenRefresher {
             String inHand = store.refreshToken();
             try {
                 SaxoOAuthClient.SaxoTokens t = oauth.refresh(c.config(), inHand);
-                boolean applied = store.updateIfCurrent(inHand, t.accessToken(), t.expiresInSeconds(), t.refreshToken());
+                boolean applied = store.updateIfCurrent(inHand, t.accessToken(), t.expiresInSeconds(),
+                        t.refreshToken(), t.refreshExpiresInSeconds());
                 if (!applied) {
                     log.info("Saxo connection '{}': stale refresh result discarded (concurrent re-auth won)", c.id());
                     continue;

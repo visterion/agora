@@ -314,4 +314,92 @@ class SaxoTokenRefresherTest {
 
         assertThat(store.dead()).isFalse();
     }
+
+    // --- an elapsed refresh window IS session death, whatever the last failure looked like ---
+
+    @Test
+    void expiredRefreshWindowKillsTheSessionWithoutCallingSaxo() {
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-0", 1200, "ref-0", 3600);
+        now.addAndGet(3_601_000L);                                  // past the refresh window
+        SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+        ConnectionRegistry registry = registry();
+
+        new SaxoTokenRefresher(registry, stores, oauth).tick();
+
+        assertThat(store.dead()).isTrue();
+        assertThat(registry.get("saxo-sim").orElseThrow().probeStatus().state())
+                .isEqualTo("unreachable");
+        verifyNoInteractions(oauth);                                // no point asking Saxo
+    }
+
+    @Test
+    void deadSessionReportsTheLoginUrlExactlyOnce() {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(SaxoTokenRefresher.class);
+        ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent> appender =
+                new ch.qos.logback.core.read.ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+            SaxoTokenStore store = stores.forConnection("saxo-sim");
+            store.update("acc-0", 1200, "ref-0", 3600);
+            now.addAndGet(3_601_000L);
+            SaxoTokenRefresher refresher =
+                    new SaxoTokenRefresher(registry(), stores, mock(SaxoOAuthClient.class));
+
+            refresher.tick();
+            refresher.tick();                                       // dead store is skipped
+            refresher.tick();
+
+            var errors = appender.list.stream()
+                    .filter(e -> e.getLevel() == ch.qos.logback.classic.Level.ERROR).toList();
+            assertThat(errors).hasSize(1);
+            assertThat(errors.getFirst().getFormattedMessage())
+                    .contains("saxo-sim")
+                    .contains("/auth/saxo/login?connection=saxo-sim");
+            assertThat(appender.list.stream().map(e -> e.getFormattedMessage()))
+                    .noneMatch(m -> m.contains("ref-0"));           // never log token values
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    // Names what it actually proves: a re-auth rolls the deadline, so the very next tick must
+    // not kill the session a human just restored. The narrower race — a callback landing
+    // BETWEEN the refreshWindowExpired() check and markDeadIfCurrent() — is covered by the CAS
+    // guard and by the stale-token tests above.
+    @Test
+    void reauthorizationClearsAnExpiredWindow() {
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-0", 1200, "ref-0", 3600);
+        now.addAndGet(3_601_000L);                                  // old grant past its window
+        store.update("acc-fresh", 1200, "ref-fresh", 3600);         // human re-authorized just now
+
+        new SaxoTokenRefresher(registry(), stores, mock(SaxoOAuthClient.class)).tick();
+
+        assertThat(store.dead()).isFalse();
+        assertThat(store.validAccessToken()).contains("acc-fresh");
+    }
+
+    @Test
+    void refreshCarriesTheNewDeadlineIntoTheStore() {
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-0", 1200, "ref-0", 3600);
+        now.addAndGet(1_300_000L);
+        SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+        when(oauth.refresh(any(), eq("ref-0")))
+                .thenReturn(new SaxoOAuthClient.SaxoTokens("acc-1", 1200, "ref-1", 3600));
+
+        new SaxoTokenRefresher(registry(), stores, oauth).tick();
+
+        now.addAndGet(3_599_000L);
+        assertThat(store.refreshWindowExpired()).isFalse();         // deadline rolled forward
+        now.addAndGet(2_000L);
+        assertThat(store.refreshWindowExpired()).isTrue();
+    }
 }
