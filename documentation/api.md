@@ -276,7 +276,7 @@ Market-wide earnings events in a date window; one row per company with its symbo
 |---|---|---|---|
 | `from` | string | no | start date (YYYY-MM-DD), inclusive; default 30 days ago |
 | `to` | string | no | end date (YYYY-MM-DD), inclusive; default today |
-| `limit` | integer | no | max rows (default 100, max 100) |
+| `limit` | integer | no | max rows (default 100, max 1000) |
 
 **Output**
 
