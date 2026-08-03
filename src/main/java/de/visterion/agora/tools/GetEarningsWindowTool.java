@@ -23,7 +23,7 @@ import java.util.List;
 public class GetEarningsWindowTool implements AgoraTool {
 
     private static final int DEFAULT_LIMIT = 100;
-    private static final int MAX_LIMIT = 100;
+    private static final int MAX_LIMIT = 1000;
     private static final int MAX_WINDOW_DAYS = 366;
 
     private final EarningsService service;

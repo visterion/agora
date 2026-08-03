@@ -71,16 +71,28 @@ class GetEarningsWindowToolTest {
         assertThat(r.available()).isFalse();
     }
 
-    @Test void limitClampedTo100() {
+    @Test void limitClampedTo1000() {
         EarningsService svc = Mockito.mock(EarningsService.class);
         List<EarningsEvent> many = new java.util.ArrayList<>();
-        for (int i = 0; i < 150; i++)
+        for (int i = 0; i < 1500; i++)
             many.add(new EarningsEvent("S" + i, LocalDate.parse("2025-05-01"), null, null, null, null, null));
         when(svc.earningsWindow(any(), any())).thenReturn(new EarningsResult(many, false));
         var args = mapper.createObjectNode().put("from", "2025-05-01").put("to", "2025-05-03").put("limit", 100_000);
         var r = new GetEarningsWindowTool(svc).call(args);
-        assertThat(r.output().get("earnings")).hasSize(100);
+        assertThat(r.output().get("earnings")).hasSize(1000);
         assertThat(r.output().get("truncated").asBoolean()).isTrue();
+    }
+
+    @Test void limitAbove100IsHonouredUpTo1000() {
+        EarningsService svc = Mockito.mock(EarningsService.class);
+        List<EarningsEvent> many = new java.util.ArrayList<>();
+        for (int i = 0; i < 150; i++)
+            many.add(new EarningsEvent("SYM" + i, LocalDate.parse("2026-07-01"), null, null, null, null, null));
+        when(svc.earningsWindow(any(), any())).thenReturn(new EarningsResult(many, false));
+        var args = mapper.createObjectNode().put("from", "2026-06-25").put("to", "2026-07-01").put("limit", 1000);
+        var r = new GetEarningsWindowTool(svc).call(args);
+        assertThat(r.output().get("earnings")).hasSize(150);
+        assertThat(r.output().get("truncated").asBoolean()).isFalse();
     }
 
     @Test void nonIntegralLimitUnavailable() {
