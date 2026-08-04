@@ -100,6 +100,25 @@ public class AlpacaBrokerProvider implements BrokerProvider {
 
     @Override
     public OrderResult modifyBracket(String brokerOrderId, String symbol, BigDecimal newStop, BigDecimal newTarget) {
+        return modifyBracket(brokerOrderId, symbol, newStop, newTarget, null, null);
+    }
+
+    /**
+     * Explicit leg addressing — the caller names the order carrying each leg, so nothing is
+     * resolved and nothing can be ambiguous. This is what a multi-tranche position needs: two
+     * tranches leave two protective stops on one symbol, and {@link #resolveLegsBySymbol} can then
+     * only report {@code AMBIGUOUS_LEGS}.
+     *
+     * <p>The named order is still fetched before it is patched, to verify it is the leg type being
+     * priced. Alpaca's PATCH is happy to move a {@code limit_price} on an ENTRY order; the check is
+     * what keeps a wrong id from re-pricing an entry instead of failing.
+     */
+    @Override
+    public OrderResult modifyBracket(String brokerOrderId, String symbol, BigDecimal newStop, BigDecimal newTarget,
+                                     String stopOrderId, String targetOrderId) {
+        if (stopOrderId != null || targetOrderId != null) {
+            return modifyNamedLegs(brokerOrderId, newStop, newTarget, stopOrderId, targetOrderId);
+        }
         LegIds legs = resolveLegsByParent(brokerOrderId);
         if (legs == null) legs = resolveLegsBySymbol(brokerOrderId, symbol);
 
@@ -124,6 +143,70 @@ public class AlpacaBrokerProvider implements BrokerProvider {
             if (!r.accepted()) return slMoved ? withAlreadyMovedStop(r, newStop) : r;
         }
         return OrderResult.accepted(brokerOrderId, null, "replaced");
+    }
+
+    private OrderResult modifyNamedLegs(String brokerOrderId, BigDecimal newStop, BigDecimal newTarget,
+                                        String stopOrderId, String targetOrderId) {
+        if (newStop != null && stopOrderId == null) {
+            return OrderResult.rejected(
+                    "stopOrderId is required once any leg id is given — naming one leg and leaving the "
+                            + "other to be guessed defeats the point", "LEG_ID_REQUIRED");
+        }
+        if (newTarget != null && targetOrderId == null) {
+            return OrderResult.rejected(
+                    "targetOrderId is required once any leg id is given — naming one leg and leaving the "
+                            + "other to be guessed defeats the point", "LEG_ID_REQUIRED");
+        }
+
+        boolean stopMoved = false;
+        if (newStop != null) {
+            OrderResult bad = rejectUnusableLeg(stopOrderId, "stop-loss", true);
+            if (bad != null) return bad;
+            OrderResult r = patchLeg(stopOrderId, "stop_price", newStop);
+            if (!r.accepted()) return r;
+            stopMoved = true;
+        }
+        if (newTarget != null) {
+            OrderResult bad = rejectUnusableLeg(targetOrderId, "take-profit", false);
+            if (bad != null) return stopMoved ? withAlreadyMovedStop(bad, newStop) : bad;
+            OrderResult r = patchLeg(targetOrderId, "limit_price", newTarget);
+            if (!r.accepted()) return stopMoved ? withAlreadyMovedStop(r, newStop) : r;
+        }
+        return OrderResult.accepted(brokerOrderId, null, "replaced");
+    }
+
+    /** Null when the named order is usable as this leg, otherwise the rejection explaining why not. */
+    private OrderResult rejectUnusableLeg(String legId, String legName, boolean wantStop) {
+        JsonNode n;
+        try {
+            n = client.get().uri("/orders/{id}", legId).retrieve().body(JsonNode.class);
+        } catch (RestClientResponseException e) {
+            if (e.getStatusCode().value() == 404) {
+                return OrderResult.rejected(
+                        "no working order " + legId + " to modify as the " + legName + " leg", "LEG_NOT_FOUND");
+            }
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "Alpaca modifyBracket leg lookup failed HTTP " + e.getStatusCode().value(), e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "Alpaca modifyBracket leg lookup failed: " + e.getMessage(), e);
+        }
+        if (n == null) {
+            return OrderResult.rejected(
+                    "no working order " + legId + " to modify as the " + legName + " leg", "LEG_NOT_FOUND");
+        }
+        String type = n.path("type").asString("");
+        boolean matches = wantStop ? (type.equals("stop") || type.equals("stop_limit")) : type.equals("limit");
+        // An order carrying its own legs[] is an unfilled bracket ENTRY, never a protective leg —
+        // the same C5 exclusion resolveLegsBySymbol makes. It matters most for the take-profit,
+        // where an entry limit order is otherwise type-indistinguishable from a take-profit.
+        JsonNode ownLegs = n.path("legs");
+        if (matches && ownLegs.isArray() && !ownLegs.isEmpty()) matches = false;
+        if (!matches) {
+            return OrderResult.rejected("order " + legId + " is not a " + legName + " leg (type=" + type + ")",
+                    "LEG_TYPE_MISMATCH");
+        }
+        return null;
     }
 
     private static OrderResult ambiguousLegsRejection(String symbol) {

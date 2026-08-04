@@ -78,14 +78,46 @@ for Saxo flatten — a Market order's placement response has no synchronous fill
 
 ## `modify_bracket` — orderId semantics (read this before calling it)
 
-`modify_bracket(connection, orderId, symbol, stop?, target?)` patches the stop-loss
-and/or take-profit level of an *existing* bracket. **The correct `orderId` to pass
-differs by broker and is not interchangeable:**
+`modify_bracket(connection, orderId, symbol, stop?, target?, stopOrderId?, targetOrderId?)`
+patches the stop-loss and/or take-profit level of an *existing* bracket. **The correct
+`orderId` to pass differs by broker and is not interchangeable:**
 
 Both brokers resolve legs the same two-step way: **parent lookup first, symbol fallback
 second.** The caller always passes the bracket parent's id (from `place_bracket`'s
 `orderId`) *and* the symbol — the symbol is what makes the fallback possible once the
 parent is gone (`symbol` is a required parameter on this tool, not optional).
+
+### Naming the leg: `stopOrderId` / `targetOrderId` (optional, additive)
+
+Resolution — by parent or by symbol — is only unambiguous while the instrument carries
+**one** bracket. A position built in more than one tranche has **two protective stops
+working on the same instrument**, and the by-symbol fallback then has to guess: Saxo's
+keeps the last `Stop`-type order it scans, Alpaca's refuses with `AMBIGUOUS_LEGS`.
+Neither is a way to trail a stop.
+
+Pass `stopOrderId` (and/or `targetOrderId`) to address one exact order. Both brokers then
+skip resolution entirely, verify the named order really is that leg type, and PATCH it.
+Omitting both is the pre-existing behaviour, unchanged — no existing caller is affected.
+
+Leg ids come from `place_bracket`'s `stopLegId` / `takeProfitLegId`, or from `get_orders`.
+
+Rules and reject codes:
+
+| Situation | Result |
+|---|---|
+| Neither id given | Parent lookup → symbol fallback, exactly as before |
+| `stopOrderId` names a working stop order | That order is PATCHed; no lookup, no ambiguity |
+| Named id matches no working order | `LEG_NOT_FOUND` — nothing is patched |
+| Named id is not that leg type (e.g. the entry order) | `LEG_TYPE_MISMATCH` — nothing is patched |
+| One leg named, another leg re-priced unnamed | `LEG_ID_REQUIRED` — half-explicit is refused, since the unnamed leg would fall back to the very guess you are trying to avoid |
+| Provider without leg addressing | `LEG_ADDRESSING_UNSUPPORTED` — stated, never silently ignored |
+
+The named order is looked up in **both** shapes Saxo produces — a detached top-level
+order once its tranche has filled, and a leg still embedded in an unfilled parent's
+`RelatedOpenOrders[]`. Both occur at the same time on a real two-tranche book (observed
+2026-08-04: one symbol with two working detached `StopIfTraded` orders covering one
+position, another symbol whose second-tranche stop was still embedded in its unfilled
+parent).
 
 **Non-atomic per-leg modify**: modify is per-leg and NOT atomic — if the stop leg is
 moved and the take-profit PATCH is then rejected, the result is `accepted:false` but the

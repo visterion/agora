@@ -23,7 +23,14 @@ public class BrokerService {
     }
 
     public OrderResult submitBracket(String connection, BracketOrderRequest r) { return resolveMutable(connection).submitBracket(r); }
-    public OrderResult modifyBracket(String connection, String id, String symbol, BigDecimal stop, BigDecimal target) { return resolveMutable(connection).modifyBracket(id, symbol, stop, target); }
+    public OrderResult modifyBracket(String connection, String id, String symbol, BigDecimal stop, BigDecimal target) {
+        return modifyBracket(connection, id, symbol, stop, target, null, null);
+    }
+    /** Leg-aware overload — see {@link BrokerProvider#modifyBracket(String, String, BigDecimal, BigDecimal, String, String)}. */
+    public OrderResult modifyBracket(String connection, String id, String symbol, BigDecimal stop, BigDecimal target,
+                                     String stopOrderId, String targetOrderId) {
+        return resolveMutable(connection).modifyBracket(id, symbol, stop, target, stopOrderId, targetOrderId);
+    }
     public OrderResult flatten(String connection, String symbol, BigDecimal fraction, BigDecimal qty) {
         return resolveMutable(connection).flatten(symbol, fraction, qty);
     }

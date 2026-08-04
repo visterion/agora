@@ -301,7 +301,7 @@ Extensible without rebuild: mount YAML and set `AGORA_RESEARCH_INDICATORS_FILE`.
 | `get_orders` | Open + historical orders with fills; Alpaca native, Saxo history via audit trail. Optional from/to. |
 | `get_order_by_ref` | Lookup by opaque `client_ref`; unknown ref → `available:true` with `order:null`, not an error |
 | `place_bracket` | Entry + stop-loss, optional take-profit (omit `takeProfitLimit` → entry+stop only; Saxo only) |
-| `modify_bracket` | Change stop-loss and/or take-profit |
+| `modify_bracket` | Change stop-loss and/or take-profit; optional `stopOrderId`/`targetOrderId` address one exact leg (required when a symbol carries more than one bracket, e.g. a multi-tranche position) |
 | `cancel_order` | Cancel by broker order id; unknown id → `available:true` with `accepted:false`, `rejectCode:"NOT_FOUND"`, not an error |
 | `flatten` | Close entire position via market order |
 

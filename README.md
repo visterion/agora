@@ -228,7 +228,7 @@ is always available via `list_indicators`.
 | `get_orders` | All open and recent orders |
 | `get_order_by_ref` | Look up an order by client reference ID (`client_ref`) |
 | `place_bracket` | Place a bracket order (entry + stop-loss, optional take-profit) |
-| `modify_bracket` | Modify the stop-loss and/or take-profit of an existing bracket |
+| `modify_bracket` | Modify the stop-loss and/or take-profit of an existing bracket; optionally naming the exact leg order to move |
 | `flatten` | Close (flatten) the entire position for a symbol via market order |
 | `cancel_order` | Cancel an open order by broker order id |
 | `list_connections` | List active trading connections (id, provider, environment, probe status) visible to the caller |

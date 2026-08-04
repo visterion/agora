@@ -802,12 +802,21 @@ public class SaxoBrokerProvider implements BrokerProvider {
      */
     @Override
     public OrderResult modifyBracket(String id, String symbol, BigDecimal stop, BigDecimal target) {
+        return modifyBracket(id, symbol, stop, target, null, null);
+    }
+
+    @Override
+    public OrderResult modifyBracket(String id, String symbol, BigDecimal stop, BigDecimal target,
+                                     String stopOrderId, String targetOrderId) {
         // Guard: both params null → nothing to modify
         if (stop == null && target == null) {
             return OrderResult.rejected("nothing to modify — provide stop and/or target", "NO_CHANGES");
         }
 
         AccountContext ctx = accountContext();
+        if (stopOrderId != null || targetOrderId != null) {
+            return modifyNamedLegs(ctx, id, stop, target, stopOrderId, targetOrderId);
+        }
         JsonNode resp = getJson("/port/v1/orders/me");
         JsonNode parent = null;
         for (JsonNode n : resp.path("Data")) {
@@ -877,6 +886,106 @@ public class SaxoBrokerProvider implements BrokerProvider {
         if (stop != null) { OrderResult r = patchLeg(ctx, slLeg, stop); if (!r.accepted()) return r; }
         if (target != null) { OrderResult r = patchLeg(ctx, tpLeg, target); if (!r.accepted()) return r; }
         return OrderResult.accepted(id, null, "replaced");
+    }
+
+    /**
+     * Explicit leg addressing: the caller says which order carries the stop (and/or the take-profit)
+     * instead of letting the parent lookup or the by-Uic fallback guess. This is the ONLY correct
+     * path for a position built in more than one tranche — verified on the paper book 2026-08-04,
+     * where a single symbol carried two working detached {@code StopIfTraded} orders (24 + 22
+     * shares of one 46-share position) and {@link #modifyBySymbolFallback}, which keeps the LAST
+     * Stop-type order it scans, would have patched one of them twice and the other never.
+     *
+     * <p>The named order is looked up in BOTH shapes Saxo produces, because both were live at the
+     * same moment on that book: a detached top-level order once the tranche has filled, and an
+     * order still EMBEDDED in an unfilled parent's {@code RelatedOpenOrders}.
+     *
+     * <p>Two things it refuses rather than guesses: an id that names no working order
+     * ({@code LEG_NOT_FOUND} — the leg may have filled or been cancelled, and inventing a
+     * substitute would move the wrong stop), and an id whose {@code OpenOrderType} is not the leg
+     * type being priced ({@code LEG_TYPE_MISMATCH} — naming the ENTRY order must never re-price
+     * the entry).
+     */
+    private OrderResult modifyNamedLegs(AccountContext ctx, String id, BigDecimal stop, BigDecimal target,
+                                        String stopOrderId, String targetOrderId) {
+        if (stop != null && stopOrderId == null) {
+            return OrderResult.rejected(
+                    "stopOrderId is required once any leg id is given — naming one leg and leaving the "
+                            + "other to be guessed defeats the point", "LEG_ID_REQUIRED");
+        }
+        if (target != null && targetOrderId == null) {
+            return OrderResult.rejected(
+                    "targetOrderId is required once any leg id is given — naming one leg and leaving the "
+                            + "other to be guessed defeats the point", "LEG_ID_REQUIRED");
+        }
+
+        JsonNode resp = getJson("/port/v1/orders/me");
+        JsonNode slLeg = null;
+        JsonNode tpLeg = null;
+        if (stop != null) {
+            slLeg = findOrderById(resp, stopOrderId);
+            OrderResult bad = rejectUnusableLeg(slLeg, stopOrderId, "stop-loss", true);
+            if (bad != null) return bad;
+        }
+        if (target != null) {
+            tpLeg = findOrderById(resp, targetOrderId);
+            OrderResult bad = rejectUnusableLeg(tpLeg, targetOrderId, "take-profit", false);
+            if (bad != null) return bad;
+        }
+
+        boolean stopMoved = false;
+        if (slLeg != null) {
+            OrderResult r = patchLeg(ctx, slLeg, stop);
+            if (!r.accepted()) return r;
+            stopMoved = true;
+        }
+        if (tpLeg != null) {
+            OrderResult r = patchLeg(ctx, tpLeg, target);
+            // Partial success is reported as partial: the stop is already at its new level at the
+            // broker even though this call failed overall, and a caller that re-reads its own
+            // request would otherwise write the wrong state into its book.
+            if (!r.accepted()) return stopMoved ? withAlreadyMovedStop(r, stop) : r;
+        }
+        return OrderResult.accepted(id, null, "replaced");
+    }
+
+    /** Null when the named order is usable as this leg, otherwise the rejection explaining why not. */
+    private static OrderResult rejectUnusableLeg(JsonNode leg, String orderId, String legName, boolean wantStop) {
+        if (leg == null) {
+            return OrderResult.rejected(
+                    "no working order " + orderId + " to modify as the " + legName + " leg", "LEG_NOT_FOUND");
+        }
+        String type = leg.path("OpenOrderType").asString("");
+        boolean matches = wantStop ? type.contains("Stop") : "Limit".equals(type);
+        if (!matches) {
+            return OrderResult.rejected("order " + orderId + " is not a " + legName
+                    + " leg (OpenOrderType=" + type + ")", "LEG_TYPE_MISMATCH");
+        }
+        return null;
+    }
+
+    /**
+     * Finds one order by exact OrderId across both shapes {@code /port/v1/orders/me} returns: a
+     * top-level order, and a leg embedded in some parent's {@code RelatedOpenOrders}. Which shape a
+     * given leg is in depends only on whether its own entry has filled yet, so a lookup that
+     * checked one of them would work until the day it silently didn't.
+     */
+    private static JsonNode findOrderById(JsonNode resp, String orderId) {
+        for (JsonNode n : resp.path("Data")) {
+            if (orderId.equals(n.path("OrderId").asString(null))) return n;
+            for (JsonNode c : n.path("RelatedOpenOrders")) {
+                if (orderId.equals(c.path("OrderId").asString(null))) return c;
+            }
+        }
+        return null;
+    }
+
+    /** Folds "stop-loss already moved" into a rejection that followed a successful SL patch. */
+    private static OrderResult withAlreadyMovedStop(OrderResult rejection, BigDecimal newStop) {
+        return OrderResult.rejected(
+                "take-profit update failed AFTER stop-loss was already moved to " + newStop.toPlainString()
+                        + ": " + rejection.rejectReason(),
+                rejection.rejectCode());
     }
 
     private OrderResult patchLeg(AccountContext ctx, JsonNode child, BigDecimal newPrice) {

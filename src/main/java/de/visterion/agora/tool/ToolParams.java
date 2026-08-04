@@ -25,6 +25,17 @@ public final class ToolParams {
         return value;
     }
 
+    /** Optional string: null when absent, JSON-null or blank. A blank value is treated as "not
+     *  supplied" rather than as an id — an empty string can never address anything, and letting it
+     *  through would turn a caller's empty field into a broker lookup for "". */
+    public static String optionalString(JsonNode args, String field) {
+        if (args == null || !args.hasNonNull(field)) return null;
+        JsonNode node = args.get(field);
+        if (!node.isTextual()) throw new InvalidArgumentException("invalid string argument: " + field);
+        String value = node.asString();
+        return value == null || value.isBlank() ? null : value;
+    }
+
     /** Optional decimal: null when absent/JSON-null. Accepts JSON numbers AND numeric strings ("5").
      *  Present-but-unparsable -&gt; InvalidArgumentException("invalid numeric argument: &lt;field&gt;"). */
     public static BigDecimal optionalDecimal(JsonNode args, String field) {

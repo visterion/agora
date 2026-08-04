@@ -1013,4 +1013,67 @@ class AlpacaBrokerProviderTest {
                         e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE));
         assertThat((System.nanoTime() - t0) / 1_000_000L).isLessThan(2_500L);
     }
+
+    // ---- modifyBracket: explicit leg addressing (two-tranche positions) ----
+
+    @Test
+    void modifyBracket_explicitStopOrderId_patchesThatLegWithoutAnyResolution() {
+        wm.stubFor(get(urlPathEqualTo("/orders/sl-t2"))
+                .willReturn(okJson("{\"id\":\"sl-t2\",\"symbol\":\"AAPL\",\"type\":\"stop\"}")));
+        wm.stubFor(patch(urlEqualTo("/orders/sl-t2")).willReturn(okJson("{\"id\":\"sl-t2\",\"status\":\"replaced\"}")));
+
+        var r = provider.modifyBracket("par-1", "AAPL", new BigDecimal("46.10"), null, "sl-t2", null);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(patchRequestedFor(urlEqualTo("/orders/sl-t2"))
+                .withRequestBody(matchingJsonPath("$.stop_price", equalTo("46.10"))));
+        // The whole point: no parent lookup, no by-symbol scan, so nothing to be ambiguous about.
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/orders/par-1")));
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/orders")));
+    }
+
+    @Test
+    void modifyBracket_explicitStopOrderId_unknownIdIsRejectedLegNotFound() {
+        wm.stubFor(get(urlPathEqualTo("/orders/sl-gone")).willReturn(aResponse().withStatus(404)));
+        var r = provider.modifyBracket("par-1", "AAPL", new BigDecimal("46.10"), null, "sl-gone", null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
+        wm.verify(0, patchRequestedFor(urlEqualTo("/orders/sl-gone")));
+    }
+
+    @Test
+    void modifyBracket_explicitStopOrderId_pointingAtANonStopOrderIsRejected() {
+        wm.stubFor(get(urlPathEqualTo("/orders/entry-1"))
+                .willReturn(okJson("{\"id\":\"entry-1\",\"symbol\":\"AAPL\",\"type\":\"limit\"}")));
+        var r = provider.modifyBracket("par-1", "AAPL", new BigDecimal("46.10"), null, "entry-1", null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_TYPE_MISMATCH");
+        wm.verify(0, patchRequestedFor(urlEqualTo("/orders/entry-1")));
+    }
+
+    @Test
+    void modifyBracket_namingOneLegButNotTheOtherPricedLegIsRejected() {
+        var r = provider.modifyBracket("par-1", "AAPL", new BigDecimal("46.10"), new BigDecimal("60"),
+                "sl-t2", null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_ID_REQUIRED");
+    }
+
+    @Test
+    void modifyBracket_explicitLegs_targetFailureAfterStopMovedIsReportedAsPartial() {
+        wm.stubFor(get(urlPathEqualTo("/orders/sl-t2"))
+                .willReturn(okJson("{\"id\":\"sl-t2\",\"symbol\":\"AAPL\",\"type\":\"stop\"}")));
+        wm.stubFor(patch(urlEqualTo("/orders/sl-t2")).willReturn(okJson("{\"id\":\"sl-t2\",\"status\":\"replaced\"}")));
+        wm.stubFor(get(urlPathEqualTo("/orders/tp-t2"))
+                .willReturn(okJson("{\"id\":\"tp-t2\",\"symbol\":\"AAPL\",\"type\":\"limit\"}")));
+        wm.stubFor(patch(urlEqualTo("/orders/tp-t2")).willReturn(aResponse().withStatus(422)
+                .withHeader("Content-Type", "application/json")
+                .withBody("{\"message\":\"order not modifiable\"}")));
+
+        var r = provider.modifyBracket("par-1", "AAPL", new BigDecimal("46.10"), new BigDecimal("60"),
+                "sl-t2", "tp-t2");
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectReason()).contains("stop-loss was already moved");
+    }
 }

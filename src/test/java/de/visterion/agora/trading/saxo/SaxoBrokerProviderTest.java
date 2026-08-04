@@ -1771,4 +1771,119 @@ class SaxoBrokerProviderTest {
         assertThat(r.rejectReason()).containsIgnoringCase("no take-profit leg");
         wm.verify(0, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
     }
+
+    // ---- modifyBracket: explicit leg addressing (two-tranche positions) ----
+
+    /**
+     * Prod shape, verified on the paper book 2026-08-04: a two-tranche position leaves TWO
+     * working detached StopIfTraded orders on the same Uic. The by-symbol fallback keeps the
+     * last one it scans, so only an explicit leg id can say which stop is being moved.
+     */
+    private void stubTwoDetachedStopsOnOneUic() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"stop-t1","Uic":211,"OpenOrderType":"StopIfTraded","Status":"Working",
+               "AssetType":"Stock","Amount":24.0,"Price":45.34,
+               "Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"stop-t2","Uic":211,"OpenOrderType":"StopIfTraded","Status":"Working",
+               "AssetType":"Stock","Amount":22.0,"Price":45.34,
+               "Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+    }
+
+    @Test
+    void modifyBracket_explicitStopOrderId_patchesThatLegAmongTwoOnTheSameUic() {
+        stubTwoDetachedStopsOnOneUic();
+        wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"stop-t2\"}")));
+
+        var r = provider.modifyBracket("gone-parent", "AAPL", new java.math.BigDecimal("46.10"), null,
+                "stop-t2", null);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(1, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
+        wm.verify(patchRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderId", equalTo("stop-t2")))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded")))
+                .withRequestBody(matchingJsonPath("$.OrderPrice", equalTo("46.1"))));
+    }
+
+    @Test
+    void modifyBracket_explicitStopOrderId_findsLegEmbeddedInRelatedOpenOrders() {
+        // The other prod shape: the second tranche's entry is still unfilled, so its stop leg
+        // is not a top-level order at all — it lives in the parent's RelatedOpenOrders.
+        stubBracketChildren();
+        wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9003\"}")));
+
+        var r = provider.modifyBracket("9001", "AAPL", new java.math.BigDecimal("85"), null, "9003", null);
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(patchRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderId", equalTo("9003")))
+                .withRequestBody(matchingJsonPath("$.OrderPrice", equalTo("85"))));
+    }
+
+    @Test
+    void modifyBracket_explicitStopOrderId_unknownIdIsRejectedWithoutPatching() {
+        stubTwoDetachedStopsOnOneUic();
+        var r = provider.modifyBracket("gone-parent", "AAPL", new java.math.BigDecimal("46.10"), null,
+                "stop-gone", null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_NOT_FOUND");
+        assertThat(r.rejectReason()).contains("stop-gone");
+        wm.verify(0, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void modifyBracket_explicitStopOrderId_pointingAtANonStopOrderIsRejected() {
+        // Naming the ENTRY order must never re-price the entry.
+        stubBracketChildren();
+        var r = provider.modifyBracket("9001", "AAPL", new java.math.BigDecimal("85"), null, "9001", null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_TYPE_MISMATCH");
+        wm.verify(0, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void modifyBracket_explicitTargetOrderId_patchesThatLeg() {
+        stubBracketChildren();
+        wm.stubFor(patch(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9002\"}")));
+        var r = provider.modifyBracket("9001", "AAPL", null, new java.math.BigDecimal("115"), null, "9002");
+        assertThat(r.accepted()).isTrue();
+        wm.verify(patchRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderId", equalTo("9002")))
+                .withRequestBody(matchingJsonPath("$.OrderPrice", equalTo("115"))));
+    }
+
+    @Test
+    void modifyBracket_namingOneLegButNotTheOtherPricedLegIsRejected() {
+        // Half-explicit is the worst of both: the named leg is safe, the unnamed one would fall
+        // back to exactly the guess the caller is paying to avoid. Reject instead.
+        stubBracketChildren();
+        var r = provider.modifyBracket("9001", "AAPL", new java.math.BigDecimal("85"),
+                new java.math.BigDecimal("115"), "9003", null);
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_ID_REQUIRED");
+        wm.verify(0, patchRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void modifyBracket_explicitLegs_targetFailureAfterStopMovedIsReportedAsPartial() {
+        stubBracketChildren();
+        wm.stubFor(patch(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderId", equalTo("9003")))
+                .willReturn(okJson("{\"OrderId\":\"9003\"}")));
+        wm.stubFor(patch(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderId", equalTo("9002")))
+                .willReturn(aResponse().withStatus(400)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("{\"ErrorInfo\":{\"ErrorCode\":\"TooLateToChange\",\"Message\":\"too late\"}}")));
+
+        var r = provider.modifyBracket("9001", "AAPL", new java.math.BigDecimal("85"),
+                new java.math.BigDecimal("115"), "9003", "9002");
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectReason()).contains("stop-loss was already moved");
+        assertThat(r.rejectCode()).isEqualTo("TooLateToChange");
+    }
 }

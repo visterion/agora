@@ -119,6 +119,64 @@ class ModifyBracketToolTest {
         verify(broker, never()).modifyBracket(any(), any(), any(), any());
     }
 
+    // ---- explicit leg addressing (two-tranche positions) ----
+
+    @Test void schemaExposesOptionalLegIds() {
+        var schema = tool(accepting()).inputSchema();
+        var props = schema.get("properties");
+        assertThat(props.has("stopOrderId")).isTrue();
+        assertThat(props.has("targetOrderId")).isTrue();
+        // Optional: naming a leg must never become mandatory for existing callers.
+        var required = schema.get("required").toString();
+        assertThat(required).doesNotContain("stopOrderId").doesNotContain("targetOrderId");
+        // The description has to let a caller tell WHICH stop it is moving.
+        assertThat(props.get("stopOrderId").get("description").asString()).containsIgnoringCase("stop");
+        assertThat(tool(accepting()).description()).containsIgnoringCase("leg");
+    }
+
+    @Test void legIdsPassedThroughToBroker() {
+        var seen = new String[2];
+        var stub = new StubBroker() {
+            public OrderResult modifyBracket(String id, String symbol, BigDecimal s, BigDecimal t,
+                                             String stopOrderId, String targetOrderId) {
+                seen[0] = stopOrderId; seen[1] = targetOrderId;
+                return OrderResult.accepted(id, null, "replaced");
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("orderId", "oid-1").put("symbol", "IMAX")
+                .put("stop", 46.10).put("stopOrderId", "stop-t2"));
+        assertThat(r.available()).isTrue();
+        assertThat(seen[0]).isEqualTo("stop-t2");
+        assertThat(seen[1]).isNull();
+    }
+
+    @Test void omittingLegIdsKeepsTodaysBehaviour() {
+        var seen = new String[2];
+        var stub = new StubBroker() {
+            public OrderResult modifyBracket(String id, String symbol, BigDecimal s, BigDecimal t,
+                                             String stopOrderId, String targetOrderId) {
+                seen[0] = stopOrderId; seen[1] = targetOrderId;
+                return OrderResult.accepted(id, null, "replaced");
+            }
+        };
+        tool(stub).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("orderId", "oid-1").put("symbol", "IMAX").put("stop", 46.10));
+        assertThat(seen[0]).isNull();
+        assertThat(seen[1]).isNull();
+    }
+
+    @Test void providerThatCannotAddressALegSaysSoInsteadOfGuessing() {
+        // The interface default: a provider that never overrode the leg-aware overload must
+        // reject, not silently modify whichever leg it found.
+        var r = tool(new StubBroker()).call(mapper.createObjectNode()
+                .put("connection", TestConnections.CONN).put("orderId", "oid-1").put("symbol", "IMAX")
+                .put("stop", 46.10).put("stopOrderId", "stop-t2"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("accepted").asBoolean()).isFalse();
+        assertThat(r.output().get("rejectCode").asString()).isEqualTo("LEG_ADDRESSING_UNSUPPORTED");
+    }
+
     static class StubBroker implements BrokerProvider {
         public String name(){return "stub";}
         public OrderResult submitBracket(BracketOrderRequest r){return OrderResult.accepted("oid",r.clientRef(),"accepted");}
