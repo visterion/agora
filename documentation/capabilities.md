@@ -157,8 +157,69 @@ must be less than or equal to: [10000] ..."}`) and no `hits` key at all. A naive
 that as an exhausted window; Agora treats a response carrying `errorType` as a cut and marks
 the result truncated. Separately, `get_form4_transactions` fetches one
 archive document per hit under a 110 ms throttle and a 30 s aggregate deadline, so a
-market-wide call in practice parses roughly 270 filings before reporting `truncated: true`
+market-wide call in practice parses roughly 140 filings before reporting `truncated: true`
 — raising `limit` does not lift that second bound.
+
+### How EFTS reads `forms`: root forms, and why `4,4/A` is a trap
+
+The `forms` parameter selects **root** form types, and a root form **already includes its
+amendments**. Adding an explicit `X/A` token does not widen the query — it *intersects* the
+whole result down to that amendment type, no matter what else is in the list. Measured live
+against EFTS on window 2026-07-20..2026-07-27 (`hits.total.value`):
+
+| `forms=` | hits |
+|---|---|
+| `4` | **1697** (a 100-hit page carried 99 `file_type` `4` **and** 1 `4/A`) |
+| `4/A` | 38 |
+| `4,4/A` | **38** — intersection, not union |
+| `4/A,4` (order swapped) | 38 |
+| `forms=4&forms=4/A` (repeated parameter) | 38 |
+| `3` | 312 |
+| `3,4` | **2009** — exactly 312 + 1697, so CSV across root forms IS a correct union |
+| `3,4/A` | **0** — proves the `/A` token is a global narrowing |
+| `3,4,4/A` | 38 |
+
+URL-encoding the slash changes nothing (`4%2C4%2FA` → 38), and there is no `root_forms`
+field — sending one is simply ignored. So no encoding unions `4` and `4/A`, and none is
+needed: `forms=4` is that union. Asking for amendments **only** stays expressible — send
+`4/A` on its own.
+
+This was a live production defect: `get_form4_transactions` sent `forms=4,4/A` and so saw
+1.6 % of its window, amendments only. Multi-form lists that contain no `/A` token are
+unaffected — verified live on window 2026-02-01..2026-08-01: `DEFM14A` 133, `SC TO-T` 123,
+`DEFM14A,SC TO-T` **256** = 133 + 123; `10-12B` 34, `10-12G` 93, `10-12B,10-12G` **127** =
+34 + 93. Callers of `search_filings` should pass root forms only.
+
+### Form-4 window: the caller's window is searched before the late-filing pad
+
+A Form 4 is filed *after* the trade it reports, so `get_form4_transactions` must look past the
+end of the caller's window to catch in-window trades filed late. It does that as **two**
+searches over disjoint filing-date ranges, in strict priority order: first `[from, to]`, then
+`(to, to+10d]`. The `limit` is shared — the pad search only gets what the window search left
+over, and is skipped entirely once the limit is full (which reports `truncated: true`). A cap
+hit in either search truncates the whole result.
+
+The order is load-bearing, not cosmetic. EFTS returns hits **`file_date` descending**, and the
+fetch budget (1000 hits, then the 30 s deadline over ~110 ms-spaced archive GETs) is an order
+of magnitude smaller than a market-wide window — so whichever range sorts first is the only
+one that is ever read. Measured live 2026-08-04, market-wide caller window
+2026-07-20..2026-07-27, full end-to-end replay against real EFTS and real archive GETs:
+
+| search range | filings read | in-window transactions |
+|---|---|---|
+| one padded range `[from-10d, to+10d]` (6210 hits) | 143, all filed 2026-08-03 | **0** |
+| caller window first `[from, to]` (1697 hits) | 139 | **187** (51 open-market buys, 6 above 500k USD) |
+
+There is deliberately **no backward pad**: a Form 4's `transactionDate` never exceeds its
+`file_date`, so a filing filed before `from` cannot carry an in-window transaction (measured
+over 100 Form 4s filed 2026-07-10..07-17: 162 of 162 transactions had
+`file_date - transactionDate >= 0`). The old symmetric pad spent 10 days of a scarce budget on
+filings the window filter was guaranteed to discard.
+
+Consequence for consumers: a market-wide `get_form4_transactions` call is a **sample of the
+newest filings in the window**, not the window. It reports `truncated: true`, and clustering
+logic must not read an absent cluster as evidence that none exists. Narrow the window (or the
+company, via `get_form4_owner_history`) to get complete coverage.
 
 ### Filing size cap (`get_filing_text`)
 

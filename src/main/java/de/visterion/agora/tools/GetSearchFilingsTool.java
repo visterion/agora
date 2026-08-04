@@ -44,7 +44,11 @@ public class GetSearchFilingsTool implements AgoraTool {
         ObjectNode props = schema.putObject("properties");
         ObjectNode forms = props.putObject("forms");
         forms.put("type", "array").put("description",
-                "form type(s), e.g. [\"8-K\",\"10-K\"] or a comma-separated string; required");
+                "ROOT form type(s), e.g. [\"8-K\",\"10-K\"] or a comma-separated string; required. "
+                + "A root form already includes its amendments, so [\"4\"] returns both 4 and 4/A. "
+                + "Do NOT add an amendment token to widen a list: an \"X/A\" entry narrows the "
+                + "WHOLE query to that amendment type, so [\"4\",\"4/A\"] returns only the 4/A "
+                + "filings. Pass [\"4/A\"] alone if you want amendments only.");
         forms.putObject("items").put("type", "string");
         props.putObject("query").put("type", "string").put("description", "optional free-text query");
         props.putObject("from").put("type", "string").put("description", "earliest filing date ISO (YYYY-MM-DD); default now-30d");

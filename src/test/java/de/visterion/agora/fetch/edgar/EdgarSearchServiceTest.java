@@ -400,7 +400,7 @@ class EdgarSearchServiceTest {
     @Test void form4TransactionsParseXml() {
         // efts search for forms=4 returns one hit
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000099:form4.xml","_source":{
@@ -456,7 +456,7 @@ class EdgarSearchServiceTest {
     // price — the new fields degrade to null/empty (aff10b5One null means UNKNOWN, never false).
     @Test void form4LegacyFilingWithoutNewFieldsYieldsNulls() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000099:form4.xml","_source":{
@@ -495,7 +495,7 @@ class EdgarSearchServiceTest {
     // absent-element null above.
     @Test void form4ExplicitUncheckedAff10b5OneIsFalse() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000099:form4.xml","_source":{
@@ -531,7 +531,7 @@ class EdgarSearchServiceTest {
     // market-wide variant (same pipeline).
     @Test void form4TransactionsByCikFiltersOnEftsCiksParam() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .withQueryParam("ciks", equalTo("0000320193"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
@@ -571,20 +571,24 @@ class EdgarSearchServiceTest {
         assertThat(t.filerCik()).isEqualTo("0001214156");
         assertThat(t.sharesOwnedFollowing()).isEqualByComparingTo("2000");
         assertThat(t.aff10b5One()).isFalse();
-        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withQueryParam("ciks", equalTo("0000320193")));
+        // Two searches per call (caller window, then the late-filing pad) — the entity filter must
+        // be on BOTH, or the pad would leak market-wide filings into a per-company answer.
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withQueryParam("ciks", equalTo("0000320193")));
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withoutQueryParam("ciks"));
     }
 
     // The market-wide variant must NOT send an entity filter — and the two variants must not
     // share a cache entry.
     @Test void marketWideForm4SendsNoCiksParam() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("{\"hits\":{\"hits\":[]}}")));
         EdgarSearchService s = svc();
         s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
         s.form4TransactionsByCik("0000320193", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
-        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withoutQueryParam("ciks"));
-        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withQueryParam("ciks", equalTo("0000320193")));
+        // Two searches per call (caller window + late-filing pad), so 2 of each shape.
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withoutQueryParam("ciks"));
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withQueryParam("ciks", equalTo("0000320193")));
     }
 
     // Truncation on the LIMIT path (a): a multi-transaction filing fills the limit before the
@@ -592,7 +596,7 @@ class EdgarSearchServiceTest {
     // truncated (a consumer must never mistake the cut-off window for the complete history).
     @Test void form4LimitBreakWithHitsRemainingMarksTruncated() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000001:f1.xml","_source":{"ciks":["1"],"display_names":["A"],"file_date":"2025-05-01","file_type":"4"}},
@@ -642,7 +646,7 @@ class EdgarSearchServiceTest {
     // fetched filing was parsed to completion.
     @Test void form4ExactlyLimitSizedHitListMarksTruncated() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"total":{"value":50},"hits":[
                       {"_id":"0000320193-25-000001:f1.xml","_source":{"ciks":["1"],"display_names":["A"],"file_date":"2025-05-01","file_type":"4"}}
@@ -672,7 +676,7 @@ class EdgarSearchServiceTest {
     // Control: fewer hits than the limit and no deadline → truncated stays false.
     @Test void form4UnderLimitIsNotTruncated() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000001:f1.xml","_source":{"ciks":["1"],"display_names":["A"],"file_date":"2025-05-01","file_type":"4"}}
@@ -706,7 +710,7 @@ class EdgarSearchServiceTest {
     // a garbage aff10b5One value degrades to null (unknown), not false.
     @Test void form4UnparsablePricePerRowOwnedAndGarbageFlagDegradeGracefully() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000001:f1.xml","_source":{"ciks":["1"],"display_names":["A"],"file_date":"2025-05-06","file_type":"4"}}
@@ -776,7 +780,7 @@ class EdgarSearchServiceTest {
     // was filed inside the window.
     @Test void transactionOutsideWindowFilteredEvenWhenFiledInside() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000099:form4.xml","_source":{
@@ -812,7 +816,7 @@ class EdgarSearchServiceTest {
     // TRANSACTION date is inside [from,to], must still be returned (late-filed-but-in-window).
     @Test void lateFiledTransactionInsideWindowIsIncluded() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000099:form4.xml","_source":{
@@ -846,11 +850,12 @@ class EdgarSearchServiceTest {
         assertThat(tx.get(0).code()).isEqualTo("S");
     }
 
-    // Lows: 4/A amendments must be included (search forms include "4,4/A"), with the `form` field
+    // Lows: 4/A amendments must be included — the root form `forms=4` already carries them on the
+    // wire, verified live (see rootFormSearchStillYieldsAmendmentHits) — with the `form` field
     // exposing the amendment so callers can tell a 4 from a 4/A.
     @Test void amendmentFormIsIncludedWithFormField() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000099:form4a.xml","_source":{
@@ -885,7 +890,7 @@ class EdgarSearchServiceTest {
     // Sleeper — asserts sleep() is invoked once per gap between hits (n-1 times for n hits).
     @Test void form4ArchiveFetchesAreThrottled() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000001:f1.xml","_source":{"ciks":["1"],"display_names":["A"],"file_date":"2025-05-01","file_type":"4"}},
@@ -927,7 +932,7 @@ class EdgarSearchServiceTest {
     // partial AND marked truncated.
     @Test void form4DeadlineTruncatesAndMarksResult() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000001:f1.xml","_source":{"ciks":["1"],"display_names":["A"],"file_date":"2025-05-01","file_type":"4"}},
@@ -987,7 +992,7 @@ class EdgarSearchServiceTest {
         // Real efts Form-4 _source: has `ciks` (array), `display_names`, file_type/file_date —
         // but NO `tickers` field. The ticker must come from the fetched XML (issuerTradingSymbol).
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000099:form4.xml","_source":{
@@ -1027,7 +1032,7 @@ class EdgarSearchServiceTest {
         // Accession prefix is the filing-agent CIK (1140361); the correct archive-path CIK is
         // ciks[0] (2140696). The old code built the URL from the accession prefix → 404 → empty.
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0001140361-26-025622:form4.xml","_source":{
@@ -1061,7 +1066,7 @@ class EdgarSearchServiceTest {
 
     @Test void form4WithDoctypeExternalEntityNeverResolvesEntity() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000099:form4.xml","_source":{
@@ -1108,7 +1113,7 @@ class EdgarSearchServiceTest {
     // disallow-doctype-decl=true setting rejected ALL DOCTYPE'd Form 4s, even harmless ones.
     @Test void form4WithBenignDoctypeParses() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
-                .withQueryParam("forms", equalTo("4,4/A"))
+                .withQueryParam("forms", equalTo("4"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000099:form4.xml","_source":{
@@ -1505,6 +1510,184 @@ class EdgarSearchServiceTest {
      *  in search_filings / get_form4_transactions claimed a coupling that did not exist in code. */
     @Test void hardFetchCapIsPubliclyReadable() {
         assertThat(EdgarSearchService.HARD_FETCH_CAP).isEqualTo(1000);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The EFTS `forms` wire contract, measured live 2026-08-04 (SEC User-Agent, window
+    // 2026-07-20..2026-07-27 unless noted). Every number below is a real EFTS
+    // hits.total.value, not an invented fixture:
+    //
+    //   forms=4                       -> 1697   (page carried file_type 4 AND 4/A)
+    //   forms=4/A                     ->   38
+    //   forms=4,4/A                   ->   38   <-- the defect: intersection, not union
+    //   forms=4/A,4  (order swapped)  ->   38
+    //   forms=4&forms=4/A (repeated)  ->   38
+    //   forms=3,4/A                   ->    0   <-- proves the /A token is a global narrowing
+    //   forms=3,4,4/A                 ->   38
+    //   forms=3                       ->  312
+    //   forms=3,4                     -> 2009   == 312 + 1697, so CSV IS a correct union
+    //                                            across ROOT forms
+    //
+    // Semantics: `forms` selects ROOT forms and always includes their amendments (the
+    // aggregations.form_filter bucket key for a 4/A hit is "4"). Adding an explicit "X/A"
+    // token intersects the whole query down to that amendment type. There is therefore no
+    // encoding that unions 4 and 4/A — none is needed, because `forms=4` already IS that
+    // union.
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * The market-wide Form-4 search must ask for the ROOT form only. Sending "4,4/A" collapsed
+     * a 1,697-filing window to the 38 amendments (measured live, see the table above) — the
+     * production symptom was strigoi-insider returning 0 items for 10 straight days.
+     */
+    @Test void form4SearchesTheRootFormOnlyNeverTheAmendmentToken() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":0},\"hits\":[]}}")));
+        svc().form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100);
+        wm.verify(getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4")));
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", containing("/A")));
+    }
+
+    /**
+     * Order of the two searches is the whole point: EFTS returns file_date DESCENDING and the
+     * fetch budget (HARD_FETCH_CAP + the 30s aggregate deadline) is far smaller than a
+     * market-wide window, so whichever range is searched FIRST is the only one that gets read.
+     * Searching the padded range first spends the entire budget inside the late-filing pad.
+     *
+     * <p>Measured live 2026-08-04 on caller window 2026-07-20..2026-07-27 (a full end-to-end
+     * replay of this method's loop, real EFTS + real archive GETs):
+     * padded-range-first yielded 0 in-window transactions; caller-window-first yielded 187.
+     */
+    @Test void form4SearchesTheCallerWindowBeforeTheLateFilingPad() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":0},\"hits\":[]}}")));
+        svc().form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100);
+        // 1) the caller's exact window, unpadded
+        wm.verify(getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-01"))
+                .withQueryParam("enddt", equalTo("2025-05-31")));
+        // 2) only then the late-filing pad, which starts the day AFTER the window closes
+        wm.verify(getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-06-01"))
+                .withQueryParam("enddt", equalTo("2025-06-10")));
+    }
+
+    /**
+     * The backward pad is provably dead weight and must not be searched: a Form 4's
+     * transactionDate never exceeds its file_date, so a filing filed before {@code from} cannot
+     * carry an in-window transaction. Measured live 2026-08-04 over 100 Form 4s filed
+     * 2026-07-10..2026-07-17: 162 of 162 non-derivative transactions had
+     * file_date - transactionDate >= 0; none was ahead.
+     */
+    @Test void form4DoesNotSearchBeforeTheCallerWindow() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":0},\"hits\":[]}}")));
+        svc().form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100);
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-04-21")));
+    }
+
+    /**
+     * Limit and truncation must stay coherent across the two searches: once the caller-window
+     * search has filled the limit, the pad search is not run at all and the result says so.
+     */
+    @Test void form4LimitFilledByTheWindowSkipsThePadAndReportsTruncated() {
+        // total 5000 with 100-hit pages: the window search alone fills limit=100
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-01"))
+                .willReturn(okJson(page(5000, 0, 100))));
+        var r = svc().form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100);
+        assertThat(r.truncated()).isTrue();
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-06-01")));
+    }
+
+    /** A cap hit inside the PAD search is just as much a cut as one in the window search. */
+    @Test void form4ReportsTruncatedWhenThePadSearchIsCapped() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-01"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":0},\"hits\":[]}}")));
+        // the pad search answers with EFTS's error body -> capped, and no hits to fetch
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-06-01"))
+                .willReturn(okJson("""
+                    {"errorType":"ResponseError","errorMessage":"search_phase_execution_exception"}""")));
+        var r = svc().form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 1000);
+        assertThat(r.transactions()).isEmpty();
+        assertThat(r.truncated()).isTrue();
+    }
+
+    /** The two searches cover disjoint date ranges, but a filing must never be fetched twice
+     *  even if EFTS were to return it in both. */
+    @Test void form4DeduplicatesAFilingReturnedByBothSearches() {
+        String hit = """
+            {"hits":{"total":{"value":1},"hits":[
+              {"_id":"0000320193-25-000099:form4.xml","_source":{
+                 "ciks":["0000320193"],
+                 "display_names":["Cook Timothy (CIK 0000000001)"],
+                 "file_date":"2025-05-05","file_type":"4"}}
+            ]}}""";
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).willReturn(okJson(hit)));
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type", "application/xml").withBody("""
+                    <ownershipDocument>
+                      <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerName>Cook Timothy</rptOwnerName></reportingOwnerId></reportingOwner>
+                      <nonDerivativeTable><nonDerivativeTransaction>
+                        <transactionDate><value>2025-05-05</value></transactionDate>
+                        <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                        <transactionAmounts>
+                          <transactionShares><value>1000</value></transactionShares>
+                          <transactionPricePerShare><value>190.00</value></transactionPricePerShare>
+                        </transactionAmounts>
+                      </nonDerivativeTransaction></nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+        var tx = s.form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100).transactions();
+        assertThat(tx).hasSize(1);
+    }
+
+    /**
+     * A root form already carries its amendments on the wire, so a 4/A hit arrives from
+     * {@code forms=4} and must still be emitted with {@code form="4/A"}. Live evidence: a
+     * {@code forms=4} page of 100 hits contained 99 file_type "4" and 1 file_type "4/A", and
+     * the response's aggregations.form_filter bucket for that hit was keyed "4".
+     */
+    @Test void rootFormSearchStillYieldsAmendmentHits() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4"))
+                .willReturn(okJson("""
+                    {"hits":{"total":{"value":1},"hits":[
+                      {"_id":"0000320193-25-000099:form4a.xml","_source":{
+                         "ciks":["0000320193"],
+                         "display_names":["Cook Timothy (CIK 0000000001)"],
+                         "file_date":"2025-05-10","file_type":"4/A"}}
+                    ]}}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4a.xml"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type", "application/xml").withBody("""
+                    <ownershipDocument>
+                      <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerName>Cook Timothy</rptOwnerName></reportingOwnerId></reportingOwner>
+                      <nonDerivativeTable><nonDerivativeTransaction>
+                        <transactionDate><value>2025-05-10</value></transactionDate>
+                        <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                        <transactionAmounts>
+                          <transactionShares><value>1000</value></transactionShares>
+                          <transactionPricePerShare><value>190.00</value></transactionPricePerShare>
+                        </transactionAmounts>
+                      </nonDerivativeTransaction></nonDerivativeTable>
+                    </ownershipDocument>
+                    """)));
+        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+        var tx = s.form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100).transactions();
+        assertThat(tx).hasSize(1);
+        assertThat(tx.get(0).form()).isEqualTo("4/A");
     }
 
     /** Like {@link #stubPages} but the hit at global index {@code malformedAt} carries an empty

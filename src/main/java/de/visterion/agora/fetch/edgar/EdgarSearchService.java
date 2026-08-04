@@ -47,9 +47,19 @@ public class EdgarSearchService {
     private static final long THROTTLE_MS = 110;
     /** Aggregate deadline for a single form4Transactions() call's sequential archive GETs. */
     private static final long FORM4_DEADLINE_MS = 30_000;
-    /** Form-4 search window is widened this many days each side of [from,to] to catch late filings
-     *  (the transaction-date filter below narrows back to the caller's exact window). */
-    private static final long FORM4_WINDOW_PAD_DAYS = 10;
+    /**
+     * How far past {@code to} the Form-4 search looks for LATE filings — trades inside the
+     * caller's window that were filed after it closed (the transaction-date filter below narrows
+     * back to the caller's exact window).
+     *
+     * <p>Only forward. There is deliberately no backward pad: a Form 4's {@code transactionDate}
+     * never exceeds its {@code file_date}, so a filing filed before {@code from} cannot carry an
+     * in-window transaction. Measured live 2026-08-04 over 100 Form 4s filed 2026-07-10..07-17:
+     * 162 of 162 non-derivative transactions had {@code file_date - transactionDate >= 0}, none
+     * ahead. The old symmetric pad spent 10 days of a scarce fetch budget on filings that the
+     * window filter was guaranteed to discard.
+     */
+    private static final long FORM4_LATE_FILING_PAD_DAYS = 10;
     /**
      * Default ceiling for a single filing's primary document, overridable via
      * {@code agora.data.edgar.max-filing-bytes}.
@@ -448,16 +458,25 @@ public class EdgarSearchService {
 
     /**
      * Non-derivative Form-4 (and 4/A amendment) transactions whose <em>transaction</em> date falls
-     * in [from,to] — filed in the window OR filed late (the underlying search widens by
-     * {@value #FORM4_WINDOW_PAD_DAYS} days each side to catch late-filed-but-in-window trades).
-     * efts search for forms=4,4/A, then per-hit Form-4 XML fetch + DOM parse, throttled to stay
-     * under SEC's request-rate limit with an aggregate deadline. Malformed hits/XML are skipped
-     * (never throw per-hit); an efts search failure surfaces as {@link MarketDataException}.
+     * in [from,to] — filed in the window OR filed late. Two efts searches for {@code forms=4}
+     * (see {@link #FORM4_ROOT_FORM}: the root form already includes its amendments) over disjoint
+     * filing-date ranges — the caller's window first, then the following
+     * {@value #FORM4_LATE_FILING_PAD_DAYS} days for late filings — then a per-hit Form-4 XML
+     * fetch + DOM parse, throttled to stay under SEC's request-rate limit with an aggregate
+     * deadline. Malformed hits/XML are skipped (never throw per-hit); an efts search failure
+     * surfaces as {@link MarketDataException}.
      *
      * <p>Ordering: EFTS has no documented usable sort parameter (a simple {@code sort=} value is
      * rejected), but its default order is deterministic — {@code file_date} descending with the
      * hit {@code _id} as tiebreak (verified 2026-07). A limit/deadline cut therefore drops the
-     * OLDEST filings of the window, never a random subset.
+     * OLDEST filings of the range, never a random subset — which is precisely why the caller's
+     * window must be searched before the late-filing pad rather than as one padded range.
+     *
+     * <p>Budget, measured live 2026-08-04: a market-wide 7-day window holds ~1,700 Form-4 filings,
+     * so {@link #HARD_FETCH_CAP} and then the {@value #FORM4_DEADLINE_MS}ms deadline both bind
+     * long before the window is exhausted (~140 filings read per call at ~190ms each). Such a
+     * result is reported {@code truncated=true} and is a SAMPLE of the newest filings in the
+     * window, not the window.
      *
      * <p>Price fail-soft (intentional change, 2026-07): an absent/empty/unparsable
      * {@code transactionPricePerShare} no longer discards the filing — the transaction is kept
@@ -480,17 +499,69 @@ public class EdgarSearchService {
         return form4Cache.get(key, () -> fetchForm4(cik, from, to, limit));
     }
 
+    /**
+     * The forms argument of every Form-4 search: the ROOT form only.
+     *
+     * <p>Never {@code ["4", "4/A"]}. EFTS's {@code forms} parameter selects ROOT forms and always
+     * includes their amendments, while an explicit {@code "X/A"} token intersects the whole query
+     * down to that amendment type. Measured live 2026-08-04 on window 2026-07-20..2026-07-27:
+     * {@code forms=4} -> 1,697 hits (a single 100-hit page carried 99 file_type "4" and 1 "4/A",
+     * and the response's {@code aggregations.form_filter} bucket for that amendment was keyed
+     * "4"); {@code forms=4/A} -> 38; {@code forms=4,4/A} -> 38; {@code forms=4/A,4} -> 38;
+     * repeated {@code forms=4&forms=4/A} -> 38. That the token is a global narrowing rather than
+     * a bad union is settled by {@code forms=3,4/A} -> 0 and {@code forms=3,4,4/A} -> 38.
+     *
+     * <p>CSV across ROOT forms is a correct union and needs no workaround:
+     * {@code forms=3} -> 312, {@code forms=4} -> 1,697, {@code forms=3,4} -> 2,009 exactly.
+     *
+     * <p>So there is no encoding that unions 4 and 4/A, and none is needed — {@code forms=4}
+     * already IS that union. The old {@code "4,4/A"} showed the market-wide hunter 1.6% of its
+     * window, amendments only.
+     */
+    private static final List<String> FORM4_ROOT_FORM = List.of("4");
+
     private Form4Result fetchForm4(String cik, LocalDate from, LocalDate to, int limit) {
-        LocalDate searchFrom = from == null ? null : from.minusDays(FORM4_WINDOW_PAD_DAYS);
-        LocalDate searchTo = to == null ? null : to.plusDays(FORM4_WINDOW_PAD_DAYS);
-        SearchResult found = searchResult(List.of("4", "4/A"), null, cik, searchFrom, searchTo, limit);
-        List<FilingHit> hits = found.hits();
+        // Two searches over DISJOINT filing-date ranges, in strict priority order.
+        //
+        // Why not one padded range: EFTS returns file_date DESCENDING, and the fetch budget
+        // (HARD_FETCH_CAP hits, then a 30s aggregate deadline over ~110ms-spaced archive GETs) is
+        // an order of magnitude smaller than a market-wide window — so whichever range sorts
+        // FIRST is the only one that is ever read. Searching [from-pad, to+pad] therefore spends
+        // the entire budget inside the pad, on filings whose transactions post-date the caller's
+        // window and are then all discarded by the transaction-date filter.
+        //
+        // Measured live 2026-08-04, caller window 2026-07-20..2026-07-27, full end-to-end replay
+        // against real EFTS + real archive GETs: padded-range-first read 143 filings, all filed
+        // 2026-08-03, and yielded 0 in-window transactions. Caller-window-first read 139 filings
+        // and yielded 187 in-window transactions (51 open-market buys, 6 above 500k USD).
+        List<FilingHit> hits = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        boolean capped = false;
+
+        // 1) the caller's exact window — where the in-window transactions actually are.
+        SearchResult window = searchResult(FORM4_ROOT_FORM, null, cik, from, to, limit);
+        capped |= window.capped();
+        addNew(hits, seen, window.hits(), limit);
+
+        // 2) only then the late-filing pad: trades inside the window, filed after it closed. Its
+        // share of the limit is what the window search left over, so the two searches together
+        // still honour exactly one `limit` and one HARD_FETCH_CAP-bounded pass each.
+        if (to != null && hits.size() < limit) {
+            SearchResult late = searchResult(FORM4_ROOT_FORM, null, cik,
+                    to.plusDays(1), to.plusDays(FORM4_LATE_FILING_PAD_DAYS), limit - hits.size());
+            capped |= late.capped();
+            addNew(hits, seen, late.hits(), limit);
+        }
+
         List<Form4Transaction> out = new ArrayList<>();
-        // A full limit-sized hit list means the search itself was cut (more filings may exist).
+        // A full limit-sized hit list means a search itself was cut (more filings may exist).
         // The row count alone is not enough: with limit == HARD_FETCH_CAP a single hit dropped by
-        // parseHit leaves 999 rows on a 50,000-filing window, so the search's own cap flag is
-        // OR-ed in rather than relying on the 30s aggregate deadline to notice.
-        boolean truncated = found.capped() || hits.size() >= limit;
+        // parseHit leaves 999 rows on a 50,000-filing window, so each search's own cap flag is
+        // OR-ed in rather than relying on the 30s aggregate deadline to notice. A pad skipped
+        // because the window search already filled the limit is itself a cut — late filings were
+        // never looked at — and needs no extra term: that is exactly the case in which
+        // `hits.size() >= limit` holds.
+        boolean truncated = capped || hits.size() >= limit;
         long deadline = now.getAsLong() + FORM4_DEADLINE_MS;
         boolean first = true;
         for (FilingHit hit : hits) {
@@ -519,6 +590,23 @@ public class EdgarSearchService {
             }
         }
         return new Form4Result(out, truncated);
+    }
+
+    /**
+     * Appends hits not already collected, up to {@code limit}. The two Form-4 searches cover
+     * disjoint filing-date ranges so an overlap should not occur — but an accession fetched twice
+     * would double-count every transaction in it, which is worse than the cost of a hash lookup.
+     * Hits with no accession cannot be identified and are always kept (they carry no url, so
+     * {@link #parseForm4} returns without a fetch anyway).
+     */
+    private static void addNew(List<FilingHit> into, java.util.Set<String> seen,
+                               List<FilingHit> more, int limit) {
+        for (FilingHit h : more) {
+            if (into.size() >= limit) return;
+            String acc = h.accession();
+            if (acc != null && !acc.isEmpty() && !seen.add(acc)) continue;
+            into.add(h);
+        }
     }
 
     /** A filing's extracted summary/term-sheet text plus extraction metadata. */
