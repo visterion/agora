@@ -118,6 +118,25 @@ class RussellReconstitutionIndexChangeProviderTest {
                         tuple("OLDC", "remove", "russell2000"));
     }
 
+    @Test void carriesIssuerNamesFromTheReconstitutionLists() {
+        // The recon PDF prints "<COMPANY NAME> <TICKER> <INDUSTRY>", so the name is already
+        // parsed — it must reach IndexChange instead of being dropped, for adds AND deletions.
+        stubEffectivePdfs();
+        stubCsv("/iwb.csv", IWB_CSV);
+        stubCsv("/iwm.csv", IWM_CSV);
+        var p = provider(LocalDate.of(2025, 6, 30));
+
+        assertThat(p.changes("russell1000"))
+                .extracting(IndexChange::symbol, IndexChange::companyName)
+                .containsExactly(tuple("BAM", "BROOKFIELD ASSET MANAGEM"));
+        assertThat(p.changes("russell2000"))
+                .extracting(IndexChange::symbol, IndexChange::action, IndexChange::companyName)
+                .containsExactlyInAnyOrder(
+                        tuple("AARD", "add", "AARDVARK THERAPEUTICS"),
+                        tuple("CHWY", "add", "CHEWY"),
+                        tuple("OLDC", "remove", "OLDCO INDUSTRIES"));
+    }
+
     @Test void isharesWalledHtmlDegradesToDefaultRussell2000() {
         stubEffectivePdfs();
         // The real bot wall answers with an HTML product page under a lying text/csv content type.

@@ -186,12 +186,16 @@ public class RussellReconstitutionIndexChangeProvider implements IndexChangeProv
         Set<String> iwm = fetchIsharesTickers(iwmPath); // Russell 2000 holdings
 
         List<IndexChange> out = new ArrayList<>();
+        // The recon list prints the company name next to the ticker and the parser already
+        // captures it, so the name rides along on both sides of the reconstitution.
         for (RussellConstituentListParser.Row r : additions) {
-            out.add(new IndexChange(r.ticker(), "add", resolveBucket(r.ticker(), iwb, iwm),
+            out.add(new IndexChange(r.ticker(), r.companyName(), "add",
+                    resolveBucket(r.ticker(), iwb, iwm),
                     window.preliminaryDate(), window.effectiveDate(), SOURCE));
         }
         for (RussellConstituentListParser.Row r : deletions) {
-            out.add(new IndexChange(r.ticker(), "remove", resolveBucket(r.ticker(), iwb, iwm),
+            out.add(new IndexChange(r.ticker(), r.companyName(), "remove",
+                    resolveBucket(r.ticker(), iwb, iwm),
                     window.preliminaryDate(), window.effectiveDate(), SOURCE));
         }
         return out;

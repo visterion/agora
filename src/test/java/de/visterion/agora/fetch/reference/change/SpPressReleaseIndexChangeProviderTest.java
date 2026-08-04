@@ -160,6 +160,63 @@ class SpPressReleaseIndexChangeProviderTest {
         assertThat(out).isEqualTo("Acme Corp (NYSE: ACME) & friends’ quarter — done");
     }
 
+    @Test void carriesIssuerNamesFromReleaseProse() {
+        stubFeed(
+                item("Ferguson Enterprises Set to Join S&amp;P 500", "/release-ferg",
+                        "Fri, 31 Jul 2026 08:15:00 -0400"),
+                item("Acme Corp Set to be Removed from S&amp;P 500", "/release-remove",
+                        "Mon, 06 Jul 2026 07:48:00 -0400"),
+                item("Nameless Holdings Set to be Removed from S&amp;P 500", "/release-noname",
+                        "Mon, 06 Jul 2026 09:00:00 -0400"));
+
+        // Verbatim shape of the real 2026-07-31 S&P release behind prod run
+        // 4ED119E68E1D48FEB3D23B3F652641D1: BOTH issuer names sit in the prose, immediately
+        // before the exchange-qualified ticker — the add side as well as the remove side.
+        stubBody("/release-ferg",
+                "NEW YORK , July 31, 2026 / PRNewswire / -- S&P Dow Jones Indices will make the "
+                        + "following changes to the S&P 500 and S&P SmallCap 600: Ferguson Enterprises "
+                        + "Inc. (NYSE: FERG) will replace Electronic Arts Inc. (NASD: EA) in the S&P 500 "
+                        + "effective prior to the opening of trading on Wednesday, August 5.");
+        stubBody("/release-remove",
+                "NEW YORK -- Acme Corp (NYSE: ACME) will be removed from the S&P 500 effective prior to "
+                        + "the opening of trading on Monday, August 3, 2026.");
+        // Ticker resolvable, issuer name is not: the row is still emitted, with a null name.
+        // A guessed name would be worse than none.
+        stubBody("/release-noname",
+                "NEW YORK -- (NYSE: NONM) will be removed from the S&P 500 effective prior to "
+                        + "the opening of trading on Monday, August 3, 2026.");
+
+        assertThat(provider().changes("sp500"))
+                .extracting(IndexChange::symbol, IndexChange::action, IndexChange::companyName)
+                .containsExactlyInAnyOrder(
+                        tuple("FERG", "add", "Ferguson Enterprises Inc."),
+                        tuple("EA", "remove", "Electronic Arts Inc."),
+                        tuple("ACME", "remove", "Acme Corp"),
+                        tuple("NONM", "remove", null));
+    }
+
+    // --- issuer-name extraction unit tests ---
+
+    @Test void companyNameStopsAtTheDatelineSeparator() {
+        // "NEW YORK -- " must never be scraped as the issuer name.
+        assertThat(SpPressReleaseIndexChangeProvider.companyNameFor(
+                "NEW YORK -- (NYSE: NONM) will be removed", "NONM")).isNull();
+    }
+
+    @Test void companyNameKeepsInternalHyphenAndAmpersand() {
+        assertThat(SpPressReleaseIndexChangeProvider.companyNameFor(
+                "changes: Coca-Cola Bottling Co. (NASDAQ: COKE) will replace", "COKE"))
+                .isEqualTo("Coca-Cola Bottling Co.");
+        assertThat(SpPressReleaseIndexChangeProvider.companyNameFor(
+                "600: Smith & Wesson Brands Inc. (NASD: SWBI) will be removed", "SWBI"))
+                .isEqualTo("Smith & Wesson Brands Inc.");
+    }
+
+    @Test void companyNameNullWhenTickerAbsent() {
+        assertThat(SpPressReleaseIndexChangeProvider.companyNameFor(
+                "Acme Corp (NYSE: ACME) will be removed", "OTHER")).isNull();
+    }
+
     // --- year-inference unit tests ---
 
     @Test void effectiveDateUsesExplicitYearWhenPresent() {

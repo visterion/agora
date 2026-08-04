@@ -77,6 +77,15 @@ public class SpPressReleaseIndexChangeProvider implements IndexChangeProvider {
     // Single deletion without a named replacement — "(NYSE: AAA) will be removed from the S&P 500".
     private static final Pattern SINGLE_DELETION = Pattern.compile(
             "\\(\\s*(?:NYSE|Nasdaq|NASDAQ|NASD)\\s*:\\s*([A-Z]{1,5})\\s*\\)\\s+will be (?:removed|deleted) from");
+    // The issuer name that precedes "(EXCH: TICKER)" (%s = the quoted ticker). A name is an
+    // initial-capitalised token followed by up to 7 more name-shaped tokens; a continuation token
+    // must START with an alphanumeric/&/apostrophe, so the "--" of the PRNewswire dateline can
+    // never be swallowed, while an internal hyphen ("Coca-Cola") is kept. Colons and commas are
+    // outside the class, so the lead-in sentence and the city/date line terminate the capture.
+    private static final String NAME_BEFORE_TICKER =
+            "([A-Z][A-Za-z0-9.&'’]*(?:-[A-Za-z0-9][A-Za-z0-9.&'’]*)*"
+                    + "(?: [A-Za-z0-9&'’][A-Za-z0-9.&'’]*(?:-[A-Za-z0-9][A-Za-z0-9.&'’]*)*){0,7})"
+                    + "\\s*\\(\\s*(?:NYSE|Nasdaq|NASDAQ|NASD)\\s*:\\s*%s\\s*\\)";
     // The S&P index a title refers to: "S&P 500" / "S&P MidCap 400" / "S&P SmallCap 600" -> sp500/sp400/sp600.
     private static final Pattern INDEX_IN_TITLE = Pattern.compile(
             "(?i)S&P\\s+(?:SmallCap\\s+|MidCap\\s+)?(\\d{3})");
@@ -248,16 +257,42 @@ public class SpPressReleaseIndexChangeProvider implements IndexChangeProvider {
         Matcher replace = WILL_REPLACE.matcher(text);
         if (replace.find()) {
             // A "will replace" release documents both sides — emit the add and the remove.
+            String added = replace.group(1);
+            String removed = replace.group(2);
             return List.of(
-                    new IndexChange(replace.group(1), "add", index, announcement, effective, SOURCE),
-                    new IndexChange(replace.group(2), "remove", index, announcement, effective, SOURCE));
+                    new IndexChange(added, companyNameFor(text, added), "add",
+                            index, announcement, effective, SOURCE),
+                    new IndexChange(removed, companyNameFor(text, removed), "remove",
+                            index, announcement, effective, SOURCE));
         }
         Matcher deletion = SINGLE_DELETION.matcher(text);
         if (deletion.find()) {
-            return List.of(new IndexChange(deletion.group(1), titleAction, index, announcement, effective, SOURCE));
+            String deleted = deletion.group(1);
+            return List.of(new IndexChange(deleted, companyNameFor(text, deleted), titleAction,
+                    index, announcement, effective, SOURCE));
         }
         log.warn("S&P press release: title matched but no ticker found, dropping {}", link);
         return List.of();
+    }
+
+    /**
+     * The issuer name printed immediately before {@code (EXCH: TICKER)} in the release prose
+     * ("Ferguson Enterprises Inc. (NYSE: FERG) will replace Electronic Arts Inc. (NASD: EA)"),
+     * or {@code null} when it cannot be read off cleanly.
+     *
+     * <p>Deliberately separate from the ticker patterns: name resolution is best effort and must
+     * never widen or narrow which changes are emitted. A row whose name does not resolve is still
+     * a valid change with a {@code null} name — a guessed issuer name would be worse than none.
+     *
+     * <p>{@link #NAME_BEFORE_TICKER} is anchored on the ticker parenthesis and walks left over
+     * name-shaped tokens only, so the PRNewswire dateline separator ({@code "NEW YORK -- "}), the
+     * colon that ends the lead-in sentence and the comma after the city all terminate the capture.
+     * Package-private for the unit tests.
+     */
+    static String companyNameFor(String text, String ticker) {
+        if (text == null || ticker == null || ticker.isBlank()) return null;
+        Matcher m = Pattern.compile(NAME_BEFORE_TICKER.formatted(Pattern.quote(ticker))).matcher(text);
+        return m.find() ? m.group(1).trim() : null;
     }
 
     // Package-private for the year-inference unit test.

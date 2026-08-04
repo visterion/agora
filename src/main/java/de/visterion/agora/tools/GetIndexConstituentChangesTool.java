@@ -53,6 +53,9 @@ public class GetIndexConstituentChangesTool implements AgoraTool {
         for (IndexChange c : changes) {
             ObjectNode o = arr.addObject();
             o.put("symbol", c.symbol());
+            // Best effort and explicitly nullable: JSON null when the source row carried no
+            // issuer name, never guessed from the ticker.
+            o.put("companyName", c.companyName());
             o.put("action", c.action());
             o.put("index", c.index());
             o.put("announcementDate", c.announcementDate() == null ? null : c.announcementDate().toString());

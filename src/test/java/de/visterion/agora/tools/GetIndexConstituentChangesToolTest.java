@@ -40,6 +40,21 @@ class GetIndexConstituentChangesToolTest {
         assertThat(changes.get(1).get("action").asString()).isEqualTo("remove");
     }
 
+    @Test void emitsCompanyNameAndNullsItWhenUnresolved() {
+        IndexChangeService svc = Mockito.mock(IndexChangeService.class);
+        when(svc.changes(any(), anyInt())).thenReturn(List.of(
+                new IndexChange("FERG", "Ferguson Enterprises Inc.", "add", "sp500",
+                        LocalDate.of(2026, 7, 31), LocalDate.of(2026, 8, 5), "sp_press"),
+                new IndexChange("NONM", null, "remove", "sp500",
+                        LocalDate.of(2026, 7, 31), LocalDate.of(2026, 8, 5), "sp_press")));
+
+        var changes = new GetIndexConstituentChangesTool(svc)
+                .call(mapper.createObjectNode()).output().get("changes");
+        assertThat(changes.get(0).get("companyName").asString()).isEqualTo("Ferguson Enterprises Inc.");
+        // present-but-null, so the consumer can tell "unresolved" from "field not implemented"
+        assertThat(changes.get(1).get("companyName").isNull()).isTrue();
+    }
+
     @Test void defaultsIndexAndLookback() {
         IndexChangeService svc = Mockito.mock(IndexChangeService.class);
         when(svc.changes(eq("sp500"), eq(30))).thenReturn(List.of());
