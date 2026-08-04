@@ -26,7 +26,9 @@ public class GetPositionsTool implements AgoraTool {
 
     @Override
     public String description() {
-        return "List all open positions held by the account on the named connection.";
+        return "List all open positions held by the account on the named connection. "
+                + "Each position reports side: BUY for a long, SELL for a short, or null when "
+                + "the broker states no direction — treat null as unknown, not as long.";
     }
 
     @Override
@@ -54,6 +56,9 @@ public class GetPositionsTool implements AgoraTool {
                 node.put("symbol", p.symbol());
                 node.put("description", p.description());
                 node.put("qty", p.qty());
+                // "BUY" = long, "SELL" = short; null when the broker does not state a
+                // direction (see Position#side) — never silently defaulted to BUY.
+                node.put("side", p.side());
                 node.put("avgEntryPrice", p.avgEntryPrice());
                 if (p.marketPrice() != null) node.put("marketPrice", p.marketPrice());
                 else node.putNull("marketPrice");

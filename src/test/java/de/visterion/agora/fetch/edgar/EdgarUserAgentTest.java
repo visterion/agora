@@ -70,14 +70,15 @@ class EdgarUserAgentTest {
     // ---- the same guard, exercised through each of the three real @Autowired constructors ----
 
     @Test void edgarSearchServiceConstructorWarnsOnBlankUserAgent() {
-        new EdgarSearchService(" ", "https://efts.sec.gov", "https://www.sec.gov", 3600L, 15000L);
+        new EdgarSearchService(" ", "https://efts.sec.gov", "https://www.sec.gov", 3600L, 15000L,
+                32L * 1024 * 1024);
 
         assertThat(warnEvents()).hasSize(1);
     }
 
     @Test void edgarSearchServiceConstructorIsQuietOnConfiguredUserAgent() {
         new EdgarSearchService("SyntheticApp contact@example.com", "https://efts.sec.gov",
-                "https://www.sec.gov", 3600L, 15000L);
+                "https://www.sec.gov", 3600L, 15000L, 32L * 1024 * 1024);
 
         assertThat(warnEvents()).isEmpty();
     }

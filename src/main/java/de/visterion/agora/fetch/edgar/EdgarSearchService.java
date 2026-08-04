@@ -19,6 +19,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.LongSupplier;
+import java.util.regex.Pattern;
 
 /**
  * SEC EDGAR full-text-search (efts.sec.gov) client: generic filing search plus
@@ -42,7 +43,18 @@ public class EdgarSearchService {
     /** Form-4 search window is widened this many days each side of [from,to] to catch late filings
      *  (the transaction-date filter below narrows back to the caller's exact window). */
     private static final long FORM4_WINDOW_PAD_DAYS = 10;
-    private static final long DEFAULT_MAX_FILING_BYTES = 5L * 1024 * 1024;
+    /**
+     * Default ceiling for a single filing's primary document, overridable via
+     * {@code agora.data.edgar.max-filing-bytes}.
+     *
+     * <p>Chosen from measurement, not from a guess: the 40 most recent DEFM14A primary documents
+     * on EFTS (window 2026-02-01..2026-08-01, measured 2026-08-04) run median 3.53 MB, p75
+     * 6.05 MB, p90 10.21 MB, max 24.93 MB — and 13 of the 40 exceeded the previous 5 MB cap. A
+     * merger proxy IS the document that carries the deal terms, so the old cap rejected exactly
+     * the filings the merger hunter exists to read. 32 MiB clears the measured maximum with
+     * headroom while still bounding a single request's heap.
+     */
+    static final long DEFAULT_MAX_FILING_BYTES = 32L * 1024 * 1024;
 
     @FunctionalInterface
     interface Sleeper { void sleep(long millis) throws InterruptedException; }
@@ -92,10 +104,11 @@ public class EdgarSearchService {
             @Value("${agora.data.edgar.efts-base-url:https://efts.sec.gov}") String eftsBase,
             @Value("${agora.data.edgar.archive-base:https://www.sec.gov}") String archiveBase,
             @Value("${agora.data.cache.ttl.filings-seconds:3600}") long ttlSeconds,
-            @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
+            @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs,
+            @Value("${agora.data.edgar.max-filing-bytes:33554432}") long maxFilingBytes) {
         this(buildHttp(eftsBase, EdgarUserAgent.checked(userAgent), timeoutMs),
                 buildHttp(archiveBase, userAgent, timeoutMs),
-                archiveBase, ttlSeconds, System::currentTimeMillis);
+                archiveBase, ttlSeconds, System::currentTimeMillis, REAL_SLEEPER, maxFilingBytes);
     }
 
     private static RestClient buildHttp(String baseUrl, String userAgent, long timeoutMs) {
@@ -229,9 +242,11 @@ public class EdgarSearchService {
             if (p > 0) company = company.substring(0, p).trim();
         }
 
-        String ticker = "";
-        JsonNode tn = src.path("tickers");
-        if (tn.isArray() && !tn.isEmpty()) ticker = tn.get(0).asString("").toUpperCase();
+        // The efts `_source` has NO `tickers` key (verified against live EFTS). The ticker exists
+        // only inside display_names[0], as the parenthesised group in front of the "(CIK ...)"
+        // group: "Arcosa, Inc.  (ACA)  (CIK 0001739445)". `company` above already dropped the CIK
+        // group, so the ticker group — when present — is now its trailing "(...)".
+        String ticker = extractTicker(company);
 
         LocalDate filedDate;
         try {
@@ -264,6 +279,34 @@ public class EdgarSearchService {
 
         if (company.isEmpty() && ticker.isEmpty()) return null;
         return new FilingHit(ticker, company, form, filedDate, accession, url);
+    }
+
+    /**
+     * A US exchange ticker: 1-5 alphanumerics, optionally followed by a '.'/'-' separated share
+     * class suffix of 1-2 characters (BRK.B, RDS-A). The bound is deliberately tight because this
+     * segment is only heuristically a ticker — a display name may end in a parenthesised phrase of
+     * its own ("Acme Capital (Holdings) Limited"), and anything longer than a class-suffixed US
+     * symbol is far more likely to be such a phrase than a real symbol.
+     */
+    private static final Pattern TICKER = Pattern.compile("[A-Za-z0-9]{1,5}([.-][A-Za-z0-9]{1,2})?");
+
+    /**
+     * Extracts the ticker from an efts display name whose " (CIK ...)" group has already been
+     * stripped, i.e. from {@code "Arcosa, Inc.  (ACA)"} -> {@code "ACA"}.
+     *
+     * <p>Anchoring is on the END of the string (which is the position immediately before the CIK
+     * group in the raw display name) so that parentheses inside the company name itself are never
+     * mistaken for a ticker. A filer without a listed ticker has no trailing group at all and
+     * yields {@code ""}; a trailing group that is not ticker-shaped also yields {@code ""}.
+     */
+    private static String extractTicker(String companyWithTicker) {
+        String s = companyWithTicker.strip();
+        if (!s.endsWith(")")) return "";
+        int open = s.lastIndexOf('(');
+        if (open < 0) return "";
+        String candidate = s.substring(open + 1, s.length() - 1).strip();
+        if (!TICKER.matcher(candidate).matches()) return "";
+        return candidate.toUpperCase();
     }
 
     /**
@@ -356,7 +399,18 @@ public class EdgarSearchService {
      * Fetch a filing's primary document from the SEC archive and extract its summary/term-sheet
      * text. {@code url} MUST be an archive URL under the configured archive base (SSRF guard).
      * Throws {@link MarketDataException} on a non-archive url, a fetch failure, an oversized
-     * body (> {@value #DEFAULT_MAX_FILING_BYTES} bytes by default), or an empty document.
+     * body, or an empty document.
+     *
+     * <p>An oversized body is reported as {@link MarketDataException.Kind#TOO_LARGE} with a
+     * message starting {@code filing_too_large:} — distinct from the {@code UNAVAILABLE} kind
+     * used for a genuinely unreachable source. The bound is
+     * {@code agora.data.edgar.max-filing-bytes} (default {@value #DEFAULT_MAX_FILING_BYTES}).
+     *
+     * <p>Deliberately NOT truncated: {@link FilingTextExtractor} finds the summary section by
+     * taking the LAST occurrence of its heading in the document (to skip the table of contents),
+     * so a byte-truncated document would silently yield the TOC entry instead of the real
+     * section — a wrong answer presented as a complete one. Rejecting loudly is correct here;
+     * the fix for an over-cap filing is to raise the property, not to return half a document.
      */
     public FilingText filingText(String url) {
         if (url == null || !url.startsWith(archiveBase + "/Archives/")) {
@@ -371,16 +425,16 @@ public class EdgarSearchService {
             raw = archiveHttp.get().uri(url).exchange((request, response) -> {
                 long contentLength = response.getHeaders().getContentLength();
                 if (contentLength > maxFilingBytes) {
-                    throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                            "filing document too large (" + contentLength + " bytes): " + url, null);
+                    throw tooLarge(contentLength + " bytes (Content-Length)", url);
                 }
                 try (InputStream body = response.getBody()) {
                     // Bounded read regardless of (possibly absent/lying) Content-Length: never
                     // buffer more than maxFilingBytes+1 bytes, so we can detect an over-cap body.
                     byte[] buf = body.readNBytes((int) Math.min(maxFilingBytes + 1, Integer.MAX_VALUE));
                     if (buf.length > maxFilingBytes) {
-                        throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
-                                "filing document exceeds size cap: " + url, null);
+                        // Same cap, same token as the pre-check — only the evidence differs. This
+                        // branch is the one that fires when the response has no Content-Length.
+                        throw tooLarge("more than " + maxFilingBytes + " bytes (no usable Content-Length)", url);
                     }
                     return new String(buf, StandardCharsets.UTF_8);
                 }
@@ -395,6 +449,22 @@ public class EdgarSearchService {
         }
         var ex = FilingTextExtractor.extract(raw);
         return new FilingText(ex.text(), ex.sectionFound(), ex.truncated(), ex.text().length(), url);
+    }
+
+    /**
+     * The single place the "this document is too big" failure is built. Both the Content-Length
+     * pre-check and the post-read bounded-read check route through it so the two are guaranteed
+     * to carry the same kind, the same leading token and the same cap value.
+     *
+     * <p>The message deliberately opens with the stable machine token {@code filing_too_large:}
+     * and the kind is {@link MarketDataException.Kind#TOO_LARGE}, never {@code UNAVAILABLE}:
+     * consumers must be able to tell a permanently-oversized document from a dead source. Before
+     * this, Dracul logged both as "Agora unreachable for get_filing_text".
+     */
+    private MarketDataException tooLarge(String measured, String url) {
+        return new MarketDataException(MarketDataException.Kind.TOO_LARGE,
+                "filing_too_large: document is " + measured + ", cap is " + maxFilingBytes
+                        + " bytes (raise agora.data.edgar.max-filing-bytes): " + url, null);
     }
 
     private void parseForm4(FilingHit hit, List<Form4Transaction> out, LocalDate from, LocalDate to) throws Exception {

@@ -144,10 +144,49 @@ class SaxoBrokerProviderTest {
         assertThat(ps.get(0).currency()).isEqualTo("USD");
         assertThat(ps.get(0).assetType()).isEqualTo("Stock");
         assertThat(ps.get(0).valueDate()).isEqualTo("2026-07-10");
+        // Saxo encodes direction in the SIGN of NetPositionBase.Amount: positive = long.
+        assertThat(ps.get(0).side()).isEqualTo("BUY");
         wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions"))
                 .withQueryParam("ClientKey", equalTo("Cli+Key/1=="))
                 .withQueryParam("AccountKey", equalTo("Acc+Key/1=="))
                 .withQueryParam("FieldGroups", equalTo("NetPositionBase,NetPositionView,DisplayAndFormat")));
+    }
+
+    /**
+     * Saxo has no {@code side} field on a net position — long/short lives in the SIGN of
+     * {@code NetPositionBase.Amount}. Same convention the shipped flatten() path already
+     * relies on (SaxoBrokerProvider: {@code opposite = amount.signum() > 0 ? "Sell" : "Buy"}),
+     * i.e. a negative Amount is a short and is closed by BUYing it back.
+     */
+    @Test
+    void positionsSideIsSellForNegativeAmount() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionId":"AAPL:xnas__Stock",
+                      "NetPositionBase":{"Amount":-10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"Exposure":-1510.0,
+                                         "ProfitLossOnTrade":100.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas","Currency":"USD"}}]}
+            """)));
+        var ps = provider.positions();
+        assertThat(ps).hasSize(1);
+        assertThat(ps.get(0).side()).isEqualTo("SELL");
+        // qty keeps the raw signed amount — side is derived from it, it does not replace it.
+        assertThat(ps.get(0).qty()).isEqualByComparingTo("-10");
+    }
+
+    /**
+     * Amount == 0 carries no direction (a flat net position). Reporting "BUY" there would be
+     * a guess; the field stays null so the consumer can see the difference.
+     */
+    @Test
+    void positionsSideIsNullForZeroAmount() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"__count":1,"Data":[{
+              "DisplayAndFormat":{"Currency":"USD","Symbol":"PSMT:xnas"},
+              "NetPositionBase":{"Amount":0.0,"AssetType":"Stock"},
+              "NetPositionView":{"AverageOpenPrice":193.87,"Exposure":0.0,"ProfitLossOnTrade":0.0}}]}
+            """)));
+        assertThat(provider.positions().get(0).side()).isNull();
     }
 
     @Test

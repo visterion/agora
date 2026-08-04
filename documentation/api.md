@@ -318,6 +318,7 @@ All open positions held by the account on the named connection.
       "symbol": "AAPL",
       "description": "Apple Inc.",
       "qty": 100,
+      "side": "BUY",
       "avgEntryPrice": 150.25,
       "marketPrice": 155.30,
       "marketValue": 15530.00,
@@ -335,7 +336,8 @@ All open positions held by the account on the named connection.
 **Response fields:**
 - `symbol`: ticker symbol
 - `description`: asset description
-- `qty`: quantity held
+- `qty`: quantity held, keeping the broker's sign (negative for a short)
+- `side`: direction of the position — `"BUY"` for a long, `"SELL"` for a short. May be `null` when the broker states no direction: Saxo has no side field on a net position and it is derived from the sign of `NetPositionBase.Amount` (`Amount == 0` is a flat position and yields `null`); Alpaca maps its native `side` (`long`/`short`) and yields `null` if that field is absent. `null` means unknown — never assume long.
 - `avgEntryPrice`: average entry price per unit
 - `marketPrice`: current per-unit market price; may be `null` (e.g., when qty is 0). Saxo derives this from `marketValue/qty` because the SIM feed reports `CurrentPrice=0`; Alpaca maps native `current_price`.
 - `marketValue`: total market value of the position

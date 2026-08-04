@@ -92,7 +92,7 @@ class GetSearchFilingsToolTest {
         assertThat(r.output().get("truncated").asBoolean()).isTrue();
     }
 
-    @Test void oversizedLimitIsClampedTo100() {
+    @Test void oversizedLimitIsClampedToMax() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
         when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(List.of());
         var args = mapper.createObjectNode();
@@ -101,6 +101,59 @@ class GetSearchFilingsToolTest {
         new GetSearchFilingsTool(svc).call(args);
         ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
         verify(svc).search(any(), any(), any(), any(), captor.capture());
+        assertThat(captor.getValue()).isEqualTo(1000);
+    }
+
+    /** No explicit limit must still reach the service as the documented default, not as the max. */
+    @Test void absentLimitUsesDefault() {
+        EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
+        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(List.of());
+        var args = mapper.createObjectNode();
+        args.putArray("forms").add("8-K");
+        new GetSearchFilingsTool(svc).call(args);
+        ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
+        verify(svc).search(any(), any(), any(), any(), captor.capture());
         assertThat(captor.getValue()).isEqualTo(100);
+    }
+
+    // A3: truncation must stay exact at the NEW bound. An off-by-one here re-creates the silent
+    // degradation this change removes: a full 1000-row page reported as a complete window.
+    @Test void resultCutAtNewMaxReportsTruncated() {
+        EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
+        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(hits(1000));
+        var args = mapper.createObjectNode();
+        args.putArray("forms").add("8-K");
+        args.put("limit", 1000);
+        var r = new GetSearchFilingsTool(svc).call(args);
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("filings")).hasSize(1000);
+        assertThat(r.output().get("truncated").asBoolean()).isTrue();
+    }
+
+    @Test void resultBelowNewMaxReportsNotTruncated() {
+        EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
+        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(hits(999));
+        var args = mapper.createObjectNode();
+        args.putArray("forms").add("8-K");
+        args.put("limit", 1000);
+        var r = new GetSearchFilingsTool(svc).call(args);
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("filings")).hasSize(999);
+        assertThat(r.output().get("truncated").asBoolean()).isFalse();
+    }
+
+    @Test void schemaDocumentsTheNewMax() {
+        String description = new GetSearchFilingsTool(Mockito.mock(EdgarSearchService.class)).inputSchema()
+                .path("properties").path("limit").path("description").asString();
+        assertThat(description).contains("max 1000");
+    }
+
+    private static List<FilingHit> hits(int n) {
+        List<FilingHit> out = new java.util.ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            out.add(new FilingHit("T" + i, "Co " + i, "8-K", LocalDate.parse("2025-05-02"),
+                    "acc-" + i, "https://www.sec.gov/Archives/edgar/data/1/" + i + ".htm"));
+        }
+        return out;
     }
 }

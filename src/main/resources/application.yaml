@@ -151,6 +151,14 @@ agora:
       user-agent: ${AGORA_DATA_EDGAR_USER_AGENT:}
       efts-base-url: ${AGORA_DATA_EDGAR_EFTS_BASE_URL:https://efts.sec.gov}
       archive-base: ${AGORA_DATA_EDGAR_ARCHIVE_BASE:https://www.sec.gov}
+      # Ceiling on one filing's primary document (get_filing_text). Measured 2026-08-04 over the
+      # 40 most recent DEFM14A primary documents: median 3.53 MB, p90 10.21 MB, max 24.93 MB —
+      # the previous hard-compiled 5 MB rejected 13 of those 40, i.e. exactly the merger proxies
+      # that carry the deal terms. 32 MiB clears the measured maximum with headroom.
+      # Cost of raising it: the document is read into a byte[] and decoded to a String, so the
+      # transient peak is roughly 3x this value PER concurrent get_filing_text call. Only the
+      # <=24k-char extract is cached, so nothing at this size is retained.
+      max-filing-bytes: ${AGORA_DATA_EDGAR_MAX_FILING_BYTES:33554432}
     wikipedia:
       base-url: ${AGORA_DATA_WIKIPEDIA_BASE_URL:https://en.wikipedia.org}
       user-agent: ${AGORA_DATA_WIKIPEDIA_USER_AGENT:agora/1.0 (research)}

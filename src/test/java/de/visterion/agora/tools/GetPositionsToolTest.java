@@ -27,7 +27,7 @@ class GetPositionsToolTest {
     @Test void positionsListedCorrectly() {
         var stub = new StubBroker() {
             public List<Position> positions() {
-                return List.of(new Position("AAPL", "PriceSmart Inc", new BigDecimal("10"),
+                return List.of(new Position("AAPL", "PriceSmart Inc", new BigDecimal("10"), "BUY",
                         new BigDecimal("150.00"), new BigDecimal("151.00"), new BigDecimal("1510.00"),
                         new BigDecimal("100.00"), "USD", "Stock", "2026-07-10", 1));
             }
@@ -46,13 +46,26 @@ class GetPositionsToolTest {
         assertThat(positions.get(0).get("assetType").asString()).isEqualTo("Stock");
         assertThat(positions.get(0).get("valueDate").asString()).isEqualTo("2026-07-10");
         assertThat(positions.get(0).get("openOrdersCount").asInt()).isEqualTo(1);
+        assertThat(positions.get(0).get("side").asString()).isEqualTo("BUY");
         assertThat(Instant.parse(r.output().get("asOf").asString())).isNotNull();
+    }
+
+    @Test void shortPositionEmitsSell() {
+        var stub = new StubBroker() {
+            public List<Position> positions() {
+                return List.of(new Position("AAPL", null, new BigDecimal("-10"), "SELL",
+                        new BigDecimal("150.00"), new BigDecimal("151.00"), new BigDecimal("-1510.00"),
+                        new BigDecimal("-10.00"), "USD", "Stock", null, 0));
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN));
+        assertThat(r.output().get("positions").get(0).get("side").asString()).isEqualTo("SELL");
     }
 
     @Test void nullMarketPriceSerializedAsNull() {
         var stub = new StubBroker() {
             public List<Position> positions() {
-                return List.of(new Position("AAPL", null, BigDecimal.ZERO, new BigDecimal("150.00"),
+                return List.of(new Position("AAPL", null, BigDecimal.ZERO, null, new BigDecimal("150.00"),
                         null, new BigDecimal("0"), BigDecimal.ZERO, "USD", "Stock", null, 0));
             }
         };
@@ -60,6 +73,9 @@ class GetPositionsToolTest {
         var p0 = r.output().get("positions").get(0);
         assertThat(p0.get("marketPrice").isNull()).isTrue();
         assertThat(p0.get("openOrdersCount").asInt()).isEqualTo(0);
+        // an adapter that cannot determine the direction stays honest: key present, value null
+        assertThat(p0.has("side")).isTrue();
+        assertThat(p0.get("side").isNull()).isTrue();
     }
 
     @Test void unavailableOnBrokerException() {

@@ -178,6 +178,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     baseSymbol(n.path("DisplayAndFormat").path("Symbol").asString("")),
                     textOrNull(n.path("DisplayAndFormat"), "Description"),
                     qty,
+                    sideFromAmount(qty),
                     avgOpen,
                     perUnitPrice(marketValue, qty),
                     marketValue,
@@ -1371,6 +1372,27 @@ public class SaxoBrokerProvider implements BrokerProvider {
     static BigDecimal perUnitPrice(BigDecimal marketValue, BigDecimal qty) {
         if (marketValue == null || qty == null || qty.signum() == 0) return null;
         return marketValue.divide(qty, 12, RoundingMode.HALF_UP).stripTrailingZeros();
+    }
+
+    /**
+     * Position direction in the BUY/SELL vocabulary, derived from the SIGN of
+     * {@code NetPositionBase.Amount}.
+     *
+     * <p>Saxo's net position carries no {@code side}/{@code BuySell} field at all — unlike an
+     * order, where direction is explicit. Long/short is encoded purely in the sign of the
+     * amount: positive = long, negative = short. This is the same convention the shipped
+     * {@link #flatten} path already depends on, which closes a position by submitting the
+     * opposite side: {@code opposite = amount.signum() > 0 ? "Sell" : "Buy"} — i.e. a positive
+     * amount is closed by selling (it is a long), a negative one by buying it back (a short).
+     *
+     * <p>{@code amount == 0} is a flat net position and has NO direction. It returns null
+     * rather than defaulting to BUY: a zero position that claims to be long is a guess, and
+     * the consumer cannot tell the guess from a real long. Same reasoning as
+     * {@link #perUnitPrice}, which returns null on a zero quantity instead of dividing.
+     */
+    static String sideFromAmount(BigDecimal amount) {
+        if (amount == null || amount.signum() == 0) return null;
+        return amount.signum() > 0 ? "BUY" : "SELL";
     }
 
     /** Reads a string field, returning null (not "") when absent/null — for optional Position fields. */

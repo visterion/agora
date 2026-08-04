@@ -24,6 +24,8 @@ class EdgarSearchServiceTest {
                 "https://www.sec.gov", 3600L, System::currentTimeMillis);
     }
 
+    // REAL efts wire shape: there is NO `tickers` key — the ticker lives only inside
+    // display_names[0] as the parenthesised group in front of the "(CIK ...)" group.
     @Test void searchParsesHits() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
                 .withQueryParam("forms", equalTo("10-12B"))
@@ -31,28 +33,30 @@ class EdgarSearchServiceTest {
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000050:aapl-1012b.htm","_source":{
                          "ciks":["0000320193"],
-                         "display_names":["Apple Spinco Inc. (CIK 0000320193)"],
-                         "tickers":["SPNC"],"file_date":"2025-05-02","file_type":"10-12B"}}
+                         "display_names":["Apple Spinco Inc.  (SPNC)  (CIK 0000320193)"],
+                         "file_date":"2025-05-02","file_type":"10-12B"}}
                     ]}}
                     """)));
         List<FilingHit> hits = svc().search(List.of("10-12B"), null,
                 LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
         assertThat(hits).hasSize(1);
         FilingHit h = hits.get(0);
-        assertThat(h.company()).isEqualTo("Apple Spinco Inc.");   // " (CIK ...)" stripped
+        // company keeps the ticker segment (unchanged behaviour: only " (CIK ...)" is stripped)
+        assertThat(h.company()).isEqualTo("Apple Spinco Inc.  (SPNC)");
         assertThat(h.ticker()).isEqualTo("SPNC");
         assertThat(h.form()).isEqualTo("10-12B");
         assertThat(h.filedDate()).isEqualTo(LocalDate.parse("2025-05-02"));
         assertThat(h.url()).isEqualTo("https://www.sec.gov/Archives/edgar/data/320193/000032019325000050/aapl-1012b.htm");
     }
 
+    // Many filers have no listed ticker at all — display_names carries only the CIK group.
     @Test void tickerAbsentYieldsCompanyOnly() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
                 .withQueryParam("forms", equalTo("10-12B"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
                       {"_id":"0000320193-25-000050:aapl-1012b.htm","_source":{
-                         "display_names":["Fresh Spinco Inc. (CIK 0000320193)"],
+                         "display_names":["Fresh Spinco Inc.  (CIK 0000320193)"],
                          "file_date":"2025-05-02","file_type":"10-12B"}}
                     ]}}
                     """)));
@@ -64,13 +68,84 @@ class EdgarSearchServiceTest {
         assertThat(h.company()).isEqualTo("Fresh Spinco Inc.");
     }
 
+    // A parenthesised phrase in the company name itself must never be mistaken for a ticker:
+    // it is too long / not ticker-shaped, and the name carries no ticker group.
+    @Test void companyNameWithParenthesesYieldsNoTicker() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("10-12B"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000050:x.htm","_source":{
+                         "display_names":["Acme Capital (Holdings) Limited  (CIK 0000320193)"],
+                         "file_date":"2025-05-02","file_type":"10-12B"}}
+                    ]}}
+                    """)));
+        FilingHit h = svc().search(List.of("10-12B"), null,
+                LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).get(0);
+        assertThat(h.ticker()).isEmpty();
+        assertThat(h.company()).isEqualTo("Acme Capital (Holdings) Limited");
+    }
+
+    // Same, but WITH a real ticker group behind the parenthesised name part — anchoring on the
+    // CIK group must pick the ticker, not the name's parentheses.
+    @Test void companyNameWithParenthesesStillYieldsTicker() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("10-12B"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000050:x.htm","_source":{
+                         "display_names":["Acme Capital (Holdings) Limited  (ACME)  (CIK 0000320193)"],
+                         "file_date":"2025-05-02","file_type":"10-12B"}}
+                    ]}}
+                    """)));
+        FilingHit h = svc().search(List.of("10-12B"), null,
+                LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).get(0);
+        assertThat(h.ticker()).isEqualTo("ACME");
+        assertThat(h.company()).isEqualTo("Acme Capital (Holdings) Limited  (ACME)");
+    }
+
+    // Spacing between the groups is not guaranteed to be exactly two blanks, and a class-share
+    // ticker carries a dot; a lowercase source value is normalised to upper case.
+    @Test void tickerToleratesSpacingAndIsUppercased() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("10-12B"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000050:x.htm","_source":{
+                         "display_names":["Berkshire Test Inc.     (brk.b)   (CIK 0000320193)"],
+                         "file_date":"2025-05-02","file_type":"10-12B"}}
+                    ]}}
+                    """)));
+        FilingHit h = svc().search(List.of("10-12B"), null,
+                LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).get(0);
+        assertThat(h.ticker()).isEqualTo("BRK.B");
+    }
+
+    // Real production shape that motivated the fix (run AF1A35BA365B429FAE3015E199448219).
+    @Test void realArcosaDisplayNameYieldsTicker() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("DEFM14A"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0001739445-26-000123:defm14a.htm","_source":{
+                         "ciks":["0001739445"],"file_num":["001-38494"],
+                         "display_names":["Arcosa, Inc.  (ACA)  (CIK 0001739445)"],
+                         "root_forms":["DEFM14A"],"file_date":"2026-08-03","file_type":"DEFM14A"}}
+                    ]}}
+                    """)));
+        FilingHit h = svc().search(List.of("DEFM14A"), null,
+                LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).get(0);
+        assertThat(h.ticker()).isEqualTo("ACA");
+        assertThat(h.company()).isEqualTo("Arcosa, Inc.  (ACA)");
+    }
+
     @Test void malformedHitSkipped() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
                 .withQueryParam("forms", equalTo("8-K"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
-                      {"_id":"a-1:d1.htm","_source":{"display_names":["Bad Corp"],"tickers":["BAD"],"file_date":"","file_type":"8-K"}},
-                      {"_id":"a-2:d2.htm","_source":{"display_names":["Good Corp"],"tickers":["GOOD"],"file_date":"2025-05-02","file_type":"8-K"}}
+                      {"_id":"a-1:d1.htm","_source":{"display_names":["Bad Corp  (BAD)  (CIK 0000000001)"],"file_date":"","file_type":"8-K"}},
+                      {"_id":"a-2:d2.htm","_source":{"display_names":["Good Corp  (GOOD)  (CIK 0000000002)"],"file_date":"2025-05-02","file_type":"8-K"}}
                     ]}}
                     """)));
         List<FilingHit> hits = svc().search(List.of("8-K"), null,
@@ -93,8 +168,8 @@ class EdgarSearchServiceTest {
     @Test void limitCaps() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).willReturn(okJson("""
             {"hits":{"hits":[
-              {"_id":"a-1:d1.htm","_source":{"display_names":["A"],"tickers":["A"],"file_date":"2025-05-01","file_type":"8-K"}},
-              {"_id":"a-2:d2.htm","_source":{"display_names":["B"],"tickers":["B"],"file_date":"2025-05-02","file_type":"8-K"}}
+              {"_id":"a-1:d1.htm","_source":{"display_names":["Alpha Corp  (A)  (CIK 0000000001)"],"file_date":"2025-05-01","file_type":"8-K"}},
+              {"_id":"a-2:d2.htm","_source":{"display_names":["Beta Corp  (B)  (CIK 0000000002)"],"file_date":"2025-05-02","file_type":"8-K"}}
             ]}}""")));
         assertThat(svc().search(List.of("8-K"), null, LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1)).hasSize(1);
     }
@@ -136,8 +211,8 @@ class EdgarSearchServiceTest {
             int id = startId + i;
             if (i > 0) hits.append(",");
             hits.append("""
-                {"_id":"a-%d:d.htm","_source":{"display_names":["C%d"],"tickers":["C%d"],"file_date":"2025-05-01","file_type":"8-K"}}
-                """.formatted(id, id, id));
+                {"_id":"a-%d:d.htm","_source":{"display_names":["Corp %d  (CIK 0000000001)"],"file_date":"2025-05-01","file_type":"8-K"}}
+                """.formatted(id, id));
         }
         return "{\"hits\":{\"total\":{\"value\":" + total + "},\"hits\":[" + hits + "]}}";
     }
@@ -946,5 +1021,164 @@ class EdgarSearchServiceTest {
                 (EdgarSearchService.Sleeper) ms -> {}, 1024L);
         var ft = svc.filingText(wm.baseUrl() + "/Archives/edgar/data/4/small.htm");
         assertThat(ft.sectionFound()).isTrue();
+    }
+
+    // ---- A4: an oversized filing must be distinguishable from a dead source -------------------
+    // Production symptom this pins: Dracul logged "Agora unreachable for get_filing_text" for six
+    // DEFM14A merger proxies every single run, indistinguishable from a transport outage.
+
+    /**
+     * The Content-Length pre-check path. It cannot be driven through WireMock — Jetty chunks the
+     * response and drops an explicitly stubbed Content-Length — so the response is supplied by a
+     * request factory that really does advertise one. Note this pre-check is NOT the path that
+     * fires against the live SEC archive: a GET of the failing DEFM14A documents comes back
+     * without a Content-Length, so production traffic lands in the bounded-read check below.
+     * The pre-check only saves the download when an upstream does advertise a length.
+     */
+    @Test void filingTextOverSizeCapViaContentLengthReportsTooLargeKindAndToken() {
+        byte[] body = "x".repeat(200).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var response = new org.springframework.mock.http.client.MockClientHttpResponse(
+                body, org.springframework.http.HttpStatus.OK);
+        response.getHeaders().setContentLength(9_000_000L);
+        RestClient advertising = RestClient.builder().requestFactory((uri, method) -> {
+            var req = new org.springframework.mock.http.client.MockClientHttpRequest(method, uri);
+            req.setResponse(response);
+            return req;
+        }).build();
+        var svc = new EdgarSearchService(
+                RestClient.builder().baseUrl(wm.baseUrl()).build(), advertising,
+                wm.baseUrl(), 3600L, System::currentTimeMillis,
+                (EdgarSearchService.Sleeper) ms -> {}, 100L);
+        assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/5/big.htm"))
+                .isInstanceOf(MarketDataException.class)
+                .satisfies(e -> {
+                    var m = (MarketDataException) e;
+                    assertThat(m.kind()).isEqualTo(MarketDataException.Kind.TOO_LARGE);
+                    assertThat(m.getMessage()).startsWith("filing_too_large:");
+                    // the operator must see BOTH numbers and the knob that changes them
+                    assertThat(m.getMessage()).contains("9000000").contains("100")
+                            .contains("agora.data.edgar.max-filing-bytes");
+                });
+    }
+
+    /** The post-read bounded-read path: no Content-Length on the wire (chunked response). */
+    @Test void filingTextOverSizeCapWithoutContentLengthReportsTooLargeKindAndToken() {
+        String body = "x".repeat(200);
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/6/chunked.htm"))
+                .willReturn(aResponse().withHeader("Content-Type", "text/html")
+                        .withBody(body).withChunkedDribbleDelay(4, 10)));
+        var svc = new EdgarSearchService(
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis,
+                (EdgarSearchService.Sleeper) ms -> {}, 100L);
+        assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/6/chunked.htm"))
+                .isInstanceOf(MarketDataException.class)
+                .satisfies(e -> {
+                    var m = (MarketDataException) e;
+                    assertThat(m.kind()).isEqualTo(MarketDataException.Kind.TOO_LARGE);
+                    assertThat(m.getMessage()).startsWith("filing_too_large:");
+                    assertThat(m.getMessage()).contains("agora.data.edgar.max-filing-bytes");
+                });
+    }
+
+    /** A genuine transport failure must NOT wear the too-large token. */
+    @Test void filingTextTransportFailureStaysUnavailableAndUntokened() {
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/7/down.htm"))
+                .willReturn(aResponse().withStatus(503)));
+        var svc = new EdgarSearchService(
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis,
+                (EdgarSearchService.Sleeper) ms -> {}, 1024L);
+        assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/7/down.htm"))
+                .isInstanceOf(MarketDataException.class)
+                .satisfies(e -> {
+                    var m = (MarketDataException) e;
+                    assertThat(m.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE);
+                    assertThat(m.getMessage()).doesNotContain("filing_too_large");
+                });
+    }
+
+    /**
+     * The compiled default must admit a real merger proxy. Measured 2026-08-04 over the 40 most
+     * recent DEFM14A primary documents (EFTS, 2026-02-01..2026-08-01): median 3.53 MB, p90
+     * 10.21 MB, max 24.93 MB, and 13 of 40 above the old 5 MB cap. 32 MiB clears the measured
+     * maximum with headroom.
+     */
+    @Test void defaultFilingSizeCapAdmitsTheMeasuredDefm14aMaximum() {
+        assertThat(EdgarSearchService.DEFAULT_MAX_FILING_BYTES).isEqualTo(32L * 1024 * 1024);
+        assertThat(EdgarSearchService.DEFAULT_MAX_FILING_BYTES).isGreaterThan(24_936_966L);
+    }
+
+    /** The cap must be operator-tunable, not hard-compiled (it was, before A4). */
+    @Test void filingSizeCapIsAConfigProperty() throws Exception {
+        String yaml;
+        try (var in = getClass().getResourceAsStream("/application.yaml")) {
+            yaml = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        assertThat(yaml).contains("max-filing-bytes: ${AGORA_DATA_EDGAR_MAX_FILING_BYTES:33554432}");
+    }
+
+    // ---- A3: the row cap must reach 1000 and truncation must stay exact at that bound ---------
+
+    @Test void searchPaginatesUpToTheNewThousandRowBound() {
+        stubPages(5000, 10, 100);
+        var svc = new EdgarSearchService(
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                "https://www.sec.gov", 3600L, System::currentTimeMillis,
+                (EdgarSearchService.Sleeper) ms -> {}, 1024L);
+        List<FilingHit> hits = svc.search(List.of("4"), null,
+                LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
+        assertThat(hits).hasSize(1000);
+    }
+
+    @Test void form4TruncatedWhenSearchFillsTheThousandRowBound() {
+        stubPages(5000, 10, 100);
+        var svc = new EdgarSearchService(
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                "https://www.sec.gov", 3600L, System::currentTimeMillis,
+                (EdgarSearchService.Sleeper) ms -> {}, 1024L);
+        var r = svc.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
+        assertThat(r.truncated()).isTrue();
+    }
+
+    @Test void form4NotTruncatedJustBelowTheThousandRowBound() {
+        stubPages(999, 9, 100);
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("900"))
+                .willReturn(okJson(page(999, 900, 99))));
+        var svc = new EdgarSearchService(
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                "https://www.sec.gov", 3600L, System::currentTimeMillis,
+                (EdgarSearchService.Sleeper) ms -> {}, 1024L);
+        var r = svc.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
+        assertThat(r.truncated()).isFalse();
+    }
+
+    /** {@code pages} pages of {@code size} hits each, starting at offset 0, reporting {@code total}. */
+    private static void stubPages(int total, int pages, int size) {
+        for (int p = 0; p < pages; p++) {
+            int offset = p * size;
+            wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                    .withQueryParam("from", equalTo(String.valueOf(offset)))
+                    .willReturn(okJson(page(total, offset, size))));
+        }
+    }
+
+    /** An efts page with no {@code ciks} — url stays empty, so no archive GET is made per hit. */
+    private static String page(int total, int offset, int size) {
+        StringBuilder sb = new StringBuilder("{\"hits\":{\"total\":{\"value\":").append(total)
+                .append("},\"hits\":[");
+        for (int i = 0; i < size; i++) {
+            if (i > 0) sb.append(',');
+            int n = offset + i;
+            sb.append("{\"_id\":\"0000000000-25-").append(String.format("%06d", n))
+              .append(":f.xml\",\"_source\":{\"display_names\":[\"Filer ").append(n)
+              .append("  (CIK 0000000001)\"],\"file_date\":\"2025-05-02\",\"file_type\":\"4\"}}");
+        }
+        return sb.append("]}}").toString();
     }
 }

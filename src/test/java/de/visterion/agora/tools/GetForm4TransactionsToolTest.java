@@ -106,7 +106,7 @@ class GetForm4TransactionsToolTest {
         assertThat(description).contains("transactions to return");
     }
 
-    @Test void oversizedLimitIsClampedTo100() {
+    @Test void oversizedLimitIsClampedToMax() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
         when(svc.form4Transactions(any(), any(), anyInt()))
                 .thenReturn(new EdgarSearchService.Form4Result(List.of(), false));
@@ -115,6 +115,23 @@ class GetForm4TransactionsToolTest {
         new GetForm4TransactionsTool(svc).call(args);
         ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
         verify(svc).form4Transactions(any(), any(), captor.capture());
+        assertThat(captor.getValue()).isEqualTo(1000);
+    }
+
+    /** No explicit limit must still reach the service as the documented default, not as the max. */
+    @Test void absentLimitUsesDefault() {
+        EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
+        when(svc.form4Transactions(any(), any(), anyInt()))
+                .thenReturn(new EdgarSearchService.Form4Result(List.of(), false));
+        new GetForm4TransactionsTool(svc).call(mapper.createObjectNode());
+        ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
+        verify(svc).form4Transactions(any(), any(), captor.capture());
         assertThat(captor.getValue()).isEqualTo(100);
+    }
+
+    @Test void schemaDocumentsTheNewMax() {
+        String description = new GetForm4TransactionsTool(Mockito.mock(EdgarSearchService.class)).inputSchema()
+                .path("properties").path("limit").path("description").asString();
+        assertThat(description).contains("max 1000");
     }
 }

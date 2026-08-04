@@ -374,6 +374,7 @@ public class AlpacaBrokerProvider implements BrokerProvider {
                             n.path("symbol").asString(""),
                             null,
                             bd(n.path("qty")),
+                            sideFromAlpaca(n.path("side").asString(null)),
                             bd(n.path("avg_entry_price")),
                             nullableBd(n.path("current_price")),
                             bd(n.path("market_value")),
@@ -721,5 +722,23 @@ public class AlpacaBrokerProvider implements BrokerProvider {
         if (node == null || node.isNull() || node.isMissingNode()) return null;
         try { return new BigDecimal(node.asString()); }
         catch (NumberFormatException e) { return null; }
+    }
+
+    /**
+     * Maps Alpaca's native position {@code side} ({@code "long"} / {@code "short"}) onto the
+     * BUY/SELL vocabulary the write side already speaks. Unlike Saxo, Alpaca states the
+     * direction explicitly, so it is read rather than derived from the quantity sign.
+     *
+     * <p>An absent field or an unrecognised value yields null — never a direction inferred
+     * from the qty sign as a stand-in. If Alpaca ever stops sending the field, the honest
+     * answer is "unknown", and a silent fallback would hide that from the consumer.
+     */
+    static String sideFromAlpaca(String side) {
+        if (side == null) return null;
+        return switch (side.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "long" -> "BUY";
+            case "short" -> "SELL";
+            default -> null;
+        };
     }
 }

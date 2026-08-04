@@ -569,7 +569,7 @@ class AlpacaBrokerProviderTest {
                     [
                       {"symbol":"AAPL","qty":"10","avg_entry_price":"185.50",
                        "market_value":"1900.00","unrealized_pl":"145.00","asset_class":"us_equity",
-                       "current_price":"151.25"}
+                       "current_price":"151.25","side":"long"}
                     ]
                     """)));
 
@@ -577,6 +577,7 @@ class AlpacaBrokerProviderTest {
 
         assertThat(positions).hasSize(1);
         var p = positions.get(0);
+        assertThat(p.side()).isEqualTo("BUY");
         assertThat(p.symbol()).isEqualTo("AAPL");
         assertThat(p.description()).isNull();
         assertThat(p.qty()).isEqualByComparingTo("10");
@@ -604,6 +605,48 @@ class AlpacaBrokerProviderTest {
 
         assertThat(positions).hasSize(1);
         assertThat(positions.get(0).assetType()).isNull();
+    }
+
+    /**
+     * Alpaca reports the direction natively as {@code side: "long" | "short"}, and a short
+     * carries a negative qty. Mapped onto the BUY/SELL vocabulary the write side already
+     * speaks.
+     */
+    @Test
+    void positions_sideShortMapsToSell() {
+        wm.stubFor(get(urlEqualTo("/positions"))
+                .willReturn(okJson("""
+                    [
+                      {"symbol":"AAPL","qty":"-10","avg_entry_price":"185.50",
+                       "market_value":"-1900.00","unrealized_pl":"145.00","side":"short"}
+                    ]
+                    """)));
+
+        var positions = provider.positions();
+
+        assertThat(positions).hasSize(1);
+        assertThat(positions.get(0).side()).isEqualTo("SELL");
+        assertThat(positions.get(0).qty()).isEqualByComparingTo("-10");
+    }
+
+    /** No {@code side} in the payload → null, never a guessed direction. */
+    @Test
+    void positions_sideNullWhenAbsentOrUnknown() {
+        wm.stubFor(get(urlEqualTo("/positions"))
+                .willReturn(okJson("""
+                    [
+                      {"symbol":"AAPL","qty":"10","avg_entry_price":"185.50",
+                       "market_value":"1900.00","unrealized_pl":"145.00"},
+                      {"symbol":"MSFT","qty":"5","avg_entry_price":"300.00",
+                       "market_value":"1500.00","unrealized_pl":"0.00","side":"sideways"}
+                    ]
+                    """)));
+
+        var positions = provider.positions();
+
+        assertThat(positions).hasSize(2);
+        assertThat(positions.get(0).side()).isNull();
+        assertThat(positions.get(1).side()).isNull();
     }
 
     // ---- orders() ----

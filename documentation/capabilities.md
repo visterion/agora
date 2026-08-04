@@ -92,13 +92,47 @@ output contract.
 
 | Tool | Description |
 |---|---|
-| `get_filings` | Recent filings by symbol/CIK, optional form filter |
-| `search_filings` | Full-text search by form type(s) and date window |
+| `get_filings` | Recent filings by symbol/CIK, optional form filter (`limit` default 40, max 100) |
+| `search_filings` | Full-text search by form type(s) and date window (`limit` default 100, max 1000) |
 | `get_filing_text` | Primary document as cleaned text (~24k chars, SSRF-guarded) |
 | `get_company_concept` | Full reported history of one XBRL concept |
 | `get_company_facts` | Several `us-gaap` concepts in one upstream fetch |
-| `get_form4_transactions` | Market-wide non-derivative Form-4 transactions in a date window |
-| `get_form4_owner_history` | Multi-year Form-4 history for one company, grouped per owner |
+| `get_form4_transactions` | Market-wide non-derivative Form-4 transactions in a date window (`limit` default 100, max 1000) |
+| `get_form4_owner_history` | Multi-year Form-4 history for one company, grouped per owner (`limit` default 200, max 500) |
+
+### Row limits on the market-wide EDGAR tools
+
+`search_filings` and `get_form4_transactions` cap at **1000** rows, aligned with
+`get_earnings_window`. The **default stays 100** — a market-wide default of 1000 would make
+every caller pay for a full-market scan — so a caller doing a market-wide sweep must pass
+`limit` explicitly. A cut result always reports `truncated: true`; never read a truncated
+window as complete.
+
+1000 is also the real ceiling of the upstream. SEC's EFTS endpoint returns at most 100 hits
+per page whatever `size` is requested (verified 2026-08-04: `size=200/500/1000` all return
+100), so Agora paginates; its own `HARD_FETCH_CAP` stops at 1000 fetched hits. EFTS itself
+refuses `from + size > 10000` outright. Separately, `get_form4_transactions` fetches one
+archive document per hit under a 110 ms throttle and a 30 s aggregate deadline, so a
+market-wide call in practice parses roughly 270 filings before reporting `truncated: true`
+— raising `limit` does not lift that second bound.
+
+### Filing size cap (`get_filing_text`)
+
+A filing's primary document is read whole into memory, bounded by
+`agora.data.edgar.max-filing-bytes` (`AGORA_DATA_EDGAR_MAX_FILING_BYTES`, default
+**33554432** = 32 MiB). The previous hard-compiled 5 MB rejected 13 of the 40 most recent
+DEFM14A merger proxies (measured 2026-08-04: median 3.53 MB, p90 10.21 MB, max 24.93 MB) —
+i.e. exactly the documents that carry deal terms.
+
+An over-cap document is **not** truncated: the text extractor locates the summary section by
+its *last* heading occurrence (to skip the table of contents), so a byte-truncated document
+would silently yield the TOC instead of the section. It is rejected with a distinct signal
+consumers can key on — kind `TOO_LARGE` and an error string beginning `filing_too_large:`,
+carrying the measured size, the cap and the property name. A genuinely unreachable source
+stays kind `UNAVAILABLE` and never carries that token.
+
+Memory: the read is `byte[]` plus a decoded `String`, so the transient peak is roughly 3x the
+cap **per concurrent** `get_filing_text` call. Only the ≤24k-char extract is cached.
 
 ---
 
