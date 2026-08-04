@@ -159,6 +159,16 @@ agora:
       # transient peak is roughly 3x this value PER concurrent get_filing_text call. Only the
       # <=24k-char extract is cached, so nothing at this size is retained.
       max-filing-bytes: ${AGORA_DATA_EDGAR_MAX_FILING_BYTES:33554432}
+      # How many filing bodies may be in memory at once. The memory ceiling of get_filing_text
+      # has to be a property of this service, not of how many callers happen to exist — a single
+      # consumer that serialises its tool calls is an accident, not a guarantee, and a second
+      # consumer or a second replica removes it silently. Worst case per in-flight fetch at the
+      # 32 MiB cap: byte[] 32 MiB + decoded String 32-64 MiB + extractor intermediates 32-64 MiB
+      # = 96-160 MiB, so 8 in flight peak at ~1.25 GiB. Unbounded it is Tomcat's 200 request
+      # threads, i.e. ~31 GiB. Over the bound a caller waits 30s and is then refused with a
+      # "filing_fetch_busy:" error rather than queued indefinitely. Raise this only together
+      # with a real heap bound (-XX:MaxRAMPercentage) and a container memory limit.
+      max-concurrent-filing-fetches: ${AGORA_DATA_EDGAR_MAX_CONCURRENT_FILING_FETCHES:8}
     wikipedia:
       base-url: ${AGORA_DATA_WIKIPEDIA_BASE_URL:https://en.wikipedia.org}
       user-agent: ${AGORA_DATA_WIKIPEDIA_USER_AGENT:agora/1.0 (research)}

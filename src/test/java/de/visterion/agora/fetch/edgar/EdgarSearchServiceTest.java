@@ -18,10 +18,31 @@ class EdgarSearchServiceTest {
     @AfterAll static void stop() { wm.stop(); }
     @BeforeEach void reset() { wm.resetAll(); }
 
+    /**
+     * The SEC ticker universe the service validates extracted symbols against — synthetic CIKs
+     * and symbols, never an export of the real file. Deliberately one entry per fixture CIK so a
+     * test cannot pass by borrowing another fixture's symbol.
+     */
+    static final java.util.Map<String, List<String>> UNIVERSE = java.util.Map.of(
+            "0000320193", List.of("SPNC"),
+            "0001739445", List.of("ACA"),
+            "0000000042", List.of("ACME"),
+            "0000000043", List.of("BRK-B"),   // SEC spells share classes with '-', callers with '.'
+            "0000000002", List.of("GOOD"),
+            "0000000001", List.of("BAD"));
+
+    static final TickerUniverse TICKERS = cik -> {
+        String key = EdgarCikResolver.normalizeCik(cik);
+        return key == null ? List.of() : UNIVERSE.getOrDefault(key, List.of());
+    };
+
+    /** A universe that knows nothing — models both an unlisted filer and an unreachable SEC file. */
+    static final TickerUniverse NO_TICKERS = cik -> List.of();
+
     private EdgarSearchService svc() {
-        // test ctor: efts RestClient + archive base + ttl + clock
+        // test ctor: efts RestClient + archive base + ttl + clock + ticker universe
         return new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                "https://www.sec.gov", 3600L, System::currentTimeMillis);
+                "https://www.sec.gov", 3600L, System::currentTimeMillis, TICKERS);
     }
 
     // REAL efts wire shape: there is NO `tickers` key — the ticker lives only inside
@@ -93,8 +114,9 @@ class EdgarSearchServiceTest {
                 .withQueryParam("forms", equalTo("10-12B"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
-                      {"_id":"0000320193-25-000050:x.htm","_source":{
-                         "display_names":["Acme Capital (Holdings) Limited  (ACME)  (CIK 0000320193)"],
+                      {"_id":"0000000042-25-000050:x.htm","_source":{
+                         "ciks":["0000000042"],
+                         "display_names":["Acme Capital (Holdings) Limited  (ACME)  (CIK 0000000042)"],
                          "file_date":"2025-05-02","file_type":"10-12B"}}
                     ]}}
                     """)));
@@ -111,8 +133,9 @@ class EdgarSearchServiceTest {
                 .withQueryParam("forms", equalTo("10-12B"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
-                      {"_id":"0000320193-25-000050:x.htm","_source":{
-                         "display_names":["Berkshire Test Inc.     (brk.b)   (CIK 0000320193)"],
+                      {"_id":"0000000043-25-000050:x.htm","_source":{
+                         "ciks":["0000000043"],
+                         "display_names":["Berkshire Test Inc.     (brk.b)   (CIK 0000000043)"],
                          "file_date":"2025-05-02","file_type":"10-12B"}}
                     ]}}
                     """)));
@@ -139,13 +162,170 @@ class EdgarSearchServiceTest {
         assertThat(h.company()).isEqualTo("Arcosa, Inc.  (ACA)");
     }
 
+    // ---- A1: the trailing group is a CANDIDATE, never a ticker on its own authority ----------
+    // EDGAR conformed names themselves end in parentheticals. Measured over SEC's full
+    // cik-lookup-data.txt (1,053,510 names, 2026-08-04): 635 names end in a group that the
+    // shape pattern accepts, and 183 of those collide with a real listed ticker. The group is
+    // only a ticker when the FILER'S OWN CIK is listed under it in company_tickers.json.
+
+    /**
+     * Every display name here is a verbatim live EFTS hit (efts.sec.gov, 2026-08-04). None of
+     * these filers has the printed group as a listed symbol, so each must yield "" — the old
+     * end-anchored heuristic returned the group and thereby routed a quote lookup and a merger
+     * spread at International Paper, Tejon Ranch, Deere, Halliburton and Visa.
+     */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            "Grayscale Story Trust (IP)  (CIK 0002079251)|0002079251",
+            "Bullion Monarch Mining, Inc. (NEW)  (CIK 0001497246)|0001497246",
+            "Tower Research Capital LLC (TRC)  (CIK 0001533421)|0001533421",
+            "Grayscale XRP Trust (XRP)  (CIK 0001732410)|0001732410",
+            "ACUITY INC. (DE)  (CIK 0001144215)|0001144215",
+            "ADAMS CHARLES (HAL)  (CIK 0000000011)|0000000011",
+            "NTL (V)  (CIK 0000000012)|0000000012",
+            "EUROFOIL INC. (USA)  (CIK 0000000013)|0000000013",
+            "MUZINICH & CO. LTD (UK)  (CIK 0000000014)|0000000014",
+            "SYNTHETIC HOLDING AB (PUBL)  (CIK 0000000015)|0000000015",
+            "SYNTHETIC PARTNERS LP (PS)  (CIK 0000000016)|0000000016",
+            "SYNTHETIC CORP (OLD)  (CIK 0000000017)|0000000017",
+    })
+    void trailingGroupOfAnUnlistedFilerIsNeverEmittedAsATicker(String displayName, String cik) {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"a-1:d.htm","_source":{
+                         "ciks":["%s"],"display_names":["%s"],
+                         "file_date":"2026-05-02","file_type":"S-4"}}
+                    ]}}
+                    """.formatted(cik, displayName))));
+        FilingHit h = svc().search(List.of("S-4"), null,
+                LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).get(0);
+        assertThat(h.ticker()).isEmpty();
+        // the hit itself survives — only the invented symbol is gone
+        assertThat(h.company()).isNotEmpty();
+    }
+
+    /** A group that IS a real symbol, but of a DIFFERENT company, is the worst case: it defeats
+     *  the empty-hit guard and sends downstream lookups to the wrong issuer. */
+    @Test void groupThatIsARealSymbolOfAnotherCompanyIsRejected() {
+        // 0000000042 is listed as ACME; the printed group "GOOD" belongs to CIK 0000000002.
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"a-1:d.htm","_source":{
+                         "ciks":["0000000042"],
+                         "display_names":["Acme Spinco Trust  (GOOD)  (CIK 0000000042)"],
+                         "file_date":"2026-05-02","file_type":"S-4"}}
+                    ]}}
+                    """)));
+        FilingHit h = svc().search(List.of("S-4"), null,
+                LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).get(0);
+        assertThat(h.ticker()).isEmpty();
+    }
+
+    /** Lookup failure (SEC file unreachable / cold-start outage) must NOT re-enable guessing. */
+    @Test void unavailableTickerUniverseYieldsNoTickerRatherThanTheRawGroup() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"a-1:d.htm","_source":{
+                         "ciks":["0001739445"],
+                         "display_names":["Arcosa, Inc.  (ACA)  (CIK 0001739445)"],
+                         "file_date":"2026-05-02","file_type":"S-4"}}
+                    ]}}
+                    """)));
+        var s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                "https://www.sec.gov", 3600L, System::currentTimeMillis, NO_TICKERS);
+        FilingHit h = s.search(List.of("S-4"), null,
+                LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).get(0);
+        assertThat(h.ticker()).isEmpty();
+        assertThat(h.company()).isEqualTo("Arcosa, Inc.  (ACA)");
+    }
+
+    /** A hit with no `ciks` at all cannot be validated, so it cannot carry a symbol. */
+    @Test void hitWithoutCiksYieldsNoTicker() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"a-1:d.htm","_source":{
+                         "display_names":["Arcosa, Inc.  (ACA)  (CIK 0001739445)"],
+                         "file_date":"2026-05-02","file_type":"S-4"}}
+                    ]}}
+                    """)));
+        FilingHit h = svc().search(List.of("S-4"), null,
+                LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).get(0);
+        assertThat(h.ticker()).isEmpty();
+    }
+
+    // ---- A2: EFTS prints ALL of a filer's symbols in ONE comma-separated group ---------------
+    // 502 of 3,454 live hits (14.5%) — DEFM14A 25% — carried such a group and yielded "" because
+    // the shape pattern requires a full single-symbol match. Every ADR/dual-listed merger target
+    // and every SPAC unit/warrant filer is in that set.
+
+    /**
+     * Verbatim live EFTS display names. The expected symbol is the primary one, i.e. the first
+     * printed element that the filer's CIK is actually listed under.
+     */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            "WPP plc  (WPP, WPPGF)|WPP,WPPGF|WPP",
+            "Equitable Holdings, Inc.  (EQH, EQH-PA, EQH-PC)|EQH,EQH-PA,EQH-PC|EQH",
+            "Inflection Point Acquisition Corp. III (IPCX, IPCXR, IPCXU)|IPCX,IPCXR,IPCXU|IPCX",
+            "National Storage Affiliates Trust (NSA, NSA-PA, NSA-PB)|NSA,NSA-PA,NSA-PB|NSA",
+            "Unilever PLC  (UL, UNLYF)|UL,UNLYF|UL",
+            "Lloyds Banking Group plc  (LYG, LLDTF, LLOBF)|LYG,LLDTF,LLOBF|LYG",
+            "HSBC Holdings plc  (HSBC, HBCYF)|HSBC,HBCYF|HSBC",
+            "Shell plc  (SHEL, RYDAF)|SHEL,RYDAF|SHEL",
+            "Vodafone Group Public Ltd Co  (VOD, VODPF)|VOD,VODPF|VOD",
+            "IonQ, Inc.  (IONQ, IONQ-WT)|IONQ,IONQ-WT|IONQ",
+            "SoundHound AI, Inc.  (SOUN, SOUNW)|SOUN,SOUNW|SOUN",
+    })
+    void multiTickerGroupYieldsThePrimarySymbol(String name, String listedCsv, String expected) {
+        String cik = "0000000099";
+        var universe = (TickerUniverse) c -> EdgarCikResolver.normalizeCik(c) == null
+                || !EdgarCikResolver.normalizeCik(c).equals(cik)
+                ? List.<String>of() : List.of(listedCsv.split(","));
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"a-1:d.htm","_source":{
+                         "ciks":["%s"],"display_names":["%s  (CIK %s)"],
+                         "file_date":"2026-05-02","file_type":"S-4"}}
+                    ]}}
+                    """.formatted(cik, name, cik))));
+        var s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                "https://www.sec.gov", 3600L, System::currentTimeMillis, universe);
+        FilingHit h = s.search(List.of("S-4"), null,
+                LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).get(0);
+        assertThat(h.ticker()).isEqualTo(expected);
+    }
+
+    /** In a multi-symbol group, an unlisted first element must not shadow a listed later one. */
+    @Test void multiTickerGroupSkipsElementsTheCikIsNotListedUnder() {
+        var universe = (TickerUniverse) c -> List.of("GOOD");
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"a-1:d.htm","_source":{
+                         "ciks":["0000000002"],
+                         "display_names":["Synthetic Corp  (NEW, GOOD)  (CIK 0000000002)"],
+                         "file_date":"2026-05-02","file_type":"S-4"}}
+                    ]}}
+                    """)));
+        var s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                "https://www.sec.gov", 3600L, System::currentTimeMillis, universe);
+        assertThat(s.search(List.of("S-4"), null,
+                LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).get(0).ticker())
+                .isEqualTo("GOOD");
+    }
+
     @Test void malformedHitSkipped() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
                 .withQueryParam("forms", equalTo("8-K"))
                 .willReturn(okJson("""
                     {"hits":{"hits":[
-                      {"_id":"a-1:d1.htm","_source":{"display_names":["Bad Corp  (BAD)  (CIK 0000000001)"],"file_date":"","file_type":"8-K"}},
-                      {"_id":"a-2:d2.htm","_source":{"display_names":["Good Corp  (GOOD)  (CIK 0000000002)"],"file_date":"2025-05-02","file_type":"8-K"}}
+                      {"_id":"a-1:d1.htm","_source":{"ciks":["0000000001"],"display_names":["Bad Corp  (BAD)  (CIK 0000000001)"],"file_date":"","file_type":"8-K"}},
+                      {"_id":"a-2:d2.htm","_source":{"ciks":["0000000002"],"display_names":["Good Corp  (GOOD)  (CIK 0000000002)"],"file_date":"2025-05-02","file_type":"8-K"}}
                     ]}}
                     """)));
         List<FilingHit> hits = svc().search(List.of("8-K"), null,
@@ -254,7 +434,7 @@ class EdgarSearchServiceTest {
                     """)));
         // archive base points at the same WireMock server for the test
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
         Form4Transaction t = tx.get(0);
@@ -300,7 +480,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
         Form4Transaction t = tx.get(0);
@@ -341,7 +521,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
         assertThat(tx.get(0).aff10b5One()).isFalse();
@@ -382,7 +562,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         EdgarSearchService.Form4Result result =
                 s.form4TransactionsByCik("0000320193", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
         assertThat(result.transactions()).hasSize(1);
@@ -448,7 +628,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         EdgarSearchService.Form4Result result =
                 s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 3);
         assertThat(result.transactions()).hasSize(3);
@@ -482,7 +662,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         EdgarSearchService.Form4Result result =
                 s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1);
         assertThat(result.transactions()).hasSize(1);
@@ -512,7 +692,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         EdgarSearchService.Form4Result result =
                 s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
         assertThat(result.transactions()).hasSize(1);
@@ -573,7 +753,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(3);
         // row 1: footnote-only price
@@ -621,7 +801,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         // Filing was filed 2025-05-10 (inside the requested window) but the actual transaction
         // happened 2025-01-15 (well outside it) — must be filtered out.
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100).transactions();
@@ -657,7 +837,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         // Filed 2025-06-05, 5 days after the [from,to]=[..,2025-05-31] window closes — the search
         // window is widened by 10 days, so the filing is still found; its transaction (2025-05-28)
         // is inside [from,to].
@@ -695,7 +875,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100).transactions();
         assertThat(tx).hasSize(1);
         assertThat(tx.get(0).form()).isEqualTo("4/A");
@@ -736,7 +916,7 @@ class EdgarSearchServiceTest {
         EdgarSearchService s = new EdgarSearchService(
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis, recordingSleeper, 5L * 1024 * 1024);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, recordingSleeper, 5L * 1024 * 1024, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(3);
         assertThat(sleeps).hasSize(2); // n-1 gaps between 3 sequential archive GETs
@@ -778,7 +958,7 @@ class EdgarSearchServiceTest {
         EdgarSearchService s = new EdgarSearchService(
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, now, (EdgarSearchService.Sleeper) ms -> {}, 5L * 1024 * 1024);
+                wm.baseUrl(), 3600L, now, (EdgarSearchService.Sleeper) ms -> {}, 5L * 1024 * 1024, TICKERS);
         EdgarSearchService.Form4Result result = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
         assertThat(result.truncated()).isTrue();
         assertThat(result.transactions()).hasSizeLessThan(2);
@@ -835,7 +1015,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
         assertThat(tx.get(0).ticker()).isEqualTo("AAPL");
@@ -873,7 +1053,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
         assertThat(tx.get(0).ticker()).isEqualTo("NPB");
@@ -914,7 +1094,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """.formatted(wm.baseUrl()))));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         // Document still parses (DOCTYPE no longer fatal) but the entity content never resolved —
         // filerName is empty, definitely not "PWNED".
@@ -956,7 +1136,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis);
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
         assertThat(tx.get(0).ticker()).isEqualTo("AAPL");
@@ -969,7 +1149,7 @@ class EdgarSearchServiceTest {
                     "<html><body><p>cover</p><p>SUMMARY TERM SHEET</p>"
                   + "<p>The offer is $52.00 in cash per share.</p></body></html>")));
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis);
+                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
 
         var ft = svc.filingText(wm.baseUrl() + "/Archives/edgar/data/1/x.htm");
 
@@ -981,7 +1161,7 @@ class EdgarSearchServiceTest {
 
     @Test void filingTextRejectsNonArchiveUrl() {
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis);
+                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         assertThatThrownBy(() -> svc.filingText("https://evil.example/secret"))
                 .isInstanceOf(MarketDataException.class);
     }
@@ -990,7 +1170,7 @@ class EdgarSearchServiceTest {
         wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/2/empty.htm"))
                 .willReturn(aResponse().withBody("")));
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis);
+                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/2/empty.htm"))
                 .isInstanceOf(MarketDataException.class);
     }
@@ -1005,7 +1185,7 @@ class EdgarSearchServiceTest {
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis,
-                (EdgarSearchService.Sleeper) ms -> {}, 100L); // 100-byte cap, body is 200 bytes
+                (EdgarSearchService.Sleeper) ms -> {}, 100L, TICKERS); // 100-byte cap, body is 200 bytes
         assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/3/big.htm"))
                 .isInstanceOf(MarketDataException.class);
     }
@@ -1018,7 +1198,7 @@ class EdgarSearchServiceTest {
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis,
-                (EdgarSearchService.Sleeper) ms -> {}, 1024L);
+                (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
         var ft = svc.filingText(wm.baseUrl() + "/Archives/edgar/data/4/small.htm");
         assertThat(ft.sectionFound()).isTrue();
     }
@@ -1048,7 +1228,7 @@ class EdgarSearchServiceTest {
         var svc = new EdgarSearchService(
                 RestClient.builder().baseUrl(wm.baseUrl()).build(), advertising,
                 wm.baseUrl(), 3600L, System::currentTimeMillis,
-                (EdgarSearchService.Sleeper) ms -> {}, 100L);
+                (EdgarSearchService.Sleeper) ms -> {}, 100L, TICKERS);
         assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/5/big.htm"))
                 .isInstanceOf(MarketDataException.class)
                 .satisfies(e -> {
@@ -1071,7 +1251,7 @@ class EdgarSearchServiceTest {
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis,
-                (EdgarSearchService.Sleeper) ms -> {}, 100L);
+                (EdgarSearchService.Sleeper) ms -> {}, 100L, TICKERS);
         assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/6/chunked.htm"))
                 .isInstanceOf(MarketDataException.class)
                 .satisfies(e -> {
@@ -1082,6 +1262,108 @@ class EdgarSearchServiceTest {
                 });
     }
 
+    // ---- C1: the memory ceiling must be a property of the service, not of who calls it -------
+    // A get_filing_text at the 32 MiB cap holds byte[] + decoded String + extractor intermediates
+    // (~100-160 MiB transient). Tomcat is unconfigured, so 200 request threads could run that
+    // concurrently against a heap the JVM sized from the LXC HOST's memory, not the container's.
+    // What keeps production alive today is an accident on the consumer side (Dracul's AgoraClient
+    // serialises tool calls), which a second consumer or a second replica removes silently.
+
+    /** {@code permits} concurrent large-document fetches, {@code queueMs} wait for a permit. */
+    private EdgarSearchService boundedFetcher(int permits, long queueMs) {
+        return new EdgarSearchService(
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis,
+                (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS, permits, queueMs);
+    }
+
+    private static void stubSlowFiling(String path, int delayMs) {
+        wm.stubFor(get(urlPathEqualTo(path)).willReturn(aResponse()
+                .withHeader("Content-Type", "text/html").withFixedDelay(delayMs)
+                .withBody("<p>SUMMARY TERM SHEET</p><p>ok</p>")));
+    }
+
+    @Test void concurrentFilingFetchesBeyondTheBoundAreRefusedRatherThanBuffered() throws Exception {
+        stubSlowFiling("/Archives/edgar/data/8/a.htm", 1500);
+        stubSlowFiling("/Archives/edgar/data/8/b.htm", 1500);
+        var svc = boundedFetcher(1, 50);   // one in flight; a queued caller waits at most 50ms
+
+        var started = new java.util.concurrent.CountDownLatch(1);
+        var holder = new Thread(() -> {
+            started.countDown();
+            try { svc.filingText(wm.baseUrl() + "/Archives/edgar/data/8/a.htm"); } catch (Exception ignored) { }
+        });
+        holder.start();
+        assertThat(started.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        Thread.sleep(300);   // the holder is now inside the fetch, owning the only permit
+
+        assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/8/b.htm"))
+                .isInstanceOf(MarketDataException.class)
+                .satisfies(e -> {
+                    var m = (MarketDataException) e;
+                    assertThat(m.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE);
+                    // a stable machine token, distinct from filing_too_large and from a dead source
+                    assertThat(m.getMessage()).startsWith("filing_fetch_busy:");
+                    assertThat(m.getMessage()).contains("agora.data.edgar.max-concurrent-filing-fetches");
+                });
+        holder.join(10_000);
+    }
+
+    /** The bound must not serialise everything — up to the bound, fetches run concurrently. */
+    @Test void concurrentFilingFetchesUpToTheBoundAllSucceed() throws Exception {
+        stubSlowFiling("/Archives/edgar/data/9/a.htm", 400);
+        stubSlowFiling("/Archives/edgar/data/9/b.htm", 400);
+        var svc = boundedFetcher(2, 50);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var a = pool.submit(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/9/a.htm"));
+            var b = pool.submit(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/9/b.htm"));
+            assertThat(a.get(10, java.util.concurrent.TimeUnit.SECONDS).sectionFound()).isTrue();
+            assertThat(b.get(10, java.util.concurrent.TimeUnit.SECONDS).sectionFound()).isTrue();
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    /** A failed fetch must give its permit back, or the bound degrades into a permanent lockout. */
+    @Test void aFailedFilingFetchReleasesItsPermit() {
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/10/down.htm"))
+                .willReturn(aResponse().withStatus(503)));
+        stubSlowFiling("/Archives/edgar/data/10/ok.htm", 0);
+        var svc = boundedFetcher(1, 50);
+        assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/10/down.htm"))
+                .isInstanceOf(MarketDataException.class);
+        assertThat(svc.filingText(wm.baseUrl() + "/Archives/edgar/data/10/ok.htm").sectionFound()).isTrue();
+    }
+
+    /**
+     * The default bound, with its arithmetic. Worst case per in-flight fetch at the 32 MiB cap:
+     * byte[] 32 MiB + decoded String 32-64 MiB + extractor intermediates 32-64 MiB = 96-160 MiB.
+     * 8 x 160 MiB = 1.25 GiB peak — about 8% of the 15.49 GiB heap the JVM sizes itself to on the
+     * production host, and of the 16 GiB the container shares with its neighbours. Unbounded it
+     * was 200 Tomcat threads x 160 MiB = 31 GiB, i.e. an OOM kill of the whole container at
+     * roughly 110 concurrent calls, with no OutOfMemoryError in the log.
+     */
+    @Test void defaultConcurrentFilingFetchBoundIsEight() {
+        assertThat(EdgarSearchService.DEFAULT_MAX_CONCURRENT_FILING_FETCHES).isEqualTo(8);
+        // 8 x the 32 MiB cap must stay a small fraction of a 16 GiB container
+        assertThat(EdgarSearchService.DEFAULT_MAX_CONCURRENT_FILING_FETCHES
+                * EdgarSearchService.DEFAULT_MAX_FILING_BYTES * 5)
+                .isLessThan(2L * 1024 * 1024 * 1024);
+    }
+
+    /** The bound must be operator-tunable — a hard-compiled ceiling cannot be raised in an
+     *  incident, and a second consumer or replica is exactly when it needs raising. */
+    @Test void concurrentFilingFetchBoundIsAConfigProperty() throws Exception {
+        String yaml;
+        try (var in = getClass().getResourceAsStream("/application.yaml")) {
+            yaml = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        }
+        assertThat(yaml).contains(
+                "max-concurrent-filing-fetches: ${AGORA_DATA_EDGAR_MAX_CONCURRENT_FILING_FETCHES:8}");
+    }
+
     /** A genuine transport failure must NOT wear the too-large token. */
     @Test void filingTextTransportFailureStaysUnavailableAndUntokened() {
         wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/7/down.htm"))
@@ -1090,7 +1372,7 @@ class EdgarSearchServiceTest {
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis,
-                (EdgarSearchService.Sleeper) ms -> {}, 1024L);
+                (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
         assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/7/down.htm"))
                 .isInstanceOf(MarketDataException.class)
                 .satisfies(e -> {
@@ -1128,7 +1410,7 @@ class EdgarSearchServiceTest {
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 "https://www.sec.gov", 3600L, System::currentTimeMillis,
-                (EdgarSearchService.Sleeper) ms -> {}, 1024L);
+                (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
         List<FilingHit> hits = svc.search(List.of("4"), null,
                 LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
         assertThat(hits).hasSize(1000);
@@ -1140,7 +1422,7 @@ class EdgarSearchServiceTest {
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 "https://www.sec.gov", 3600L, System::currentTimeMillis,
-                (EdgarSearchService.Sleeper) ms -> {}, 1024L);
+                (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
         var r = svc.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
         assertThat(r.truncated()).isTrue();
     }
@@ -1153,9 +1435,99 @@ class EdgarSearchServiceTest {
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 "https://www.sec.gov", 3600L, System::currentTimeMillis,
-                (EdgarSearchService.Sleeper) ms -> {}, 1024L);
+                (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
         var r = svc.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
         assertThat(r.truncated()).isFalse();
+    }
+
+    // ---- B1: the HARD_FETCH_CAP stop must be REPORTED, not only logged ------------------------
+    // MAX_LIMIT == HARD_FETCH_CAP == 1000 leaves zero headroom, so `hits.size() >= limit` is the
+    // only truncation signal and it needs exactly 1000 rows. A single hit dropped by parseHit's
+    // null return or by the per-hit catch — anywhere across the 10 pages — yields 999 and the
+    // window is reported COMPLETE while EFTS holds tens of thousands more filings.
+
+    /** A no-op sleeper + frozen clock: isolates the cap flag from the Form-4 throttle/deadline. */
+    private EdgarSearchService cappedProbe() {
+        return new EdgarSearchService(
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                "https://www.sec.gov", 3600L, () -> 0L,
+                (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
+    }
+
+    @Test void searchStoppedByTheHardFetchCapReportsCappedEvenWithADroppedHit() {
+        stubPagesWithOneMalformed(50_000, 10, 100, 5);
+        var r = cappedProbe().searchResult(List.of("8-K"), null,
+                LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
+        assertThat(r.hits()).hasSize(999);   // one hit dropped -> the row count cannot signal it
+        assertThat(r.capped()).isTrue();
+    }
+
+    @Test void form4TruncatedWhenTheHardFetchCapCutTheSearchDespiteADroppedHit() {
+        stubPagesWithOneMalformed(50_000, 10, 100, 5);
+        var r = cappedProbe().form4Transactions(
+                LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
+        assertThat(r.truncated()).isTrue();
+    }
+
+    /** An exhausted window must stay uncapped — the flag must not be permanently on. */
+    @Test void searchThatExhaustsTheWindowIsNotCapped() {
+        stubPages(300, 3, 100);
+        var r = cappedProbe().searchResult(List.of("8-K"), null,
+                LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
+        assertThat(r.hits()).hasSize(300);
+        assertThat(r.capped()).isFalse();
+    }
+
+    /**
+     * EFTS answers a too-deep window with HTTP 200 and an OpenSearch error body, verified live
+     * 2026-08-04 against {@code from=10000}:
+     * {@code {"errorType":"ResponseError","errorMessage":"search_phase_execution_exception: ...
+     * Result window is too large, from + size must be less than or equal to: [10000] ..."}}.
+     * It carries no {@code hits} key, so the paging loop would otherwise read it as an exhausted
+     * window and report the cut as a complete one.
+     */
+    @Test void eftsErrorBodyIsReportedAsCappedNotAsAnExhaustedWindow() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("0"))
+                .willReturn(okJson(page(50_000, 0, 100))));
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("100"))
+                .willReturn(okJson("""
+                    {"errorType":"ResponseError","errorMessage":"search_phase_execution_exception: \
+                    [illegal_argument_exception] Reason: Result window is too large, from + size \
+                    must be less than or equal to: [10000] but was [10100]."}""")));
+        var r = cappedProbe().searchResult(List.of("8-K"), null,
+                LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
+        assertThat(r.hits()).hasSize(100);
+        assertThat(r.capped()).isTrue();
+    }
+
+    /** The cap is the tools' advertised ceiling, so it must be readable from them — the javadoc
+     *  in search_filings / get_form4_transactions claimed a coupling that did not exist in code. */
+    @Test void hardFetchCapIsPubliclyReadable() {
+        assertThat(EdgarSearchService.HARD_FETCH_CAP).isEqualTo(1000);
+    }
+
+    /** Like {@link #stubPages} but the hit at global index {@code malformedAt} carries an empty
+     *  file_date, so parseHit returns null for it and the collected row count falls one short. */
+    private static void stubPagesWithOneMalformed(int total, int pages, int size, int malformedAt) {
+        for (int p = 0; p < pages; p++) {
+            int offset = p * size;
+            StringBuilder sb = new StringBuilder("{\"hits\":{\"total\":{\"value\":").append(total)
+                    .append("},\"hits\":[");
+            for (int i = 0; i < size; i++) {
+                int id = offset + i;
+                if (i > 0) sb.append(",");
+                sb.append("{\"_id\":\"a-").append(id)
+                        .append(":d.htm\",\"_source\":{\"display_names\":[\"Filer ").append(id)
+                        .append("\"],\"file_date\":\"")
+                        .append(id == malformedAt ? "" : "2025-05-01")
+                        .append("\",\"file_type\":\"4\"}}");
+            }
+            sb.append("]}}");
+            wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                    .withQueryParam("from", equalTo(String.valueOf(offset)))
+                    .willReturn(okJson(sb.toString())));
+        }
     }
 
     /** {@code pages} pages of {@code size} hits each, starting at offset 0, reporting {@code total}. */

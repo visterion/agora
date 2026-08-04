@@ -21,9 +21,10 @@ import java.util.List;
 @Component
 public class GetSearchFilingsTool implements AgoraTool {
 
-    /** Aligned with get_earnings_window and get_form4_transactions; also the EFTS-side ceiling
-     *  this service can actually reach (EdgarSearchService.HARD_FETCH_CAP). */
-    private static final int MAX_LIMIT = 1000;
+    /** Aligned with get_earnings_window and get_form4_transactions; and DERIVED from the EFTS-side
+     *  ceiling this service can actually reach, so the two can no longer drift: a larger number
+     *  here would be silently capped by the service. */
+    private static final int MAX_LIMIT = EdgarSearchService.HARD_FETCH_CAP;
     /** Deliberately NOT raised with MAX_LIMIT — see GetForm4TransactionsTool.DEFAULT_LIMIT. */
     private static final int DEFAULT_LIMIT = 100;
     private final EdgarSearchService service;
@@ -84,7 +85,8 @@ public class GetSearchFilingsTool implements AgoraTool {
         limit = Math.clamp(limit, 1, MAX_LIMIT);
 
         try {
-            List<FilingHit> hits = service.search(forms, query, from, to, limit);
+            EdgarSearchService.SearchResult found = service.searchResult(forms, query, from, to, limit);
+            List<FilingHit> hits = found.hits();
             ObjectNode out = mapper.createObjectNode();
             ArrayNode arr = out.putArray("filings");
             for (FilingHit h : hits) {
@@ -96,9 +98,12 @@ public class GetSearchFilingsTool implements AgoraTool {
                 o.put("accession", h.accession());
                 o.put("url", h.url());
             }
-            // low: the service already caps results at `limit`; a full page is the only signal
-            // available here that more results may exist beyond it.
-            out.put("truncated", hits.size() >= limit);
+            // Two independent cuts, either of which makes the window partial: the caller's own
+            // `limit` filled up, or the service stopped paginating early (HARD_FETCH_CAP, EFTS
+            // error body). The row count alone cannot see the second one — MAX_LIMIT equals
+            // HARD_FETCH_CAP, so one hit dropped by the parser yields 999 and would otherwise
+            // report a 50,000-filing window as complete.
+            out.put("truncated", found.capped() || hits.size() >= limit);
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
             return ToolResult.unavailable(e.getMessage());

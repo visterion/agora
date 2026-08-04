@@ -85,6 +85,8 @@ output contract.
 | `data.finnhub.calls-per-minute` | `60` | Shared rate-limit policy across all eight Finnhub callers (news, fundamentals, estimates, profile, quote, earnings, etc.) — one limiter instance, not per-caller |
 | `data.finnhub.max-wait-ms` | `3000` | Bounded wait for a caller that opts to wait out the limiter instead of failing fast (e.g. quotes). Applies to callers with no total call budget; the earnings path overrides it with its budget-derived ceiling (see above) |
 | `data.finnhub.default-retry-after-ms` | `2000` | Fallback wait when a Finnhub 429 carries neither `Retry-After` nor a parseable `x-ratelimit-reset` |
+| `data.edgar.max-filing-bytes` | `33554432` (32 MiB) | Ceiling on one filing's primary document (`get_filing_text`); an over-cap document is rejected, never truncated — see "Filing size cap" below |
+| `data.edgar.max-concurrent-filing-fetches` | `8` | How many filing bodies may be in memory at once. Not independent of `max-filing-bytes`: the two multiply into the service's memory ceiling (~1.25 GiB at the defaults). Over the bound a caller waits 30 s and is then refused with `filing_fetch_busy:` — see "Concurrency bound" below |
 
 ---
 
@@ -100,18 +102,60 @@ output contract.
 | `get_form4_transactions` | Market-wide non-derivative Form-4 transactions in a date window (`limit` default 100, max 1000) |
 | `get_form4_owner_history` | Multi-year Form-4 history for one company, grouped per owner (`limit` default 200, max 500) |
 
+### The `ticker` field on a filing hit
+
+EFTS carries no `tickers` key. The symbol exists only inside `display_names[0]`, as the
+parenthesised group in front of the `(CIK …)` group — `"Arcosa, Inc.  (ACA)  (CIK 0001739445)"`.
+That group is treated as a **candidate**, never as an answer, and is emitted only when the
+filer's own CIK is listed under it in SEC's `company_tickers.json`.
+
+The reason is that EDGAR conformed names themselves end in parentheticals. Measured over SEC's
+full `cik-lookup-data.txt` (1,053,510 names, 2026-08-04): 635 names end in a group that is
+ticker-shaped, and 183 of those collide with a real listed ticker of a *different* company.
+Live examples: `Grayscale Story Trust (IP)`, `ACUITY INC. (DE)`, `MUZINICH & CO. LTD (UK)`,
+`Tower Research Capital LLC (TRC)`. An invented symbol is strictly worse than an absent one —
+it routes a quote lookup and a merger spread at the wrong issuer.
+
+EFTS also prints **all** of a filer's symbols in one comma-separated group —
+`(EQH, EQH-PA, EQH-PC)`, `(WPP, WPPGF)`, `(IPCX, IPCXR, IPCXU)` — so the group is split and the
+first element the CIK is listed under wins (SEC orders that file by market cap descending, so
+that is the primary listing). Measured over a 2,442-hit live EFTS sample (DEFM14A, S-4, 425,
+20-F; 2026-02-01…2026-08-01, 2026-08-04) this raised correct symbols from 1,499 to 2,053 and
+brought wrong ones from 80 to 0.
+
+`ticker` is empty whenever the filer's CIK is not in SEC's ticker file (unlisted filers,
+trusts, individuals — and companies delisted after a merger closed), whenever the printed
+group matches nothing the CIK is listed under, and whenever `company_tickers.json` is
+unavailable. That last case is deliberate: a lookup failure must not degrade back into
+guessing. Consumers must treat an empty `ticker` as "no symbol", never as an error, and must
+not reconstruct one from `company`.
+
 ### Row limits on the market-wide EDGAR tools
 
 `search_filings` and `get_form4_transactions` cap at **1000** rows, aligned with
 `get_earnings_window`. The **default stays 100** — a market-wide default of 1000 would make
 every caller pay for a full-market scan — so a caller doing a market-wide sweep must pass
-`limit` explicitly. A cut result always reports `truncated: true`; never read a truncated
-window as complete.
+`limit` explicitly. A cut result reports `truncated: true`; never read a truncated window as
+complete.
+
+Truncation is reported from **two** signals, not one, because the row count alone is not
+sufficient at this bound. `MAX_LIMIT` equals the service's `HARD_FETCH_CAP`, so there is zero
+headroom: a `limit=1000` answer can only be recognised as cut by its length if it holds
+exactly 1000 rows, and a single hit dropped anywhere across the ten fetched pages (a
+malformed `file_date`, an unparsable hit) yields 999 — which would have been reported as a
+complete window over a window that may hold 50,000 filings. The service therefore also
+returns whether its own pagination stopped early, and the tools OR that in.
 
 1000 is also the real ceiling of the upstream. SEC's EFTS endpoint returns at most 100 hits
 per page whatever `size` is requested (verified 2026-08-04: `size=200/500/1000` all return
-100), so Agora paginates; its own `HARD_FETCH_CAP` stops at 1000 fetched hits. EFTS itself
-refuses `from + size > 10000` outright. Separately, `get_form4_transactions` fetches one
+100), so Agora paginates; its own `HARD_FETCH_CAP` stops at 1000 fetched hits — and that
+constant is now what the two tools derive their maximum from, so the numbers cannot drift.
+EFTS does **not** refuse a too-deep window with an HTTP error: verified live 2026-08-04,
+`from=10000` returns **HTTP 200** with an OpenSearch error body
+(`{"errorType":"ResponseError","errorMessage":"... Result window is too large, from + size
+must be less than or equal to: [10000] ..."}`) and no `hits` key at all. A naive pager reads
+that as an exhausted window; Agora treats a response carrying `errorType` as a cut and marks
+the result truncated. Separately, `get_form4_transactions` fetches one
 archive document per hit under a 110 ms throttle and a 30 s aggregate deadline, so a
 market-wide call in practice parses roughly 270 filings before reporting `truncated: true`
 — raising `limit` does not lift that second bound.
@@ -131,8 +175,31 @@ consumers can key on — kind `TOO_LARGE` and an error string beginning `filing_
 carrying the measured size, the cap and the property name. A genuinely unreachable source
 stays kind `UNAVAILABLE` and never carries that token.
 
-Memory: the read is `byte[]` plus a decoded `String`, so the transient peak is roughly 3x the
-cap **per concurrent** `get_filing_text` call. Only the ≤24k-char extract is cached.
+Memory: the read is `byte[]` plus a decoded `String` plus the extractor's intermediates, so
+the transient peak is roughly 3x the cap (96–160 MiB at 32 MiB) **per in-flight**
+`get_filing_text` call. Only the ≤24k-char extract is cached.
+
+### Concurrency bound on `get_filing_text`
+
+Because that peak is per in-flight call, the number of concurrent calls is what decides the
+service's memory ceiling — and that must be a property of Agora, not of who happens to call
+it. `agora.data.edgar.max-concurrent-filing-fetches`
+(`AGORA_DATA_EDGAR_MAX_CONCURRENT_FILING_FETCHES`, default **8**) bounds it. The arithmetic:
+8 × 160 MiB ≈ 1.25 GiB peak. Unbounded it is Tomcat's default 200 request threads, i.e.
+~31 GiB. A caller over the bound waits up to 30 s for a slot and is then refused with kind
+`UNAVAILABLE` and an error string beginning `filing_fetch_busy:` — a refusal a caller can
+retry, rather than a request thread parked indefinitely. Cache hits never take a slot.
+
+**Operator note (not applied by this codebase).** The bound is sized against a heap the JVM
+picks for itself. In a Docker-in-LXC deployment the JVM reads the *host's* memory, not the
+container's: with no container memory limit, no cgroup limit and no `-Xmx`, `MaxHeapSize`
+comes out at ~15.5 GiB inside a 16 GiB container shared with other services, so an
+allocation spike is an OOM kill of the whole container with no `OutOfMemoryError` in the log.
+The runtime fix belongs in the deployment, not here: give the container a memory limit
+(`--memory` / compose `mem_limit`) and let the JVM size from it
+(`-XX:MaxRAMPercentage=50`, and `-XX:+UseContainerSupport`, which is on by default but is
+defeated by the missing limit). Do both — a percentage of an unlimited container is still
+unlimited.
 
 ---
 

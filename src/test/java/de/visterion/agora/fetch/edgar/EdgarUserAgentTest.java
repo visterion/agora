@@ -71,14 +71,15 @@ class EdgarUserAgentTest {
 
     @Test void edgarSearchServiceConstructorWarnsOnBlankUserAgent() {
         new EdgarSearchService(" ", "https://efts.sec.gov", "https://www.sec.gov", 3600L, 15000L,
-                32L * 1024 * 1024);
+                32L * 1024 * 1024, 8, new EdgarCikResolver("SyntheticApp contact@example.com", 15000L));
 
         assertThat(warnEvents()).hasSize(1);
     }
 
     @Test void edgarSearchServiceConstructorIsQuietOnConfiguredUserAgent() {
         new EdgarSearchService("SyntheticApp contact@example.com", "https://efts.sec.gov",
-                "https://www.sec.gov", 3600L, 15000L, 32L * 1024 * 1024);
+                "https://www.sec.gov", 3600L, 15000L, 32L * 1024 * 1024, 8,
+                new EdgarCikResolver("SyntheticApp contact@example.com", 15000L));
 
         assertThat(warnEvents()).isEmpty();
     }

@@ -20,9 +20,10 @@ import java.util.List;
 @Component
 public class GetForm4TransactionsTool implements AgoraTool {
 
-    /** Aligned with get_earnings_window and search_filings; also the EFTS-side ceiling this
-     *  service can actually reach (EdgarSearchService.HARD_FETCH_CAP). */
-    private static final int MAX_LIMIT = 1000;
+    /** Aligned with get_earnings_window and search_filings; and DERIVED from the EFTS-side ceiling
+     *  this service can actually reach, so the two can no longer drift: a larger number here would
+     *  be silently capped by the service. */
+    private static final int MAX_LIMIT = EdgarSearchService.HARD_FETCH_CAP;
     /** Deliberately NOT raised with MAX_LIMIT: a default of 1000 would make every caller pay a
      *  market-wide scan. Callers that scan the whole market must ask for the maximum explicitly;
      *  a default-sized result that was cut still reports truncated=true. */

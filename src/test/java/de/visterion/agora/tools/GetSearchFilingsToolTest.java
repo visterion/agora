@@ -22,10 +22,12 @@ class GetSearchFilingsToolTest {
 
     @Test void returnsHits() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(List.of(
-                new FilingHit("SPNC", "Apple Spinco Inc.", "10-12B", LocalDate.parse("2025-05-02"),
-                        "0000320193-25-000050",
-                        "https://www.sec.gov/Archives/edgar/data/320193/000032019325000050/aapl-1012b.htm")));
+        when(svc.searchResult(any(), any(), any(), any(), anyInt()))
+                .thenReturn(new EdgarSearchService.SearchResult(List.of(
+                        new FilingHit("SPNC", "Apple Spinco Inc.", "10-12B", LocalDate.parse("2025-05-02"),
+                                "0000320193-25-000050",
+                                "https://www.sec.gov/Archives/edgar/data/320193/000032019325000050/aapl-1012b.htm")),
+                        false));
         var args = mapper.createObjectNode();
         args.putArray("forms").add("10-12B");
         var r = new GetSearchFilingsTool(svc).call(args);
@@ -40,7 +42,8 @@ class GetSearchFilingsToolTest {
 
     @Test void acceptsCsvStringForms() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(svc.searchResult(any(), any(), any(), any(), anyInt()))
+                .thenReturn(new EdgarSearchService.SearchResult(List.of(), false));
         var r = new GetSearchFilingsTool(svc).call(mapper.createObjectNode().put("forms", "8-K,10-K"));
         assertThat(r.available()).isTrue();
     }
@@ -52,7 +55,7 @@ class GetSearchFilingsToolTest {
 
     @Test void serviceExceptionUnavailable() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.search(any(), any(), any(), any(), anyInt()))
+        when(svc.searchResult(any(), any(), any(), any(), anyInt()))
                 .thenThrow(new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR down", null));
         var args = mapper.createObjectNode();
         args.putArray("forms").add("8-K");
@@ -81,9 +84,11 @@ class GetSearchFilingsToolTest {
 
     @Test void fullPageMarksTruncated() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(List.of(
-                new FilingHit("A", "A Inc.", "8-K", LocalDate.parse("2025-05-02"), "acc", "url"),
-                new FilingHit("B", "B Inc.", "8-K", LocalDate.parse("2025-05-02"), "acc2", "url2")));
+        when(svc.searchResult(any(), any(), any(), any(), anyInt()))
+                .thenReturn(new EdgarSearchService.SearchResult(List.of(
+                        new FilingHit("A", "A Inc.", "8-K", LocalDate.parse("2025-05-02"), "acc", "url"),
+                        new FilingHit("B", "B Inc.", "8-K", LocalDate.parse("2025-05-02"), "acc2", "url2")),
+                        false));
         var args = mapper.createObjectNode();
         args.putArray("forms").add("8-K");
         args.put("limit", 2);
@@ -94,25 +99,27 @@ class GetSearchFilingsToolTest {
 
     @Test void oversizedLimitIsClampedToMax() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(svc.searchResult(any(), any(), any(), any(), anyInt()))
+                .thenReturn(new EdgarSearchService.SearchResult(List.of(), false));
         var args = mapper.createObjectNode();
         args.putArray("forms").add("8-K");
         args.put("limit", 100_000);
         new GetSearchFilingsTool(svc).call(args);
         ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
-        verify(svc).search(any(), any(), any(), any(), captor.capture());
+        verify(svc).searchResult(any(), any(), any(), any(), captor.capture());
         assertThat(captor.getValue()).isEqualTo(1000);
     }
 
     /** No explicit limit must still reach the service as the documented default, not as the max. */
     @Test void absentLimitUsesDefault() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(List.of());
+        when(svc.searchResult(any(), any(), any(), any(), anyInt()))
+                .thenReturn(new EdgarSearchService.SearchResult(List.of(), false));
         var args = mapper.createObjectNode();
         args.putArray("forms").add("8-K");
         new GetSearchFilingsTool(svc).call(args);
         ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
-        verify(svc).search(any(), any(), any(), any(), captor.capture());
+        verify(svc).searchResult(any(), any(), any(), any(), captor.capture());
         assertThat(captor.getValue()).isEqualTo(100);
     }
 
@@ -120,7 +127,8 @@ class GetSearchFilingsToolTest {
     // degradation this change removes: a full 1000-row page reported as a complete window.
     @Test void resultCutAtNewMaxReportsTruncated() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(hits(1000));
+        when(svc.searchResult(any(), any(), any(), any(), anyInt()))
+                .thenReturn(new EdgarSearchService.SearchResult(hits(1000), false));
         var args = mapper.createObjectNode();
         args.putArray("forms").add("8-K");
         args.put("limit", 1000);
@@ -132,7 +140,8 @@ class GetSearchFilingsToolTest {
 
     @Test void resultBelowNewMaxReportsNotTruncated() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.search(any(), any(), any(), any(), anyInt())).thenReturn(hits(999));
+        when(svc.searchResult(any(), any(), any(), any(), anyInt()))
+                .thenReturn(new EdgarSearchService.SearchResult(hits(999), false));
         var args = mapper.createObjectNode();
         args.putArray("forms").add("8-K");
         args.put("limit", 1000);
@@ -146,6 +155,31 @@ class GetSearchFilingsToolTest {
         String description = new GetSearchFilingsTool(Mockito.mock(EdgarSearchService.class)).inputSchema()
                 .path("properties").path("limit").path("description").asString();
         assertThat(description).contains("max 1000");
+    }
+
+    // B1: with MAX_LIMIT == HARD_FETCH_CAP there is zero headroom, so `hits.size() >= limit`
+    // needs exactly 1000 rows. One hit dropped anywhere across the ten fetched pages gives 999,
+    // and the answer then claims a 50,000-filing window was complete. The service's own cap flag
+    // is the signal that survives a dropped row.
+    @Test void serviceCapFlagMarksTruncatedEvenWhenTheRowCountFallsShort() {
+        EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
+        when(svc.searchResult(any(), any(), any(), any(), anyInt()))
+                .thenReturn(new EdgarSearchService.SearchResult(hits(999), true));
+        var args = mapper.createObjectNode();
+        args.putArray("forms").add("8-K");
+        args.put("limit", 1000);
+        var r = new GetSearchFilingsTool(svc).call(args);
+        assertThat(r.output().get("filings")).hasSize(999);
+        assertThat(r.output().get("truncated").asBoolean()).isTrue();
+    }
+
+    /** The advertised ceiling must BE the service's cap, not a number that happens to match it:
+     *  the javadoc claimed a coupling to a private constant, so raising MAX_LIMIT to 2000 would
+     *  have compiled and then silently capped at 1000. */
+    @Test void advertisedMaxIsTheServiceHardFetchCap() {
+        String description = new GetSearchFilingsTool(Mockito.mock(EdgarSearchService.class)).inputSchema()
+                .path("properties").path("limit").path("description").asString();
+        assertThat(description).contains("max " + EdgarSearchService.HARD_FETCH_CAP);
     }
 
     private static List<FilingHit> hits(int n) {

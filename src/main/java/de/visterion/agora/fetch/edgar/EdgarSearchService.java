@@ -34,8 +34,15 @@ public class EdgarSearchService {
 
     /** EFTS page size requested per call. */
     private static final int PAGE_SIZE = 100;
-    /** Hard guard on total hits fetched across pages, regardless of requested limit. */
-    private static final int HARD_FETCH_CAP = 1000;
+    /**
+     * Hard guard on total hits fetched across pages, regardless of requested limit.
+     *
+     * <p>Public because it IS the ceiling the market-wide tools advertise: {@code search_filings}
+     * and {@code get_form4_transactions} derive their {@code MAX_LIMIT} from it rather than
+     * repeating the literal. Before that, their javadoc claimed a coupling that did not exist —
+     * raising either MAX_LIMIT to 2000 would have compiled and then silently capped at 1000.
+     */
+    public static final int HARD_FETCH_CAP = 1000;
     /** SEC EDGAR asks for <=10 req/s; ~110ms spacing keeps sequential archive GETs under that. */
     private static final long THROTTLE_MS = 110;
     /** Aggregate deadline for a single form4Transactions() call's sequential archive GETs. */
@@ -55,6 +62,32 @@ public class EdgarSearchService {
      * headroom while still bounding a single request's heap.
      */
     static final long DEFAULT_MAX_FILING_BYTES = 32L * 1024 * 1024;
+
+    /**
+     * Default ceiling on filing fetches in flight at once, overridable via
+     * {@code agora.data.edgar.max-concurrent-filing-fetches}.
+     *
+     * <p>The memory ceiling of {@code get_filing_text} must be a property of THIS service, not of
+     * how many callers happen to exist. Arithmetic, worst case per in-flight fetch at the 32 MiB
+     * cap: the bounded read buffers a {@code byte[]} of up to 32 MiB, decoding it to a String
+     * costs another 32 MiB (Latin-1) to 64 MiB (any non-Latin-1 byte), and
+     * {@link FilingTextExtractor} builds intermediates of roughly the decoded size again — call it
+     * 96-160 MiB. Eight in flight is therefore a ~1.25 GiB peak.
+     *
+     * <p>Why that number: measured on the production container 2026-08-04, the JVM runs with no
+     * {@code -Xmx} and no container memory limit, sizing MaxHeapSize to 15.49 GiB from the LXC
+     * HOST's memory while the container itself has 16 GiB and shares it with its neighbours.
+     * 1.25 GiB is ~8% of either figure. Unbounded, Tomcat's default 200 request threads could put
+     * ~31 GiB in flight — the LXC OOM killer fires at roughly 110 concurrent calls and takes the
+     * whole container down, with no OutOfMemoryError in the log to explain it. Raise this only
+     * together with a real heap bound (see documentation/capabilities.md).
+     */
+    public static final int DEFAULT_MAX_CONCURRENT_FILING_FETCHES = 8;
+
+    /** How long a caller waits for a fetch permit before being told the service is busy. Long
+     *  enough to ride out a normal multi-MB archive GET, short enough that a request thread is
+     *  never parked indefinitely behind a stuck upstream. */
+    static final long DEFAULT_FILING_FETCH_QUEUE_TIMEOUT_MS = 30_000;
 
     @FunctionalInterface
     interface Sleeper { void sleep(long millis) throws InterruptedException; }
@@ -94,7 +127,11 @@ public class EdgarSearchService {
     private final LongSupplier now;
     private final Sleeper sleeper;
     private final long maxFilingBytes;
-    private final TtlCache<String, List<FilingHit>> searchCache;
+    private final TickerUniverse tickerUniverse;
+    private final java.util.concurrent.Semaphore filingFetchPermits;
+    private final int maxConcurrentFilingFetches;
+    private final long filingFetchQueueTimeoutMs;
+    private final TtlCache<String, SearchResult> searchCache;
     private final TtlCache<String, Form4Result> form4Cache;
     private final TtlCache<String, FilingText> filingTextCache;
 
@@ -105,10 +142,13 @@ public class EdgarSearchService {
             @Value("${agora.data.edgar.archive-base:https://www.sec.gov}") String archiveBase,
             @Value("${agora.data.cache.ttl.filings-seconds:3600}") long ttlSeconds,
             @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs,
-            @Value("${agora.data.edgar.max-filing-bytes:33554432}") long maxFilingBytes) {
+            @Value("${agora.data.edgar.max-filing-bytes:33554432}") long maxFilingBytes,
+            @Value("${agora.data.edgar.max-concurrent-filing-fetches:8}") int maxConcurrentFilingFetches,
+            EdgarCikResolver tickerUniverse) {
         this(buildHttp(eftsBase, EdgarUserAgent.checked(userAgent), timeoutMs),
                 buildHttp(archiveBase, userAgent, timeoutMs),
-                archiveBase, ttlSeconds, System::currentTimeMillis, REAL_SLEEPER, maxFilingBytes);
+                archiveBase, ttlSeconds, System::currentTimeMillis, REAL_SLEEPER, maxFilingBytes,
+                tickerUniverse, maxConcurrentFilingFetches, DEFAULT_FILING_FETCH_QUEUE_TIMEOUT_MS);
     }
 
     private static RestClient buildHttp(String baseUrl, String userAgent, long timeoutMs) {
@@ -120,41 +160,83 @@ public class EdgarSearchService {
 
     // Test constructor: pre-built efts RestClient (User-Agent already set) + archive base.
     // Builds a UA-less archive client on archiveBase for the Form-4 XML fetch.
-    EdgarSearchService(RestClient http, String archiveBase, long ttlSeconds, LongSupplier now) {
-        this(http, RestClient.builder().baseUrl(archiveBase).build(), archiveBase, ttlSeconds, now);
+    EdgarSearchService(RestClient http, String archiveBase, long ttlSeconds, LongSupplier now,
+                        TickerUniverse tickerUniverse) {
+        this(http, RestClient.builder().baseUrl(archiveBase).build(), archiveBase, ttlSeconds, now,
+                tickerUniverse);
     }
 
     // Full constructor: explicit efts + archive RestClients, real sleeper + default size cap.
-    EdgarSearchService(RestClient http, RestClient archiveHttp, String archiveBase, long ttlSeconds, LongSupplier now) {
-        this(http, archiveHttp, archiveBase, ttlSeconds, now, REAL_SLEEPER, DEFAULT_MAX_FILING_BYTES);
+    EdgarSearchService(RestClient http, RestClient archiveHttp, String archiveBase, long ttlSeconds, LongSupplier now,
+                        TickerUniverse tickerUniverse) {
+        this(http, archiveHttp, archiveBase, ttlSeconds, now, REAL_SLEEPER, DEFAULT_MAX_FILING_BYTES,
+                tickerUniverse);
     }
 
     // Test constructor: full control over the throttle sleeper and the filing-body size cap, so
     // throttle/deadline/cap tests run fast and deterministic (no real sleeping, no multi-MB bodies).
     EdgarSearchService(RestClient http, RestClient archiveHttp, String archiveBase, long ttlSeconds, LongSupplier now,
-                        Sleeper sleeper, long maxFilingBytes) {
+                        Sleeper sleeper, long maxFilingBytes, TickerUniverse tickerUniverse) {
+        this(http, archiveHttp, archiveBase, ttlSeconds, now, sleeper, maxFilingBytes, tickerUniverse,
+                DEFAULT_MAX_CONCURRENT_FILING_FETCHES, DEFAULT_FILING_FETCH_QUEUE_TIMEOUT_MS);
+    }
+
+    // Test constructor: additionally controls the large-fetch concurrency bound and how long a
+    // queued caller waits for a permit, so the bound can be exercised without 8 parallel threads
+    // and without a 30s wait.
+    EdgarSearchService(RestClient http, RestClient archiveHttp, String archiveBase, long ttlSeconds, LongSupplier now,
+                        Sleeper sleeper, long maxFilingBytes, TickerUniverse tickerUniverse,
+                        int maxConcurrentFilingFetches, long filingFetchQueueTimeoutMs) {
+        this.maxConcurrentFilingFetches = Math.max(1, maxConcurrentFilingFetches);
+        this.filingFetchQueueTimeoutMs = filingFetchQueueTimeoutMs;
+        // Fair, so a queued caller cannot be starved into a spurious "busy" by later arrivals.
+        this.filingFetchPermits = new java.util.concurrent.Semaphore(this.maxConcurrentFilingFetches, true);
         this.http = http;
         this.archiveHttp = archiveHttp;
         this.archiveBase = archiveBase;
         this.now = now;
         this.sleeper = sleeper;
         this.maxFilingBytes = maxFilingBytes;
+        this.tickerUniverse = tickerUniverse;
         this.searchCache = new TtlCache<>(ttlSeconds * 1000L, 512, now);
         this.form4Cache = new TtlCache<>(ttlSeconds * 1000L, 512, now);
         // Filing text bodies run up to ~24KB each — keep this cache small to bound heap.
         this.filingTextCache = new TtlCache<>(ttlSeconds * 1000L, 32, now);
     }
 
+    /**
+     * A filing-search answer plus the one truncation signal the row count cannot carry.
+     *
+     * <p>{@code capped} is true whenever the paging loop stopped for a reason OTHER than the
+     * caller's limit or an exhausted window: the {@link #HARD_FETCH_CAP} guard fired, or EFTS
+     * answered with an error body instead of a page. It matters because the tools' MAX_LIMIT
+     * equals HARD_FETCH_CAP, so "the list is limit-sized" cannot detect the cap once a single
+     * hit has been dropped by {@link #parseHit} or by the per-hit catch: 999 of a 50,000-filing
+     * window would otherwise be reported as a complete one.
+     */
+    public record SearchResult(List<FilingHit> hits, boolean capped) {}
+
     /** Full-text filing search on efts. ticker on a hit may be empty (fresh registrations). */
     public List<FilingHit> search(List<String> forms, String query, LocalDate from, LocalDate to, int limit) {
-        return search(forms, query, null, from, to, limit);
+        return searchResult(forms, query, null, from, to, limit).hits();
     }
 
-    /** Like {@link #search(List, String, LocalDate, LocalDate, int)} but additionally filtered to
-     *  filings involving the given entity CIK (efts {@code ciks} filter; zero-padded 10 digits).
-     *  For ownership forms (3/4/5) the issuer is one of the filing entities, so an issuer CIK
-     *  matches its Form-4 filings. {@code cik} null/blank means no entity filter. */
+    /** @see #search(List, String, LocalDate, LocalDate, int) */
     public List<FilingHit> search(List<String> forms, String query, String cik, LocalDate from, LocalDate to, int limit) {
+        return searchResult(forms, query, cik, from, to, limit).hits();
+    }
+
+    /** Like {@link #search(List, String, LocalDate, LocalDate, int)} but also reporting whether
+     *  the answer was cut by something the row count cannot express — see {@link SearchResult}. */
+    public SearchResult searchResult(List<String> forms, String query, LocalDate from, LocalDate to, int limit) {
+        return searchResult(forms, query, null, from, to, limit);
+    }
+
+    /** Like {@link #searchResult(List, String, LocalDate, LocalDate, int)} but additionally
+     *  filtered to filings involving the given entity CIK (efts {@code ciks} filter; zero-padded
+     *  10 digits). For ownership forms (3/4/5) the issuer is one of the filing entities, so an
+     *  issuer CIK matches its Form-4 filings. {@code cik} null/blank means no entity filter. */
+    public SearchResult searchResult(List<String> forms, String query, String cik, LocalDate from, LocalDate to, int limit) {
         String formsCsv = String.join(",", forms);
         String key = cacheKey("search", formsCsv, query, cik, str(from), str(to), String.valueOf(limit));
         return searchCache.get(key, () -> fetchSearch(formsCsv, query, cik, from, to, limit));
@@ -174,7 +256,7 @@ public class EdgarSearchService {
 
     private static String str(Object o) { return o == null ? "" : o.toString(); }
 
-    private List<FilingHit> fetchSearch(String formsCsv, String query, String cik, LocalDate from, LocalDate to, int limit) {
+    private SearchResult fetchSearch(String formsCsv, String query, String cik, LocalDate from, LocalDate to, int limit) {
         List<FilingHit> out = new ArrayList<>();
         int offset = 0;
         boolean capped = false;
@@ -183,7 +265,18 @@ public class EdgarSearchService {
             JsonNode search = fetchPage(formsCsv, query, cik, from, to, offset);
             JsonNode hitsNode = search == null ? null : search.path("hits");
             JsonNode hits = hitsNode == null ? null : hitsNode.path("hits");
-            if (hits == null || !hits.isArray() || hits.isEmpty()) break;
+            if (hits == null || !hits.isArray() || hits.isEmpty()) {
+                // EFTS reports a refused window with HTTP 200 and an OpenSearch error body — no
+                // `hits` key at all (verified live 2026-08-04 at from=10000: "Result window is
+                // too large ..."). That is NOT an exhausted window, so it must not be reported
+                // as a complete one.
+                if (search != null && search.has("errorType")) {
+                    capped = true;
+                    log.debug("EFTS search returned an error body instead of a page (forms={}, query={}, from={}): {}",
+                            formsCsv, query, offset, search.path("errorMessage").asString(""));
+                }
+                break;
+            }
             int pageCount = hits.size();
             for (JsonNode hit : hits) {
                 if (out.size() >= limit) break;
@@ -204,7 +297,7 @@ public class EdgarSearchService {
         if (capped) {
             log.debug("EFTS search capped at {} fetched hits (forms={}, query={})", HARD_FETCH_CAP, formsCsv, query);
         }
-        return out;
+        return new SearchResult(List.copyOf(out), capped);
     }
 
     private JsonNode fetchPage(String formsCsv, String query, String cik, LocalDate from, LocalDate to, int offset) {
@@ -245,8 +338,9 @@ public class EdgarSearchService {
         // The efts `_source` has NO `tickers` key (verified against live EFTS). The ticker exists
         // only inside display_names[0], as the parenthesised group in front of the "(CIK ...)"
         // group: "Arcosa, Inc.  (ACA)  (CIK 0001739445)". `company` above already dropped the CIK
-        // group, so the ticker group — when present — is now its trailing "(...)".
-        String ticker = extractTicker(company);
+        // group, so the ticker group — when present — is now its trailing "(...)". That group is
+        // a CANDIDATE only; it is validated against the filer's own CIK below.
+        String ticker = extractTicker(company, firstCik(src));
 
         LocalDate filedDate;
         try {
@@ -283,30 +377,62 @@ public class EdgarSearchService {
 
     /**
      * A US exchange ticker: 1-5 alphanumerics, optionally followed by a '.'/'-' separated share
-     * class suffix of 1-2 characters (BRK.B, RDS-A). The bound is deliberately tight because this
-     * segment is only heuristically a ticker — a display name may end in a parenthesised phrase of
-     * its own ("Acme Capital (Holdings) Limited"), and anything longer than a class-suffixed US
-     * symbol is far more likely to be such a phrase than a real symbol.
+     * class suffix of 1-2 characters (BRK.B, RDS-A). A cheap shape pre-filter only — the symbol
+     * is decided by the CIK check in {@link #extractTicker}, never by this pattern.
      */
     private static final Pattern TICKER = Pattern.compile("[A-Za-z0-9]{1,5}([.-][A-Za-z0-9]{1,2})?");
 
+    /** First entry of {@code _source.ciks}, i.e. the CIK display_names[0] belongs to. */
+    private static String firstCik(JsonNode src) {
+        JsonNode ciks = src.path("ciks");
+        return ciks.isArray() && !ciks.isEmpty() ? ciks.get(0).asString("") : "";
+    }
+
     /**
      * Extracts the ticker from an efts display name whose " (CIK ...)" group has already been
-     * stripped, i.e. from {@code "Arcosa, Inc.  (ACA)"} -> {@code "ACA"}.
+     * stripped, i.e. from {@code "Arcosa, Inc.  (ACA)"} -> {@code "ACA"}, and from a multi-symbol
+     * filer's {@code "WPP plc  (WPP, WPPGF)"} -> {@code "WPP"}.
      *
-     * <p>Anchoring is on the END of the string (which is the position immediately before the CIK
-     * group in the raw display name) so that parentheses inside the company name itself are never
-     * mistaken for a ticker. A filer without a listed ticker has no trailing group at all and
-     * yields {@code ""}; a trailing group that is not ticker-shaped also yields {@code ""}.
+     * <p><b>The trailing group is a candidate, not an answer.</b> Anchoring on the end of the name
+     * is NOT sufficient, because EDGAR conformed names themselves end in parentheticals: measured
+     * over SEC's full {@code cik-lookup-data.txt} (1,053,510 names, 2026-08-04), 635 names end in
+     * a group this pattern accepts and 183 of those collide with a real listed ticker. Live EFTS
+     * examples: {@code "Grayscale Story Trust (IP)"}, {@code "ACUITY INC. (DE)"},
+     * {@code "MUZINICH & CO. LTD (UK)"}, {@code "Tower Research Capital LLC (TRC)"}. Emitting
+     * those is strictly worse than emitting nothing — an invented symbol routes a quote lookup and
+     * a merger spread to a different company AND slips past the empty-hit guard below.
+     *
+     * <p>So a candidate is only returned when the FILER'S OWN CIK is listed under it in SEC's
+     * {@code company_tickers.json} ({@link TickerUniverse}). EFTS prints all of a filer's symbols
+     * in one comma-separated group ({@code "(EQH, EQH-PA, EQH-PC)"}) — 14.5% of a 3,454-hit live
+     * sample, and 25% of DEFM14A merger targets — so the group is split and the FIRST element the
+     * CIK is listed under wins; SEC orders that file by market cap descending and EFTS prints the
+     * primary symbol first, so this is the primary listing, not an arbitrary class.
+     *
+     * <p>The returned spelling is the one EFTS printed (upper-cased): SEC writes share classes
+     * with '-' and callers commonly with '.', so both spellings are accepted for the match while
+     * the caller keeps seeing the symbol as it appeared in the filing index.
+     *
+     * <p>An unknown CIK, a hit with no {@code ciks} at all, and an UNAVAILABLE ticker universe all
+     * yield {@code ""}. That last case is deliberate: a lookup failure must not silently degrade
+     * back into guessing — an absent symbol is recoverable, a wrong one is not.
      */
-    private static String extractTicker(String companyWithTicker) {
+    private String extractTicker(String companyWithTicker, String cik) {
         String s = companyWithTicker.strip();
         if (!s.endsWith(")")) return "";
         int open = s.lastIndexOf('(');
         if (open < 0) return "";
-        String candidate = s.substring(open + 1, s.length() - 1).strip();
-        if (!TICKER.matcher(candidate).matches()) return "";
-        return candidate.toUpperCase();
+        List<String> listed = tickerUniverse.tickersForCik(cik);
+        if (listed.isEmpty()) return "";
+        for (String part : s.substring(open + 1, s.length() - 1).split(",")) {
+            String candidate = part.strip().toUpperCase();
+            if (candidate.isEmpty() || !TICKER.matcher(candidate).matches()) continue;
+            if (listed.contains(candidate)
+                    || listed.contains(EdgarCikResolver.swapShareClassSeparator(candidate))) {
+                return candidate;
+            }
+        }
+        return "";
     }
 
     /**
@@ -357,11 +483,14 @@ public class EdgarSearchService {
     private Form4Result fetchForm4(String cik, LocalDate from, LocalDate to, int limit) {
         LocalDate searchFrom = from == null ? null : from.minusDays(FORM4_WINDOW_PAD_DAYS);
         LocalDate searchTo = to == null ? null : to.plusDays(FORM4_WINDOW_PAD_DAYS);
-        List<FilingHit> hits = search(List.of("4", "4/A"), null, cik, searchFrom, searchTo, limit);
+        SearchResult found = searchResult(List.of("4", "4/A"), null, cik, searchFrom, searchTo, limit);
+        List<FilingHit> hits = found.hits();
         List<Form4Transaction> out = new ArrayList<>();
-        // A full limit-sized hit list means the search itself was cut (more filings may exist,
-        // including a silent HARD_FETCH_CAP stop) — never report such a window as complete.
-        boolean truncated = hits.size() >= limit;
+        // A full limit-sized hit list means the search itself was cut (more filings may exist).
+        // The row count alone is not enough: with limit == HARD_FETCH_CAP a single hit dropped by
+        // parseHit leaves 999 rows on a 50,000-filing window, so the search's own cap flag is
+        // OR-ed in rather than relying on the 30s aggregate deadline to notice.
+        boolean truncated = found.capped() || hits.size() >= limit;
         long deadline = now.getAsLong() + FORM4_DEADLINE_MS;
         boolean first = true;
         for (FilingHit hit : hits) {
@@ -416,7 +545,43 @@ public class EdgarSearchService {
         if (url == null || !url.startsWith(archiveBase + "/Archives/")) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "not an SEC archive url: " + url, null);
         }
-        return filingTextCache.get(cacheKey("text", url), () -> fetchFilingText(url));
+        return filingTextCache.get(cacheKey("text", url), () -> fetchFilingTextBounded(url));
+    }
+
+    /**
+     * Bounds how many filing bodies are in memory at once (see
+     * {@link #DEFAULT_MAX_CONCURRENT_FILING_FETCHES} for the arithmetic behind the number).
+     *
+     * <p>The permit covers the whole read-decode-extract span, i.e. exactly the window in which a
+     * fetch holds its multi-MB buffers, and is released in a {@code finally} so a failing fetch
+     * cannot leak it. Cache hits never take a permit — {@link TtlCache#get} only invokes the
+     * loader on a miss — so a warm document costs nothing.
+     *
+     * <p>Over the bound the call is REFUSED after a bounded wait rather than queued forever: a
+     * parked request thread is itself a resource, and a caller that is told "busy" can retry,
+     * while one that is silently OOM-killed cannot.
+     */
+    private FilingText fetchFilingTextBounded(String url) {
+        boolean acquired;
+        try {
+            acquired = filingFetchPermits.tryAcquire(filingFetchQueueTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    "filing fetch interrupted while queued: " + url, ie);
+        }
+        if (!acquired) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    "filing_fetch_busy: " + maxConcurrentFilingFetches + " filing fetches already in flight, "
+                            + "waited " + filingFetchQueueTimeoutMs + "ms for a slot "
+                            + "(raise agora.data.edgar.max-concurrent-filing-fetches, but only together "
+                            + "with a real heap bound): " + url, null);
+        }
+        try {
+            return fetchFilingText(url);
+        } finally {
+            filingFetchPermits.release();
+        }
     }
 
     private FilingText fetchFilingText(String url) {
