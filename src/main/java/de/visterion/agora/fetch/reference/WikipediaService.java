@@ -41,6 +41,13 @@ public class WikipediaService {
     // failed to fully remove some markup (an unanticipated wikitext variant) and the value must
     // not be trusted downstream.
     private static final Pattern BAD_SYMBOL_CHARS = Pattern.compile("[\\s<>]");
+    // Skip-ratio guard for parse(), see the throw below: the real S&P 500 table runs ~500 rows,
+    // so an isolated markup surprise (BRK.B/BF.B today) is a fraction of a percent and stays a
+    // per-row log.warn with the rest of the index intact. A genuine structural break (column
+    // mapping shifted, table format changed) tends to take out most or all rows instead, so 10%
+    // is generous enough to absorb several isolated bad rows without false-triggering, yet tight
+    // enough to catch a real break before a short list is cached as "the complete index".
+    private static final double MAX_SKIP_RATIO = 0.10;
 
     private final RestClient http;
     private final String pageTitle;
@@ -110,7 +117,8 @@ public class WikipediaService {
         }
         // An empty parse result means the page structure changed (missing anchor/table/columns)
         // rather than a genuine "zero constituents" answer — throw so the failure is never
-        // cached as a successful-but-empty index.
+        // cached as a successful-but-empty index. The partial-loss counterpart of this guard
+        // (some, not all, rows unparseable) lives inside parse() itself — see MAX_SKIP_RATIO.
         if (result.isEmpty())
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "wikipedia: no constituents parsed", null);
         return result;
@@ -154,24 +162,37 @@ public class WikipediaService {
         if (dateIdx < 0) return List.of();
 
         List<Constituent> out = new ArrayList<>();
+        int skipped = 0;
         for (int i = headerRow + 1; i < rows.length; i++) {
             List<String> c = cells(rows[i], '|');
-            if (dateIdx >= c.size() || symIdx >= c.size()) continue;
+            if (dateIdx >= c.size() || symIdx >= c.size()) { skipped++; continue; }
             LocalDate d = parseDate(c.get(dateIdx));
-            if (d == null) continue;
+            if (d == null) { skipped++; continue; }
             String sym = stripWiki(c.get(symIdx));
-            if (sym.isEmpty()) continue;
+            if (sym.isEmpty()) { skipped++; continue; }
             // Defensive gate: the wikitext is an editable third-party source, and a markup
             // variant stripWiki doesn't yet handle must degrade to "skip this one row", never to
             // a poisoned symbol (leftover markup/whitespace) travelling into provider URLs and
             // agent tool output.
             if (BAD_SYMBOL_CHARS.matcher(sym).find()) {
                 log.warn("Wikipedia S&P 500: skipping row with unparseable symbol cell: {}", truncate(sym, 60));
+                skipped++;
                 continue;
             }
             String com = comIdx < c.size() ? stripWiki(c.get(comIdx)) : "";
             String sector = (sectorIdx >= 0 && sectorIdx < c.size()) ? stripWiki(c.get(sectorIdx)) : null;
             out.add(new Constituent(sym, com, sector, d));
+        }
+        // Extends the empty-result guard in fetchSp500 (100% loss) to partial loss: a handful of
+        // skipped rows is normal wikitext noise and stays a per-row log.warn above with the rest
+        // of the index returned, but exceeding MAX_SKIP_RATIO means parsing itself is broken, not
+        // one bad row — throwing here (caught by fetchSp500's existing try/catch around parse())
+        // makes it surface as the same MarketDataException(UNAVAILABLE) as any other parse
+        // failure, instead of being cached as a successful-but-short index.
+        int totalRows = out.size() + skipped;
+        if (totalRows > 0 && (double) skipped / totalRows > MAX_SKIP_RATIO) {
+            throw new IllegalStateException("wikipedia: " + skipped + "/" + totalRows
+                    + " constituent rows unparseable, exceeds " + (int) (MAX_SKIP_RATIO * 100) + "% threshold");
         }
         return out;
     }

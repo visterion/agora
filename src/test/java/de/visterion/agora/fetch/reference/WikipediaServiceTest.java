@@ -92,15 +92,63 @@ class WikipediaServiceTest {
 
     @Test void skipsRowWhoseSymbolStillContainsWhitespaceAfterStripping() {
         // A markup variant stripWiki doesn't handle must degrade to "one missing constituent",
-        // never to a poisoned multi-word symbol travelling downstream.
-        String wikitext = "{| class=\"wikitable sortable\" id=\"constituents\"\n! Symbol !! Security !! GICS Sector !! Date added\n" +
-                "|-\n| FOO BAR || Foo Bar Inc. || Industrials || 2020-01-01\n" +
-                "|-\n| MSFT || Microsoft || Information Technology || 1994-06-01\n|}";
+        // never to a poisoned multi-word symbol travelling downstream. Padded with enough good
+        // rows to stay well under MAX_SKIP_RATIO — this test is about the per-row skip, not the
+        // aggregate-ratio guard (covered separately below).
+        StringBuilder wikitext = new StringBuilder(
+                "{| class=\"wikitable sortable\" id=\"constituents\"\n! Symbol !! Security !! GICS Sector !! Date added\n");
+        wikitext.append("|-\n| FOO BAR || Foo Bar Inc. || Industrials || 2020-01-01\n");
+        for (int i = 0; i < 9; i++) {
+            wikitext.append("|-\n| SYM").append(i).append(" || Company ").append(i)
+                    .append(" || Industrials || 2020-01-0").append(i + 1).append("\n");
+        }
+        wikitext.append("|}");
         wm.stubFor(get(urlPathEqualTo("/w/api.php"))
-                .willReturn(okJson("{\"parse\":{\"wikitext\":" + toJsonString(wikitext) + "}}")));
+                .willReturn(okJson("{\"parse\":{\"wikitext\":" + toJsonString(wikitext.toString()) + "}}")));
         List<Constituent> c = svc().constituents("sp500");
-        assertThat(c).hasSize(1);
-        assertThat(c.get(0).symbol()).isEqualTo("MSFT");
+        assertThat(c).hasSize(9);
+        assertThat(c).extracting(Constituent::symbol).doesNotContain("FOO");
+    }
+
+    @Test void aFewBadRowsAreSkippedWithGoodOnesStillReturned() {
+        // 18 good rows + 2 bad ("FOO BAR"-style) rows: a 2/20 = 10% skip ratio does not exceed
+        // MAX_SKIP_RATIO (only ratios strictly greater than 10% throw), so this is exactly the
+        // "wikitext noise" case: each bad row logs a warn and the rest of the index still comes
+        // back complete.
+        StringBuilder wikitext = new StringBuilder(
+                "{| class=\"wikitable sortable\" id=\"constituents\"\n! Symbol !! Security !! GICS Sector !! Date added\n");
+        for (int i = 0; i < 18; i++) {
+            wikitext.append("|-\n| SYM").append(i).append(" || Company ").append(i)
+                    .append(" || Industrials || 2020-01-0").append((i % 9) + 1).append("\n");
+        }
+        wikitext.append("|-\n| FOO BAR || Foo Bar Inc. || Industrials || 2020-02-01\n");
+        wikitext.append("|-\n| BAZ QUX || Baz Qux Inc. || Industrials || 2020-02-02\n");
+        wikitext.append("|}");
+        wm.stubFor(get(urlPathEqualTo("/w/api.php"))
+                .willReturn(okJson("{\"parse\":{\"wikitext\":" + toJsonString(wikitext.toString()) + "}}")));
+        List<Constituent> c = svc().constituents("sp500");
+        assertThat(c).hasSize(18);
+        assertThat(c).extracting(Constituent::symbol).doesNotContain("FOO", "BAZ");
+    }
+
+    @Test void mostRowsBadThrowsInsteadOfCachingAShortIndex() {
+        // 2 good rows + 8 bad rows: an 80% skip ratio is a structural break (wrong column
+        // mapping, table format change), not "wikitext noise" — must throw rather than return
+        // and cache a short list that every consumer would trust as the complete index.
+        StringBuilder wikitext = new StringBuilder(
+                "{| class=\"wikitable sortable\" id=\"constituents\"\n! Symbol !! Security !! GICS Sector !! Date added\n");
+        wikitext.append("|-\n| AAPL || Apple Inc. || Information Technology || 1982-11-30\n");
+        wikitext.append("|-\n| MSFT || Microsoft || Information Technology || 1994-06-01\n");
+        for (int i = 0; i < 8; i++) {
+            wikitext.append("|-\n| BAD ").append(i).append(" || Bad Inc. ").append(i)
+                    .append(" || Industrials || 2020-03-0").append((i % 9) + 1).append("\n");
+        }
+        wikitext.append("|}");
+        wm.stubFor(get(urlPathEqualTo("/w/api.php"))
+                .willReturn(okJson("{\"parse\":{\"wikitext\":" + toJsonString(wikitext.toString()) + "}}")));
+        assertThatThrownBy(() -> svc().constituents("sp500"))
+                .isInstanceOfSatisfying(MarketDataException.class,
+                        e -> assertThat(e.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE));
     }
 
     @Test void unknownIndexThrowsUnavailable() {
