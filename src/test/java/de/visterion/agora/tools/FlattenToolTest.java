@@ -137,6 +137,67 @@ class FlattenToolTest {
         assertThat(r.output().get("rejectReason").asString()).contains("position");
     }
 
+    @Test void serialisesRestoredLegsOnTheAcceptedBranch() {
+        var stub = new StubBroker() {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
+                return OrderResult.acceptedWithLegs("oid-flat", null, "accepted",
+                        new BigDecimal("3"), new BigDecimal("7"), new BigDecimal("101.50"),
+                        List.of(new RestoredLeg("5039413297", "5039413298", new BigDecimal("12"), new BigDecimal("45.49"))),
+                        false);
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol", "AAPL"));
+        assertThat(r.available()).isTrue();
+        var legs = r.output().get("protective_legs");
+        assertThat(legs.isArray()).isTrue();
+        assertThat(legs).hasSize(1);
+        var leg = legs.get(0);
+        assertThat(leg.get("replaces").asString()).isEqualTo("5039413297");
+        assertThat(leg.get("order_id").asString()).isEqualTo("5039413298");
+        assertThat(leg.get("qty").decimalValue()).isEqualByComparingTo("12");
+        assertThat(leg.get("price").decimalValue()).isEqualByComparingTo("45.49");
+        assertThat(r.output().get("legs_collapsed").booleanValue()).isFalse();
+    }
+
+    @Test void serialisesRestoredLegsOnTheRejectedBranch() {
+        var stub = new StubBroker() {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
+                return OrderResult.rejectedWithLegs("could not restore the protective legs", "LEG_RESTORE_FAILED",
+                        List.of(new RestoredLeg("5039413297", "5039413299", new BigDecimal("15"), new BigDecimal("45.49"))),
+                        false);
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol", "AAPL"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("accepted").asBoolean()).isFalse();
+        assertThat(r.output().get("rejectCode").asString()).isEqualTo("LEG_RESTORE_FAILED");
+        var legs = r.output().get("protective_legs");
+        assertThat(legs.isArray()).isTrue();
+        assertThat(legs).hasSize(1);
+        assertThat(legs.get(0).get("order_id").asString()).isEqualTo("5039413299");
+    }
+
+    @Test void omitsProtectiveLegsWhenThereAreNone() {
+        var r = tool(accepting()).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol", "AAPL"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().has("protective_legs")).isFalse();
+        assertThat(r.output().has("legs_collapsed")).isFalse();
+    }
+
+    @Test void reportsCollapse() {
+        var stub = new StubBroker() {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
+                return OrderResult.acceptedWithLegs("oid-flat", null, "accepted",
+                        new BigDecimal("9"), new BigDecimal("1"), null,
+                        List.of(new RestoredLeg("5039413297", "5039413298", new BigDecimal("1"), new BigDecimal("45.49"))),
+                        true);
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol", "AAPL"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("legs_collapsed").booleanValue()).isTrue();
+    }
+
     @Test void unavailableOnBrokerException() {
         var stub = new StubBroker() {
             public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {

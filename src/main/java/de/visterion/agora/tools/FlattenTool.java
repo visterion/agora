@@ -28,7 +28,9 @@ public class FlattenTool implements AgoraTool {
     @Override
     public String description() {
         return "Close (flatten) a position for a given symbol via market order on the named connection. "
-                + "By default closes the entire position; pass fraction or qty for a partial close.";
+                + "By default closes the entire position; pass fraction or qty for a partial close. "
+                + "A partial close restores the protective orders sized to the remainder and returns "
+                + "their new ids under protective_legs, keyed by the id each replaces.";
     }
 
     @Override
@@ -83,6 +85,17 @@ public class FlattenTool implements AgoraTool {
             } else {
                 out.put("rejectReason", r.rejectReason());
                 out.put("rejectCode", r.rejectCode());
+            }
+            if (!r.protectiveLegs().isEmpty()) {
+                var arr = out.putArray("protective_legs");
+                for (var leg : r.protectiveLegs()) {
+                    ObjectNode n = arr.addObject();
+                    n.put("replaces", leg.replaces());
+                    n.put("order_id", leg.orderId());
+                    n.put("qty", leg.qty());
+                    n.put("price", leg.price());
+                }
+                out.put("legs_collapsed", r.legsCollapsed());
             }
             return ToolResult.ok(out);
         } catch (BrokerException e) {
