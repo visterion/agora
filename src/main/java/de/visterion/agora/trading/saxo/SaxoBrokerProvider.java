@@ -1042,14 +1042,23 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * cancelled protective legs are not simply dropped — they are re-placed sized to the
      * remainder ({@link LegAllocation#allocate}) BEFORE the closing Market order goes out, so a
      * restore failure costs nothing (only cancels have happened yet) rather than leaving a
-     * freshly-trimmed position unprotected. Only legs that were actually cancelled above are
-     * eligible for restoration — a leg whose cancel failed, or whose price/id/amount couldn't
-     * be read ({@link ProtectiveLeg#from}), is never restored: putting a new, smaller leg next
-     * to a surviving old one would work against less than either leg expects, i.e. an
-     * unintended reverse position the moment one triggers. Any such incompleteness puts the
+     * freshly-trimmed position unprotected. A leg whose price/id/amount couldn't be read
+     * ({@link ProtectiveLeg#from}) is left uncancelled and ineligible for restoration in the
+     * first place — cancelling it would create a slice with nothing to put back. Only legs that
+     * WERE cancelled are eligible: if a cancel itself failed, the surviving old leg plus
+     * freshly placed new ones would work against a smaller holding than either alone expects —
+     * an unintended reverse position the moment one triggers. Any such incompleteness puts the
      * legs that DID cancel cleanly back at their FULL original size and rejects the trim
      * (LEG_CANCEL_INCOMPLETE / LEG_RESTORE_FAILED / LEG_RESTORE_FAILED_UNPROTECTED) rather than
-     * leaving a smaller, partially-protected mix.
+     * leaving a smaller, partially-protected mix. If placing the sized legs partially succeeds
+     * (some already live at the broker) before one fails, the already-placed ones are cancelled
+     * BEFORE the full-size rollback — otherwise the rolled-back legs plus these orphans would
+     * double the opposite-side interest against the holding. If cancelling an orphan itself
+     * fails, it becomes live, unaccounted-for protection and is reported in {@code
+     * protectiveLegs()} (code LEG_RESTORE_FAILED_UNPROTECTED) so the caller can reconcile it
+     * rather than lose track of it. A cancelled leg that rounds to 0 shares under
+     * {@link LegAllocation} is similarly never silently dropped — it is called out in the
+     * accepted result's status.
      * <b>Known limitation (spec §4.1, closed by S7c, not here):</b> between the closing order
      * being accepted and it actually filling, the holding briefly exceeds what the restored
      * stops cover — the position is still full-sized while the new legs already assume the
@@ -1159,9 +1168,18 @@ public class SaxoBrokerProvider implements BrokerProvider {
             String legOrderId = n.path("OrderId").asString(null);
             if (legOrderId == null) continue;
 
-            // Cancel first, exactly like today's full-flatten behaviour — this does NOT depend
-            // on the leg being reconstructible, so a full flatten (remainingQty == 0, where
-            // nothing gets restored anyway) still cancels every protective leg it always did.
+            // ProtectiveLeg.from is pure (no I/O) — read it BEFORE deciding whether to cancel.
+            // On a partial close, a leg that can't be read back can never be restored, so
+            // cancelling it would leave the position naked for that slice with nothing to put
+            // back (rule 2). Leave it working and reject the trim instead. A full flatten
+            // (remainingQty == 0) restores nothing regardless, so it always cancels — matching
+            // today's H6 behaviour byte for byte (rule 3).
+            Optional<ProtectiveLeg> leg = ProtectiveLeg.from(n);
+            if (remainingQty.signum() > 0 && leg.isEmpty()) {
+                cancelIncomplete = true;
+                continue;
+            }
+
             try {
                 cancel(legOrderId);
             } catch (Exception e) {
@@ -1171,15 +1189,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 continue;
             }
 
-            Optional<ProtectiveLeg> leg = ProtectiveLeg.from(n);
-            if (leg.isEmpty()) {
-                // Cancelled cleanly, but not reconstructible (no usable price/amount).
-                // Restoring it later would mean guessing a price, and a stop at a guessed
-                // level is worse than no trim at all.
-                cancelIncomplete = true;
-                continue;
-            }
-            cancelled.add(leg.get());
+            if (leg.isPresent()) cancelled.add(leg.get());
         }
 
         // S7a: a partial close (remainingQty > 0) must put the protective legs back sized to
@@ -1208,16 +1218,47 @@ public class SaxoBrokerProvider implements BrokerProvider {
             if (alloc.warning() != null) log.warn("flatten {}: {}", symbol, alloc.warning());
             restored = placeSizedLegs(ctx, ri, alloc.sized());
             if (restored.size() != alloc.sized().size()) {
-                // Stage 1: put protection back at full size, reject the trim. Same protection, NEW ids.
+                // Some sized legs are ALREADY live at the broker (placeSizedLegs stopped at the
+                // first failure but didn't undo the ones before it) — cancel those BEFORE
+                // rolling back to full size, or the full-size legs plus these orphans would
+                // double up on opposite-side interest: the same hazard rule 1 exists to
+                // prevent, arriving from the other direction (a NEW orphan instead of a
+                // surviving OLD leg). If a cancel here fails too, that leg becomes live,
+                // unaccounted-for protection — it must never be silently dropped, so it is
+                // still reported in protectiveLegs() alongside the restored-at-full-size legs.
+                List<RestoredLeg> orphans = new ArrayList<>();
+                for (RestoredLeg r : restored) {
+                    try {
+                        cancel(r.orderId());
+                    } catch (Exception e) {
+                        orphans.add(r);
+                    }
+                }
                 List<RestoredLeg> back = placeLegsAtFullSize(ctx, ri, cancelled);
+                List<RestoredLeg> allKnown = new ArrayList<>(back);
+                allKnown.addAll(orphans);
+                boolean fullyAccounted = orphans.isEmpty() && back.size() == cancelled.size();
                 return OrderResult.rejectedWithLegs(
                         "could not restore the protective legs for the remainder; the close was not placed",
-                        back.size() == cancelled.size() ? "LEG_RESTORE_FAILED"
-                                                        : "LEG_RESTORE_FAILED_UNPROTECTED",
-                        back, false);
+                        fullyAccounted ? "LEG_RESTORE_FAILED" : "LEG_RESTORE_FAILED_UNPROTECTED",
+                        allKnown, false);
             }
             legsCollapsed = alloc.collapsed();
             allocWarning = alloc.warning();
+
+            // A cancelled leg can size to 0 shares under rounding (e.g. a Limit leg at
+            // amount*remaining/available truncating to 0) and LegAllocation silently drops it
+            // — restored.size() == alloc.sized().size() stays true above, so that check alone
+            // never catches this. Protection disappearing without a signal is exactly the
+            // failure class this change exists to eliminate, so surface it in the status.
+            java.util.Set<String> restoredIds = alloc.sized().stream()
+                    .map(s -> s.leg().orderId()).collect(java.util.stream.Collectors.toSet());
+            long droppedCount = cancelled.stream().filter(l -> !restoredIds.contains(l.orderId())).count();
+            if (droppedCount > 0) {
+                String droppedWarning = droppedCount + " cancelled leg(s) rounded to 0 shares "
+                        + "and were not restored";
+                allocWarning = allocWarning == null ? droppedWarning : allocWarning + "; " + droppedWarning;
+            }
         }
 
         ObjectNode body = MAPPER.createObjectNode();

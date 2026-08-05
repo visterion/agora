@@ -1714,6 +1714,131 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void aFailedSizedLegPlacementCancelsTheAlreadyPlacedOrphanBeforeRollingBack() {
+        // Regression for fix-round-1 finding 1: placeSizedLegs stops at the first placement
+        // failure but had left the earlier successful placement(s) live. Rolling back to full
+        // size on top of that, without cancelling the orphan first, would double opposite-side
+        // interest against the holding (58 working against a 46-share position, measured).
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-24","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-22","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":22.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        // First sized restore (Amount 12) succeeds and is now LIVE at the broker as "orphan-12".
+        // Second sized restore (Amount 11) fails outright.
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-cancel")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"orphan-12\"}"))
+                .willSetStateTo("leg1-placed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-cancel")
+                .whenScenarioStateIs("leg1-placed")
+                .willReturn(aResponse().withStatus(500))
+                .willSetStateTo("leg2-failed"));
+        // The rollback to full size (24, then 22).
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-cancel")
+                .whenScenarioStateIs("leg2-failed")
+                .willReturn(okJson("{\"OrderId\":\"back-24\"}"))
+                .willSetStateTo("rollback1-placed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-cancel")
+                .whenScenarioStateIs("rollback1-placed")
+                .willReturn(okJson("{\"OrderId\":\"back-22\"}")));
+        // The orphan (Amount-12 leg just placed above) must be cancelled BEFORE the rollback.
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/orphan-12")).willReturn(aResponse().withStatus(200)));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isFalse();
+        // The orphan was cancelled cleanly, so this is a plain LEG_RESTORE_FAILED, not the
+        // _UNPROTECTED variant — but only because the orphan-cancel above succeeded.
+        assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_FAILED");
+        assertThat(r.protectiveLegs()).hasSize(2);
+        assertThat(r.protectiveLegs()).extracting("replaces", "orderId")
+                .containsExactlyInAnyOrder(
+                        tuple("leg-24", "back-24"),
+                        tuple("leg-22", "back-22"));
+        assertThat(r.protectiveLegs()).extracting("qty")
+                .usingElementComparator((a, b) -> ((java.math.BigDecimal) a).compareTo((java.math.BigDecimal) b))
+                .containsExactlyInAnyOrder(new java.math.BigDecimal("24"), new java.math.BigDecimal("22"));
+
+        // The orphan MUST have been cancelled — this is the whole point of the fix.
+        wm.verify(1, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/orphan-12")));
+        // No Market close was ever placed.
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market"))));
+        // Total opposite-side interest actually posted must never exceed the 46-share holding
+        // at any point: orphan(12) is cancelled before the rollback(24+22) is placed, so the
+        // maximum ever concurrently live is 24+22=46, never 58.
+        var posts = requestJournalInOrder().stream()
+                .filter(req -> "POST".equals(req.getMethod().value())).toList();
+        assertThat(posts).hasSize(4);
+        var orphanCancelIndex = requestJournalInOrder().indexOf(
+                requestJournalInOrder().stream()
+                        .filter(req -> "DELETE".equals(req.getMethod().value())
+                                && req.getUrl().split("\\?")[0].equals("/trade/v2/orders/orphan-12"))
+                        .findFirst().orElseThrow());
+        var rollback1PostIndex = requestJournalInOrder().indexOf(posts.get(2));
+        assertThat(orphanCancelIndex).isLessThan(rollback1PostIndex);
+    }
+
+    @Test
+    void aFailedOrphanCancelIsReportedAsUnprotectedWithBothLegSetsVisible() {
+        // If the orphan itself cannot be cancelled, it is live, unaccounted-for protection —
+        // it must be surfaced, never silently dropped, per fix-round-1 finding 1.
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-24","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-22","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":22.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-uncancellable")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"orphan-12\"}"))
+                .willSetStateTo("leg1-placed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-uncancellable")
+                .whenScenarioStateIs("leg1-placed")
+                .willReturn(aResponse().withStatus(500))
+                .willSetStateTo("leg2-failed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-uncancellable")
+                .whenScenarioStateIs("leg2-failed")
+                .willReturn(okJson("{\"OrderId\":\"back-24\"}"))
+                .willSetStateTo("rollback1-placed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-uncancellable")
+                .whenScenarioStateIs("rollback1-placed")
+                .willReturn(okJson("{\"OrderId\":\"back-22\"}")));
+        // The orphan's own cancel fails — it stays live.
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/orphan-12")).willReturn(aResponse().withStatus(500)));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_FAILED_UNPROTECTED");
+        // Both the rolled-back full-size legs AND the uncancellable orphan must be visible so
+        // the caller can reconcile all THREE live protective orders against the 46-share position.
+        assertThat(r.protectiveLegs()).hasSize(3);
+        assertThat(r.protectiveLegs()).extracting("orderId")
+                .containsExactlyInAnyOrder("back-24", "back-22", "orphan-12");
+    }
+
+    @Test
     void restoredLegsCarryTheIdTheyReplace() {
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
@@ -1761,26 +1886,24 @@ class SaxoBrokerProviderTest {
                       "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
             """)));
         // Neither Price nor OrderPrice present — ProtectiveLeg.from must refuse this leg, not
-        // guess a price of 0. It is still cancelled exactly like any other protective leg (the
-        // cancel step never depends on reconstructibility — see rule 3, full-flatten-unchanged),
-        // but rule 2 (task-4 brief) says a leg that cannot be read back is treated EXACTLY like
-        // a failed cancel for restoration purposes: it never enters the "cancelled" list, so
-        // there is nothing to put back and the trim is rejected.
+        // guess a price of 0. On a PARTIAL close this leg is never even cancelled: cancelling
+        // it would create a slice with nothing to put back (rule 2), so the position is left
+        // exactly as protected as it started — no DELETE at all — and the trim is rejected.
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
             {"Data":[
               {"OrderId":"leg-no-price","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
                "Amount":10.0,"AssetType":"Stock"}]}
             """)));
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-no-price")).willReturn(aResponse().withStatus(200)));
 
         var r = provider.flatten("AAPL", null, new java.math.BigDecimal("4"));
 
         assertThat(r.accepted()).isFalse();
-        // Nothing was ever added to the restorable "cancelled" list (the leg couldn't be read
-        // back), so there is nothing to put back and no Market close is placed.
+        // Nothing was ever cancelled (the leg couldn't be read back, so it was left alone), so
+        // there is nothing to put back and no Market close is placed. The original leg is still
+        // live and protecting the position — verified by the complete absence of a DELETE call.
         assertThat(r.rejectCode()).isEqualTo("LEG_CANCEL_INCOMPLETE");
         assertThat(r.protectiveLegs()).isEmpty();
-        wm.verify(1, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/leg-no-price")));
+        wm.verify(0, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/leg-no-price")));
         wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
     }
 
@@ -1825,6 +1948,52 @@ class SaxoBrokerProviderTest {
         assertThat(posts).hasSize(2);
         var restore = SaxoBrokerProvider.MAPPER.readTree(posts.get(0).getBodyAsString());
         assertThat(restore.path("Amount").decimalValue()).isEqualByComparingTo("1");
+    }
+
+    @Test
+    void aCancelledLegThatRoundsToZeroSharesIsFlaggedInTheStatusNotSilentlyDropped() {
+        // Regression for fix-round-1 finding 3: a cancelled Sell Limit (take-profit) leg sized
+        // amount*remaining/available can round DOWN to 0 shares and LegAllocation drops it —
+        // restored.size() == alloc.sized().size() stays true (both are "1"), so the existing
+        // rollback check never fires. Protection must not vanish without a signal.
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        // One Sell stop (protects fully down to 1 remaining share) and one Sell Limit
+        // take-profit at amount 10 — 10*1/46 truncates to 0, so the take-profit is dropped.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-stop","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-tp","Uic":211,"OpenOrderType":"Limit","BuySell":"Sell",
+               "Amount":10.0,"Price":55.0,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-stop")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-tp")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("dropped-limit")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"R1\"}"))
+                .willSetStateTo("stop-restored"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("dropped-limit")
+                .whenScenarioStateIs("stop-restored")
+                .willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        // qty=45 of 46 -> only 1 share remains.
+        var r = provider.flatten("AAPL", null, new java.math.BigDecimal("45"));
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.remainingQty()).isEqualByComparingTo("1");
+        // Only the stop leg came back — the take-profit is gone and must be visible in status.
+        assertThat(r.protectiveLegs()).hasSize(1);
+        assertThat(r.protectiveLegs().get(0).replaces()).isEqualTo("leg-stop");
+        assertThat(r.status()).containsIgnoringCase("rounded to 0");
+
+        var posts = requestJournalInOrder().stream()
+                .filter(req -> "POST".equals(req.getMethod().value())).toList();
+        assertThat(posts).hasSize(2);   // one restore (stop only) + the closing Market order
     }
 
     // ---- pagination ----
