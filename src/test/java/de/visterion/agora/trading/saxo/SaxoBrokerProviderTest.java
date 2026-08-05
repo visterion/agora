@@ -1977,9 +1977,62 @@ class SaxoBrokerProviderTest {
         // there is nothing to put back and no Market close is placed. The original leg is still
         // live and protecting the position — verified by the complete absence of a DELETE call.
         assertThat(r.rejectCode()).isEqualTo("LEG_CANCEL_INCOMPLETE");
-        assertThat(r.protectiveLegs()).isEmpty();
+        // The leg is untouched but still real, working protection under its original id, so it
+        // must still be named in protective_legs — never silently dropped. There is no parsed
+        // qty/price to report (that's exactly why the leg couldn't be reconstructed), so both
+        // are null rather than fabricated.
+        assertThat(r.protectiveLegs()).extracting("replaces", "orderId", "qty", "price")
+                .containsExactly(tuple("leg-no-price", "leg-no-price", null, null));
         wm.verify(0, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/leg-no-price")));
         wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void unreadablePriceLegAlongsideANormalLegStaysReportedLiveUnderItsOriginalId() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":20.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":50.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        // leg-a is a normal, reconstructible leg; leg-b has neither Price nor OrderPrice, so
+        // ProtectiveLeg.from refuses it. On this PARTIAL close leg-b is left alone (rule 2:
+        // cancelling it would create a slice with nothing to put back) — it must never be
+        // cancelled, and it must still be named in protective_legs as still live, exactly like a
+        // leg whose cancel call failed outright.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-a","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":12.0,"Price":50.0,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-b","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":8.0,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-a")).willReturn(aResponse().withStatus(200)));
+        // the only POST that may happen is leg A being put back at its FULL original amount (12).
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"back-a\"}")));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_CANCEL_INCOMPLETE");
+        assertThat(r.protectiveLegs()).hasSize(2);
+        assertThat(r.protectiveLegs()).extracting("replaces", "orderId")
+                .containsExactlyInAnyOrder(
+                        tuple("leg-a", "back-a"),
+                        tuple("leg-b", "leg-b"));
+        assertThat(r.protectiveLegs().stream().filter(l -> l.replaces().equals("leg-a")).findFirst()
+                .orElseThrow().qty()).isEqualByComparingTo("12");
+        assertThat(r.protectiveLegs().stream().filter(l -> l.replaces().equals("leg-b")).findFirst()
+                .orElseThrow().qty()).isNull();
+        assertThat(r.protectiveLegs().stream().filter(l -> l.replaces().equals("leg-b")).findFirst()
+                .orElseThrow().price()).isNull();
+
+        // leg-a is cancelled once; leg-b is never touched at all — verified on the request
+        // journal, not just the reject code.
+        wm.verify(1, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/leg-a")));
+        wm.verify(0, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/leg-b")));
+        // exactly one POST — leg A restored at FULL size, never the closing Market order.
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders")));
     }
 
     @Test

@@ -119,7 +119,13 @@ filled, now-unprotected close. Only legs that were **successfully cancelled** ar
 eligible for restoration: a leg whose price/id/amount couldn't be read back is left alone
 (uncancelled) on a partial close rather than being cancelled with nothing to put back —
 but on a full close (nothing is being restored anyway) it is still cancelled, matching
-the plain pre-restore flatten behaviour. If a cancel itself fails partway through, the
+the plain pre-restore flatten behaviour. That untouched leg is still real, working
+protection under its **original** id, so it is still named in `protective_legs`
+(`replaces` and `order_id` both equal to that original id) with `qty`/`price` omitted —
+there is nothing parsed to report and a fabricated value would be worse than none. A
+caller that only reads `protective_legs` for ids it must track should not treat this
+entry's absence-of-size as absence-of-order: the id is still live at the broker. If a
+cancel itself fails partway through, the
 legs that did cancel cleanly are put back at full size and the trim is rejected with
 `LEG_CANCEL_INCOMPLETE` (every cancelled leg could be put back) or
 `LEG_RESTORE_FAILED_UNPROTECTED` (one of the put-back attempts itself failed, leaving a

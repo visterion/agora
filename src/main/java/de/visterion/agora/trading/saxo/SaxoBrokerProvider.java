@@ -1044,8 +1044,11 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * restore failure costs nothing (only cancels have happened yet) rather than leaving a
      * freshly-trimmed position unprotected. A leg whose price/id/amount couldn't be read
      * ({@link ProtectiveLeg#from}) is left uncancelled and ineligible for restoration in the
-     * first place — cancelling it would create a slice with nothing to put back. Only legs that
-     * WERE cancelled are eligible: if a cancel itself failed, the surviving old leg plus
+     * first place — cancelling it would create a slice with nothing to put back. It is still
+     * real, working protection under its original id, so it is reported in {@code
+     * protectiveLegs()} with a null qty/price (there is nothing parsed to report) exactly like a
+     * failed-cancel leg — never silently dropped. Only legs that
+     * WERE cancelled are eligible for restoration: if a cancel itself failed, the surviving old leg plus
      * freshly placed new ones would work against a smaller holding than either alone expects —
      * an unintended reverse position the moment one triggers. Any such incompleteness puts the
      * legs that DID cancel cleanly back at their FULL original size and rejects the trim with
@@ -1185,6 +1188,12 @@ public class SaxoBrokerProvider implements BrokerProvider {
             Optional<ProtectiveLeg> leg = ProtectiveLeg.from(n);
             if (remainingQty.signum() > 0 && leg.isEmpty()) {
                 cancelIncomplete = true;
+                // Left uncancelled on purpose (see the javadoc above), but it is still real,
+                // working protection under legOrderId — report it exactly like a failed-cancel
+                // leg (rule below) so the caller doesn't forget an order that is still live at
+                // the broker. ProtectiveLeg.from() failed, so there's no parsed qty/price to
+                // report; null is honest here, a fabricated value would not be.
+                uncancelledLive.add(new RestoredLeg(legOrderId, legOrderId, null, null));
                 continue;
             }
 
