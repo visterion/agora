@@ -1226,6 +1226,12 @@ public class SaxoBrokerProvider implements BrokerProvider {
             List<RestoredLeg> back = placeLegsAtFullSize(ctx, ri, cancelled);
             List<RestoredLeg> allKnown = new ArrayList<>(back);
             allKnown.addAll(uncancelledLive);
+            // Deliberately NOT legRestoreFailureCode here (even though this is also a per-leg
+            // under/over-protected classification): that helper merges live quantities with
+            // HashMap.merge(key, qty, BigDecimal::add), and `uncancelledLive` entries carry a
+            // null qty (ProtectiveLeg.from failed, so there is nothing parsed to report) —
+            // Map.merge throws NPE on a null value. This simpler two-way ternary is the only
+            // classification this branch can safely use.
             return OrderResult.rejectedWithLegs(
                     "could not cancel every protective leg cleanly; the close was not placed",
                     back.size() == cancelled.size() ? "LEG_CANCEL_INCOMPLETE"
@@ -1250,7 +1256,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 InterleavedRollback rb = interleaveRollback(ctx, ri, cancelled, restored);
                 return OrderResult.rejectedWithLegs(
                         "could not restore the protective legs for the remainder; the close was not placed",
-                        rb.fullyAccounted() ? "LEG_RESTORE_FAILED" : legRestoreFailureCode(rb.allKnown(), cancelled),
+                        rb.fullyAccounted() ? "LEG_RESTORE_FAILED" : LEG_RESTORE_FAILURE_CODE,
                         rb.allKnown(), false);
             }
             legsCollapsed = alloc.collapsed();
@@ -1322,7 +1328,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 InterleavedRollback rb = interleaveRollback(ctx, ri, cancelled, restored);
                 OrderResult closeReject = safeWriteError("POST /trade/v2/orders (flatten)", e);
                 if (!rb.fullyAccounted()) {
-                    String code = legRestoreFailureCode(rb.allKnown(), cancelled);
+                    String code = LEG_RESTORE_FAILURE_CODE;
                     log.error("saxo flatten {}: close rejected ({}) AND protective legs could not be "
                             + "fully restored — position uic={} holds {} shares with {} full-size "
                             + "leg(s) restored, {} sized leg(s) uncancelled orphan(s), {} sized "
@@ -1529,28 +1535,17 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * actually IS fully protecting.
      *
      * <p>A leg with less live quantity than its original (including zero, i.e. missing
-     * entirely) is under-protected; a leg with MORE is over-committed. If both occur in the same
-     * result (only reachable if the monotonic-sizing invariant is ever violated elsewhere — see
-     * {@link LegAllocation}'s own class doc — not through this rollback code, which never grows
-     * a leg past its original), under-protected wins: a missing stop is the graver hazard.
+     * entirely) is under-protected. An "over-committed" reject code (more live than original) is
+     * not modelled — it is provably unreachable through this rollback code: {@code
+     * interleaveRollback} contributes at most one entry per original leg to its result (a
+     * full-size {@code back} entry equals the original exactly; an orphan or untouched entry is
+     * the sized, monotonically-shrunk replacement, always <= the original; and {@code
+     * touchedSizedIds} prevents the same sized leg from ever appearing in more than one of
+     * back/orphans/untouched), so a single original's live quantity can never exceed its own
+     * amount here. Both rollback-incompleteness call sites below therefore always report this
+     * one code rather than switching on a case that cannot occur.
      */
-    private static String legRestoreFailureCode(List<RestoredLeg> live, List<ProtectiveLeg> originals) {
-        java.util.Map<String, BigDecimal> liveByOriginal = new java.util.HashMap<>();
-        for (RestoredLeg r : live) {
-            liveByOriginal.merge(r.replaces(), r.qty(), BigDecimal::add);
-        }
-        boolean anyUnderProtected = false;
-        boolean anyOverCommitted = false;
-        for (ProtectiveLeg original : originals) {
-            BigDecimal liveQty = liveByOriginal.getOrDefault(original.orderId(), BigDecimal.ZERO);
-            int cmp = liveQty.compareTo(original.amount());
-            if (cmp < 0) anyUnderProtected = true;
-            else if (cmp > 0) anyOverCommitted = true;
-        }
-        if (anyUnderProtected) return "LEG_RESTORE_FAILED_UNPROTECTED";
-        if (anyOverCommitted) return "LEG_RESTORE_FAILED_OVERCOMMITTED";
-        return "LEG_RESTORE_FAILED_UNPROTECTED";
-    }
+    private static final String LEG_RESTORE_FAILURE_CODE = "LEG_RESTORE_FAILED_UNPROTECTED";
 
     /** Places the sized legs in order; stops at the first placement failure so the caller can roll back. */
     private List<RestoredLeg> placeSizedLegs(AccountContext ctx, SaxoInstrumentResolver.ResolvedInstrument ri,

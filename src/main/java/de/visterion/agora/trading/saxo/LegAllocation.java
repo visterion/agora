@@ -12,8 +12,11 @@ import java.util.List;
  * <p><b>Monotonicity is the load-bearing rule:</b> no leg is ever restored larger than it was.
  * Anything else can turn an unrelated resting order into a position-sized one — a 5-share sell
  * limit next to the stop must shrink to 2, never grow to 23. Together with
- * {@code Σ qty <= remaining} this is what keeps total opposite-side interest from exceeding the
- * holding, which is what would produce an unintended reverse position once a leg triggers.
+ * {@code Σ qty <= remaining} this keeps the STOP group's opposite-side interest from exceeding
+ * the holding on its own — it does NOT bound total opposite-side interest across stops and
+ * limits combined: a bracket's take-profit and stop-loss are each placed at the full original
+ * quantity by design (see {@code SaxoBrokerProvider#legRestoreFailureCode}'s javadoc), so the
+ * two groups summed can and routinely do exceed the remainder for a healthy bracketed position.
  *
  * <p>Stop legs are normalised over their own sum so the result is exact even when the legs never
  * matched the position (they can outsize it after a manual partial close in the broker UI —
@@ -74,11 +77,12 @@ public final class LegAllocation {
                         + " of the remaining " + remaining.toPlainString()
                         + " shares — the position was already under-protected before this close";
             }
-        } else if (!stops.isEmpty() && remaining.signum() > 0) {
-            // remaining == 0 means there is nothing left to restore, not that the stop legs
-            // summed to zero — those are different facts and only the second is a warning.
-            warning = "no usable stop quantity to restore (sum of cancelled stop legs was zero)";
         }
+        // No else-if here: `ProtectiveLeg.from` rejects amount <= 0, so a non-empty `stops` list
+        // always sums to a positive `sumStop`, which together with `remaining.signum() > 0` (the
+        // only way to reach this method with a non-empty `stops`) always makes the branch above
+        // (`sumStop.signum() > 0 && target.signum() > 0`) true. A "sum of cancelled stop legs was
+        // zero" warning could therefore never fire and was removed (fix round 4 finding).
 
         for (ProtectiveLeg l : limits) {
             BigDecimal q = l.amount().min(
