@@ -2784,7 +2784,7 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
-    void placeProtectiveStopWithQtyExceedingPositionIsRejectedWithoutBrokerCall() {
+    void placeProtectiveStopWithQtyExceedingPositionIsRejectedWithoutPlacingAnOrder() {
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
             {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
@@ -2798,6 +2798,75 @@ class SaxoBrokerProviderTest {
         assertThat(r.rejectCode()).isEqualTo("QTY_EXCEEDS_POSITION");
         wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
         wm.verify(0, deleteRequestedFor(urlPathMatching("/trade/v2/orders/.*")));
+    }
+
+    /**
+     * qty == position (46 of 46) is the boundary between correct and over-protective — the
+     * ONE comparison that separates "cover exactly what's held" from "place more protective
+     * interest than shares exist". Must be accepted, not rejected as exceeding the position.
+     */
+    @Test
+    void placeProtectiveStopWithQtyEqualToPositionIsAccepted() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .willReturn(okJson("{\"OrderId\":\"9203\"}")));
+
+        var r = provider.placeProtectiveStop("AAPL", new java.math.BigDecimal("46"), new java.math.BigDecimal("45.49"));
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("46"))));
+    }
+
+    /**
+     * A 409 (duplicate X-Request-ID replay) is INDETERMINATE, not a definite rejection — Saxo
+     * may already have placed the stop and only the confirmation was lost (exactly the
+     * scenario a rate-limit auto-retry produces). Reporting this as accepted:false would let a
+     * caller retry and double the protective interest against the position, so this must throw
+     * rather than come back through the plain reject path — mirroring flatten's handling of the
+     * same status on its closing POST.
+     */
+    @Test
+    void placeProtectiveStop409IsUnavailableNotARejection() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .willReturn(aResponse().withStatus(409)));
+
+        assertThatThrownBy(() -> provider.placeProtectiveStop("AAPL", new java.math.BigDecimal("34"), new java.math.BigDecimal("45.49")))
+                .isInstanceOf(BrokerException.class)
+                .extracting(e -> ((BrokerException) e).kind())
+                .isEqualTo(BrokerException.Kind.UNAVAILABLE);
+    }
+
+    /**
+     * A plain 429 (rate-limited, nothing placed) is DETERMINATE and must still come back as a
+     * definite rejection, not an outage — this is the "already handled correctly" case that
+     * must not regress while fixing the 409/5xx indeterminate handling above.
+     */
+    @Test
+    void placeProtectiveStop429IsADefiniteRejection() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .willReturn(aResponse().withStatus(429)));
+
+        var r = provider.placeProtectiveStop("AAPL", new java.math.BigDecimal("34"), new java.math.BigDecimal("45.49"));
+
+        assertThat(r.accepted()).isFalse();
     }
 
     @Test

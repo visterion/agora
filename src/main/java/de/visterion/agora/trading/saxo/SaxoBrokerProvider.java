@@ -1098,26 +1098,9 @@ public class SaxoBrokerProvider implements BrokerProvider {
             return OrderResult.rejected(e.getMessage(), "SYMBOL");
         }
         AccountContext ctx = accountContext();
-        JsonNode resp = followPagination(getJson("GET /port/v1/netpositions (flatten)", b -> b.path("/port/v1/netpositions")
-                .queryParam("ClientKey", "{ck}")
-                .queryParam("AccountKey", "{ak}")
-                .queryParam("FieldGroups", "{fg}")
-                .build(ctx.clientKey(), ctx.accountKey(), "NetPositionBase,NetPositionView,DisplayAndFormat")));
-
-        JsonNode match = null;
-        for (JsonNode n : resp.path("Data")) {
-            JsonNode base = n.path("NetPositionBase");
-            if (base.path("Uic").asLong(-1) == ri.uic() && bd(base.path("Amount")).signum() != 0) {
-                match = n;
-                break;
-            }
-        }
-        if (match == null) {
-            throw new BrokerException(BrokerException.Kind.NOT_FOUND, "no open position: " + symbol, null);
-        }
-        BigDecimal amount = bd(match.path("NetPositionBase").path("Amount"));
-        BigDecimal available = amount.abs();
-        String opposite = amount.signum() > 0 ? "Sell" : "Buy";
+        NetPositionSnapshot pos = resolveNetPosition(symbol, ri, ctx, "flatten");
+        BigDecimal available = pos.available();
+        String opposite = pos.opposite();
 
         BigDecimal closeQty;
         if (qty != null) {
@@ -1372,9 +1355,18 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * {@link #flatten} uses — {@code amount.signum() > 0 ? "Sell" : "Buy"}), then POSTs exactly
      * ONE {@code StopIfTraded} order for {@code qty} at {@code stopPrice} with {@code
      * GoodTillCancel} duration — the same standalone-stop body shape as the far-stop fallback's
-     * {@code standaloneStop} (see {@link #submitFarStopFallback}). It cancels nothing, reads no
-     * other order, and there is no rollback here because there is nothing that was changed to
-     * roll back on failure — a rejected POST simply leaves the position exactly as it was.
+     * {@code standaloneStop} (see {@link #submitFarStopFallback}). It cancels nothing and reads
+     * no other order.
+     *
+     * <p>There is no rollback here because there is nothing that was changed to roll back — but
+     * that only holds for a DETERMINATE POST failure (400/401/403/404/429, mirroring {@link
+     * #isDeterminateWriteFailure}): those statuses mean Saxo did not place the order, so the
+     * position is exactly as it was and a plain rejection is accurate. A 409 (duplicate
+     * X-Request-ID replay) or 5xx is INDETERMINATE — the stop may already be live at the broker
+     * and only the response was lost — so that case throws rather than reporting a definite
+     * rejection, exactly like {@link #flatten}'s close-POST handling. Reporting an indeterminate
+     * failure as "not placed" is the one mistake this tool cannot afford: a caller that retries
+     * on a false rejection can double the protective interest against the position.
      *
      * <p>The caller is responsible for not double-covering shares another working stop already
      * protects; this method has no visibility into other orders by design.
@@ -1392,28 +1384,9 @@ public class SaxoBrokerProvider implements BrokerProvider {
             return OrderResult.rejected(e.getMessage(), "SYMBOL");
         }
         AccountContext ctx = accountContext();
-        JsonNode resp = followPagination(getJson("GET /port/v1/netpositions (placeProtectiveStop)",
-                b -> b.path("/port/v1/netpositions")
-                        .queryParam("ClientKey", "{ck}")
-                        .queryParam("AccountKey", "{ak}")
-                        .queryParam("FieldGroups", "{fg}")
-                        .build(ctx.clientKey(), ctx.accountKey(),
-                                "NetPositionBase,NetPositionView,DisplayAndFormat")));
-
-        JsonNode match = null;
-        for (JsonNode n : resp.path("Data")) {
-            JsonNode base = n.path("NetPositionBase");
-            if (base.path("Uic").asLong(-1) == ri.uic() && bd(base.path("Amount")).signum() != 0) {
-                match = n;
-                break;
-            }
-        }
-        if (match == null) {
-            throw new BrokerException(BrokerException.Kind.NOT_FOUND, "no open position: " + symbol, null);
-        }
-        BigDecimal amount = bd(match.path("NetPositionBase").path("Amount"));
-        BigDecimal available = amount.abs();
-        String opposite = amount.signum() > 0 ? "Sell" : "Buy";
+        NetPositionSnapshot pos = resolveNetPosition(symbol, ri, ctx, "placeProtectiveStop");
+        BigDecimal available = pos.available();
+        String opposite = pos.opposite();
 
         if (qty.compareTo(available) > 0) {
             return OrderResult.rejected(
@@ -1442,12 +1415,65 @@ public class SaxoBrokerProvider implements BrokerProvider {
             String orderId = resp2 == null ? null : resp2.path("OrderId").asString(null);
             return OrderResult.accepted(orderId, null, "accepted");
         } catch (RestClientResponseException e) {
-            return safeWriteError("POST /trade/v2/orders (placeProtectiveStop)", e);
-        } catch (Exception e) {
+            if (isDeterminateWriteFailure(e)) {
+                // Determinate: Saxo did not place the order (parsed 400 reject, or the request
+                // never reached order entry at all) — safe to report a plain rejection.
+                return safeWriteError("POST /trade/v2/orders (placeProtectiveStop)", e);
+            }
+            // Indeterminate (409 duplicate-request replay, 5xx, or any other status readError
+            // maps to UNAVAILABLE): the broker may already have accepted the stop and only the
+            // response failed to communicate it. Reporting this as a definite rejection would
+            // invite the caller to retry and double the protective interest against the
+            // position — so this throws instead of returning rejected(), same reasoning as
+            // flatten's close-POST handling.
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
-                    "saxo placeProtectiveStop failed: " + e.getMessage(), e);
+                    "saxo placeProtectiveStop outcome unknown for " + symbol + "; the stop may "
+                            + "already have been placed — reconcile via get_orders before "
+                            + "retrying: " + e.getMessage(), e);
+        } catch (Exception e) {
+            // Transport-level failure (timeout, connection reset, …): same indeterminate
+            // reasoning as the RestClientResponseException branch above — the request may have
+            // reached Saxo even though the response never came back.
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo placeProtectiveStop failed; the stop may already have been placed — "
+                            + "reconcile via get_orders before retrying: " + e.getMessage(), e);
         }
     }
+
+    /**
+     * Reads the current net position for {@code ri} and derives the signed size and the
+     * opposite side — shared by {@link #flatten} and {@link #placeProtectiveStop}, both of
+     * which need exactly this: how many shares are held, and which side a closing/protective
+     * order must trade on ({@code amount.signum() > 0 ? "Sell" : "Buy"}). Throws {@code
+     * BrokerException(NOT_FOUND)} when there is no open (non-zero) position for the instrument.
+     */
+    private NetPositionSnapshot resolveNetPosition(String symbol, SaxoInstrumentResolver.ResolvedInstrument ri,
+                                                    AccountContext ctx, String logLabel) {
+        JsonNode resp = followPagination(getJson("GET /port/v1/netpositions (" + logLabel + ")",
+                b -> b.path("/port/v1/netpositions")
+                        .queryParam("ClientKey", "{ck}")
+                        .queryParam("AccountKey", "{ak}")
+                        .queryParam("FieldGroups", "{fg}")
+                        .build(ctx.clientKey(), ctx.accountKey(),
+                                "NetPositionBase,NetPositionView,DisplayAndFormat")));
+
+        JsonNode match = null;
+        for (JsonNode n : resp.path("Data")) {
+            JsonNode base = n.path("NetPositionBase");
+            if (base.path("Uic").asLong(-1) == ri.uic() && bd(base.path("Amount")).signum() != 0) {
+                match = n;
+                break;
+            }
+        }
+        if (match == null) {
+            throw new BrokerException(BrokerException.Kind.NOT_FOUND, "no open position: " + symbol, null);
+        }
+        BigDecimal amount = bd(match.path("NetPositionBase").path("Amount"));
+        return new NetPositionSnapshot(amount.abs(), amount.signum() > 0 ? "Sell" : "Buy");
+    }
+
+    /** {@code available} is always non-negative; {@code opposite} is {@code "Sell"}/{@code "Buy"}. */
+    private record NetPositionSnapshot(BigDecimal available, String opposite) {}
 
     /**
      * True when the closing POST failed in a way that means Saxo did NOT place the order —

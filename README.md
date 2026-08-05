@@ -106,13 +106,13 @@ design spec:
 |---|---|---|
 | **agora-data** | `data`, `fetch/*` | Read-only market data: quotes, OHLC, intraday, FX, news, fundamentals, filings, earnings, index constituents. Provider plugins. |
 | **agora-research** | `research` | Pure quant/analysis: ATR, Chandelier, MA-cross, RSI, MACD, Bollinger, ADX, CCI, Stochastic, Williams %R, OBV, 52-week range, R-framework. Built on [ta4j](https://github.com/ta4j/ta4j). |
-| **agora-trading** ⚠ | `tools` (namespace `trading`) | Execution: account, positions, orders, bracket place/modify, flatten, cancel, list connections. Broker plugins (Alpaca and Saxo), selected per named connection. |
+| **agora-trading** ⚠ | `tools` (namespace `trading`) | Execution: account, positions, orders, bracket place/modify, flatten, protective stop, cancel, list connections. Broker plugins (Alpaca and Saxo), selected per named connection. |
 
 ---
 
 ## Tool catalog
 
-36 tools today. One-page inventory: [`documentation/capabilities.md`](documentation/capabilities.md).
+38 tools today. One-page inventory: [`documentation/capabilities.md`](documentation/capabilities.md).
 `general` tools are on MCP, webhook, and catalog; `trading` tools are webhook-only and
 require a trading token.
 
@@ -230,6 +230,7 @@ is always available via `list_indicators`.
 | `place_bracket` | Place a bracket order (entry + stop-loss, optional take-profit) |
 | `modify_bracket` | Modify the stop-loss and/or take-profit of an existing bracket; optionally naming the exact leg order to move |
 | `flatten` | Close (flatten) the entire position for a symbol via market order |
+| `place_protective_stop` | Place ONE protective stop for `qty` shares of an existing position at `stop_price`; purely additive — cancels nothing, reads no other order (Saxo only) |
 | `cancel_order` | Cancel an open order by broker order id |
 | `list_connections` | List active trading connections (id, provider, environment, probe status) visible to the caller |
 
@@ -408,10 +409,10 @@ The `ToolRegistry` picks it up automatically and it appears on `/mcp`, `/tools`,
 
 | Doc | Contents |
 |---|---|
-| [`documentation/capabilities.md`](documentation/capabilities.md) | Full tool inventory (36 tools) + internal capabilities |
+| [`documentation/capabilities.md`](documentation/capabilities.md) | Full tool inventory (38 tools) + internal capabilities |
 | [`documentation/hunting-grounds.md`](documentation/hunting-grounds.md) | Provider chains, coverage, cache TTLs |
 | [`documentation/api.md`](documentation/api.md) | Fundamentals tool contracts |
-| [`documentation/exit-tools.md`](documentation/exit-tools.md) | Trading exit contracts (bracket / flatten) |
+| [`documentation/exit-tools.md`](documentation/exit-tools.md) | Trading exit contracts (bracket / flatten / protective stop) |
 | [`documentation/observability.md`](documentation/observability.md) | Provider-call logging |
 | [`documentation/arc42/`](documentation/arc42/) | Architecture (arc42-light) |
 

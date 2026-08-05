@@ -57,10 +57,11 @@ public interface BrokerProvider {
      * — it must be safe to call on a position whose protective state is already messy (e.g.
      * a partial rollback left it partially covered), with no cancel window and no ids to lose.
      *
-     * <p>Implementations reject, without calling the broker, when: there is no open position
+     * <p>Implementations reject, before any order is placed, when: there is no open position
      * for {@code symbol}; {@code qty} is not positive; or {@code qty} exceeds the position
      * size (placing more protective interest than shares held is exactly the failure this
-     * method exists to prevent).
+     * method exists to prevent). Only the non-positive-{@code qty} case is a zero-call
+     * rejection — the other two require reading the position first to know it.
      *
      * <p>The caller is responsible for not double-covering shares another working stop
      * already covers — this method has no visibility into other orders by design.

@@ -183,16 +183,25 @@ to cover: a position whose protective state is already messy — say, a partial 
 left some shares stopped and some not — and that needs one more stop placed *right now*,
 with nothing else touched. It is **purely additive**:
 
-- It **cancels nothing** and **reads no other order**. There is no cancel window and
-  nothing to roll back on failure — a rejected POST simply leaves the position exactly
-  as it was before the call.
+- It **cancels nothing** and **reads no other order**. There is no cancel window, and a
+  *determinate* rejection (Saxo parses the request and says no — 400/401/403/404/429)
+  leaves the position exactly as it was before the call, nothing to roll back.
+  An *indeterminate* failure (409 duplicate-request replay, 5xx, or no response at all)
+  is different: Saxo may have placed the stop and only the confirmation was lost, so
+  this comes back as an outage (`BrokerException`, not `accepted:false`) with a message
+  telling the caller to reconcile via `get_orders` before retrying — the same
+  determinate/indeterminate split `flatten`'s closing POST already uses. Retrying on a
+  false "not placed" reading is the one way this tool could double the protective
+  interest against the position, so it never reports that reading when the outcome is
+  actually unknown.
 - It never looks at, resizes, or replaces any existing protective leg (including a
   stop this same tool placed on an earlier call).
 
-### Rejections (no broker order-placement call made)
+### Rejections
 
 - No open position for `symbol` → `NOT_FOUND` (broker exception, same as `flatten`).
-- `qty` not positive → `INVALID_QTY`.
+  Requires the net-position read to discover.
+- `qty` not positive → `INVALID_QTY`. The only rejection made before any broker call.
 - `qty` exceeds the position size → `QTY_EXCEEDS_POSITION`. Placing more protective
   interest than shares held is exactly the failure this tool exists to prevent, so it
   is checked (against the broker's own net-position read) before any order is placed.

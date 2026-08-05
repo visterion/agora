@@ -36,8 +36,8 @@ public class PlaceProtectiveStopTool implements AgoraTool {
     public String description() {
         return "Place ONE protective stop order for qty shares of an existing position at stopPrice, "
                 + "on the named connection. Purely additive: cancels nothing and reads no other order — "
-                + "safe to call on a position whose protective state is already messy. Rejects (without "
-                + "calling the broker) when there is no open position, qty is not positive, or qty "
+                + "safe to call on a position whose protective state is already messy. Rejects, before "
+                + "any order is placed, when there is no open position, qty is not positive, or qty "
                 + "exceeds the position size. The caller is responsible for not double-covering shares "
                 + "another working stop already protects.";
     }

@@ -5,7 +5,7 @@ in the live MCP/webhook schemas, in [`api.md`](api.md) (fundamentals, earnings),
 [`exit-tools.md`](exit-tools.md) (trading exits). Provider coverage is in
 [`hunting-grounds.md`](hunting-grounds.md).
 
-**36 tools** · three logical surfaces · one Docker image.
+**38 tools** · three logical surfaces · one Docker image.
 
 | Surface | Package(s) | Role |
 |---|---|---|
@@ -304,6 +304,7 @@ Extensible without rebuild: mount YAML and set `AGORA_RESEARCH_INDICATORS_FILE`.
 | `modify_bracket` | Change stop-loss and/or take-profit; optional `stopOrderId`/`targetOrderId` address one exact leg (required when a symbol carries more than one bracket, e.g. a multi-tranche position) |
 | `cancel_order` | Cancel by broker order id; unknown id → `available:true` with `accepted:false`, `rejectCode:"NOT_FOUND"`, not an error |
 | `flatten` | Close entire position via market order |
+| `place_protective_stop` | Place ONE protective stop for `qty` shares of an existing position at `stop_price`; purely additive — cancels nothing, reads no other order (Saxo only; Alpaca rejects `PROTECTIVE_STOP_UNSUPPORTED`) |
 
 **Brokers:** Alpaca (paper/live), Saxo (headless OAuth). Selected per connection, no
 cross-broker fallback on a single call. Order placements are **not** idempotent on the
@@ -341,7 +342,7 @@ token; live connections need stronger live scopes.
 
 ---
 
-## Tool count checklist (37)
+## Tool count checklist (38)
 
 ```
 cancel_order
@@ -380,6 +381,7 @@ list_indicators
 modify_bracket
 ping
 place_bracket
+place_protective_stop
 search_filings
 ```
 
