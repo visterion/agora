@@ -2011,8 +2011,11 @@ class SaxoBrokerProviderTest {
     @Test
     void aDeterminateCloseRejectionRestoresFullSizedLegs() {
         // The closing Market POST comes back 400 — Saxo's synchronous parsed reject, so the
-        // close was definitely never placed. Expect the sized-down legs (12/11) to have already
-        // gone out, then the close attempt, then the ORIGINAL amounts (24/22) restored on top.
+        // close was definitely never placed. The sized-down legs (12/11, ids R12/R11) already
+        // went out and are LIVE — they must be cancelled BEFORE the ORIGINAL amounts (24/22)
+        // are restored, or both sets would end up working simultaneously (12+11+24+22=69 against
+        // a 46-share holding). Orphan cancel succeeds here, so the reject is the close's own
+        // rejection, not the UNPROTECTED variant.
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
             {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
@@ -2028,6 +2031,8 @@ class SaxoBrokerProviderTest {
             """)));
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R12")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R11")).willReturn(aResponse().withStatus(200)));
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("determinate-400")
                 .whenScenarioStateIs(Scenario.STARTED)
                 .willReturn(okJson("{\"OrderId\":\"R12\"}"))
@@ -2056,20 +2061,29 @@ class SaxoBrokerProviderTest {
         assertThat(r.accepted()).isFalse();
         assertThat(r.rejectCode()).isEqualTo("OrderRejected");
         assertThat(r.rejectReason()).isEqualTo("close rejected by broker");
+        // Only the full-size legs are reported — the sized orphans (R12/R11) were cancelled
+        // cleanly, so they are gone, not live protection the caller needs to reconcile.
         assertThat(r.protectiveLegs()).hasSize(2);
         assertThat(r.protectiveLegs()).extracting("replaces", "orderId")
                 .containsExactlyInAnyOrder(
                         tuple("leg-24", "back-24"),
                         tuple("leg-22", "back-22"));
 
+        // Order matters: the sized legs (R12/R11) must be CANCELLED before the full-size legs
+        // are POSTed, or both sets would be concurrently live.
         assertThat(requestJournalMethodsAndPaths()).containsSubsequence(
                 "DELETE /trade/v2/orders/leg-24",
                 "DELETE /trade/v2/orders/leg-22",
                 "POST /trade/v2/orders",
                 "POST /trade/v2/orders",
                 "POST /trade/v2/orders",
+                "DELETE /trade/v2/orders/R12",
+                "DELETE /trade/v2/orders/R11",
                 "POST /trade/v2/orders",
                 "POST /trade/v2/orders");
+
+        wm.verify(1, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/R12")));
+        wm.verify(1, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/R11")));
 
         var posts = requestJournalInOrder().stream()
                 .filter(req -> "POST".equals(req.getMethod().value())).toList();
@@ -2099,6 +2113,8 @@ class SaxoBrokerProviderTest {
             """)));
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R12")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R11")).willReturn(aResponse().withStatus(200)));
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("determinate-429")
                 .whenScenarioStateIs(Scenario.STARTED)
                 .willReturn(okJson("{\"OrderId\":\"R12\"}"))
@@ -2138,11 +2154,97 @@ class SaxoBrokerProviderTest {
                 .withRequestBody(matchingJsonPath("$.Amount", equalTo("24.0"))));
         wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders"))
                 .withRequestBody(matchingJsonPath("$.Amount", equalTo("22.0"))));
+        // The sized legs (R12/R11) must be cancelled — exactly once each — before the full-size
+        // legs are placed, or both sets would be concurrently live against the same position.
+        wm.verify(1, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/R12")));
+        wm.verify(1, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/R11")));
         assertThat(requestJournalMethodsAndPaths()).containsSubsequence(
                 "DELETE /trade/v2/orders/leg-24",
                 "DELETE /trade/v2/orders/leg-22",
+                "DELETE /trade/v2/orders/R12",
+                "DELETE /trade/v2/orders/R11",
                 "POST /trade/v2/orders",
                 "POST /trade/v2/orders");
+    }
+
+    @Test
+    void aFailedOrphanCancelOnDeterminateCloseFailureReportsUnprotected() {
+        // Same as aDeterminateCloseRejectionRestoresFullSizedLegs, except cancelling one of the
+        // sized orphans (R11) fails — it stays live at the broker. That must be surfaced as
+        // LEG_RESTORE_FAILED_UNPROTECTED with EVERY live order id named: the two full-size
+        // replacements AND the uncancellable orphan, so the caller can reconcile all three
+        // against the 46-share position (12+24+22=58 shares of Sell interest actually working).
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-24","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-22","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":22.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R12")).willReturn(aResponse().withStatus(200)));
+        // R11's cancel fails outright — it stays live.
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R11")).willReturn(aResponse().withStatus(500)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-cancel-fails")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"R12\"}"))
+                .willSetStateTo("sized1"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-cancel-fails")
+                .whenScenarioStateIs("sized1")
+                .willReturn(okJson("{\"OrderId\":\"R11\"}"))
+                .willSetStateTo("sized2"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-cancel-fails")
+                .whenScenarioStateIs("sized2")
+                .willReturn(aResponse().withStatus(400).withHeader("Content-Type", "application/json")
+                        .withBody("""
+                            {"ErrorInfo":{"ErrorCode":"OrderRejected","Message":"close rejected by broker"}}
+                            """))
+                .willSetStateTo("close-failed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-cancel-fails")
+                .whenScenarioStateIs("close-failed")
+                .willReturn(okJson("{\"OrderId\":\"back-24\"}"))
+                .willSetStateTo("rollback1"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-cancel-fails")
+                .whenScenarioStateIs("rollback1")
+                .willReturn(okJson("{\"OrderId\":\"back-22\"}")));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(SaxoBrokerProvider.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.INFO);
+        OrderResult r;
+        try {
+            r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_FAILED_UNPROTECTED");
+        // All THREE live orders must be visible: both full-size replacements, AND the
+        // uncancellable sized orphan (R11) — never silently dropped.
+        assertThat(r.protectiveLegs()).hasSize(3);
+        assertThat(r.protectiveLegs()).extracting("orderId")
+                .containsExactlyInAnyOrder("back-24", "back-22", "R11");
+
+        wm.verify(1, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/R12")));
+        wm.verify(1, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/R11")));
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("24.0"))));
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("22.0"))));
+
+        assertThat(appender.list).anyMatch(e -> e.getLevel() == Level.ERROR
+                && e.getFormattedMessage().contains("AAPL")
+                && e.getFormattedMessage().contains("orphan"));
     }
 
     @Test
@@ -2254,6 +2356,10 @@ class SaxoBrokerProviderTest {
             """)));
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        // The sized orphans (R12/R11) cancel cleanly — this test is about the FULL-SIZE restore
+        // failing, not the orphan cancel.
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R12")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R11")).willReturn(aResponse().withStatus(200)));
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("failed-rollback")
                 .whenScenarioStateIs(Scenario.STARTED)
                 .willReturn(okJson("{\"OrderId\":\"R12\"}"))

@@ -1305,16 +1305,36 @@ public class SaxoBrokerProvider implements BrokerProvider {
             }
             if (isDeterminateWriteFailure(e)) {
                 // The broker's synchronous response says the close was NOT placed — safe to
-                // grow the sized-down legs back to their full original size.
+                // grow the sized-down legs back to their full original size. But `restored`
+                // (the sized legs from the block above) are ALREADY live at the broker: placing
+                // full-size legs on top of them without cancelling first would double the
+                // opposite-side interest working against the holding (12+11 sized PLUS 24+22
+                // full-size = 69 against a 46-share position) — the exact same hazard the
+                // placeSizedLegs-failure branch above already guards against, arriving here from
+                // the other direction (the sized legs succeeded, but the CLOSE then failed).
+                // Mirror that branch: cancel every sized leg first (each independently, so one
+                // failure doesn't abort the rest), THEN roll back to full size.
+                List<RestoredLeg> orphans = new ArrayList<>();
+                for (RestoredLeg r : restored) {
+                    try {
+                        cancel(r.orderId());
+                    } catch (Exception cancelFailure) {
+                        orphans.add(r);
+                    }
+                }
                 List<RestoredLeg> back = placeLegsAtFullSize(ctx, ri, cancelled);
                 OrderResult closeReject = safeWriteError("POST /trade/v2/orders (flatten)", e);
                 List<RestoredLeg> allKnown = new ArrayList<>(back);
+                allKnown.addAll(orphans);
                 allKnown.addAll(uncancelledLive);
-                if (back.size() != cancelled.size()) {
+                boolean fullyAccounted = orphans.isEmpty() && back.size() == cancelled.size();
+                if (!fullyAccounted) {
                     log.error("saxo flatten {}: close rejected ({}) AND protective legs could not be "
-                            + "restored — position uic={} holds {} shares with only {} of {} legs working",
+                            + "fully restored — position uic={} holds {} shares with {} full-size "
+                            + "leg(s) restored, {} sized leg(s) still live as uncancelled orphans, "
+                            + "out of {} originally cancelled",
                             symbol, closeReject.rejectReason(), ri.uic(),
-                            available.toPlainString(), back.size(), cancelled.size());
+                            available.toPlainString(), back.size(), orphans.size(), cancelled.size());
                     return OrderResult.rejectedWithLegs(closeReject.rejectReason(),
                             "LEG_RESTORE_FAILED_UNPROTECTED", allKnown, false);
                 }
