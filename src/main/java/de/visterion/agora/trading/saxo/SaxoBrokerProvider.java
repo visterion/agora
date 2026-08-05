@@ -1367,6 +1367,89 @@ public class SaxoBrokerProvider implements BrokerProvider {
     }
 
     /**
+     * Standalone protective stop — see {@link BrokerProvider#placeProtectiveStop}. Additive by
+     * construction: it reads the net position to derive the opposite side (the same derivation
+     * {@link #flatten} uses — {@code amount.signum() > 0 ? "Sell" : "Buy"}), then POSTs exactly
+     * ONE {@code StopIfTraded} order for {@code qty} at {@code stopPrice} with {@code
+     * GoodTillCancel} duration — the same standalone-stop body shape as the far-stop fallback's
+     * {@code standaloneStop} (see {@link #submitFarStopFallback}). It cancels nothing, reads no
+     * other order, and there is no rollback here because there is nothing that was changed to
+     * roll back on failure — a rejected POST simply leaves the position exactly as it was.
+     *
+     * <p>The caller is responsible for not double-covering shares another working stop already
+     * protects; this method has no visibility into other orders by design.
+     */
+    @Override
+    public OrderResult placeProtectiveStop(String symbol, BigDecimal qty, BigDecimal stopPrice) {
+        if (qty == null || qty.signum() <= 0) {
+            return OrderResult.rejected(
+                    "qty must be positive: " + (qty == null ? "null" : qty.toPlainString()), "INVALID_QTY");
+        }
+        SaxoInstrumentResolver.ResolvedInstrument ri;
+        try {
+            ri = resolver.resolve(symbol);
+        } catch (SaxoInstrumentResolver.SymbolResolutionException e) {
+            return OrderResult.rejected(e.getMessage(), "SYMBOL");
+        }
+        AccountContext ctx = accountContext();
+        JsonNode resp = followPagination(getJson("GET /port/v1/netpositions (placeProtectiveStop)",
+                b -> b.path("/port/v1/netpositions")
+                        .queryParam("ClientKey", "{ck}")
+                        .queryParam("AccountKey", "{ak}")
+                        .queryParam("FieldGroups", "{fg}")
+                        .build(ctx.clientKey(), ctx.accountKey(),
+                                "NetPositionBase,NetPositionView,DisplayAndFormat")));
+
+        JsonNode match = null;
+        for (JsonNode n : resp.path("Data")) {
+            JsonNode base = n.path("NetPositionBase");
+            if (base.path("Uic").asLong(-1) == ri.uic() && bd(base.path("Amount")).signum() != 0) {
+                match = n;
+                break;
+            }
+        }
+        if (match == null) {
+            throw new BrokerException(BrokerException.Kind.NOT_FOUND, "no open position: " + symbol, null);
+        }
+        BigDecimal amount = bd(match.path("NetPositionBase").path("Amount"));
+        BigDecimal available = amount.abs();
+        String opposite = amount.signum() > 0 ? "Sell" : "Buy";
+
+        if (qty.compareTo(available) > 0) {
+            return OrderResult.rejected(
+                    "requested qty " + qty.toPlainString() + " exceeds position " + available.toPlainString(),
+                    "QTY_EXCEEDS_POSITION");
+        }
+
+        ObjectNode body = MAPPER.createObjectNode();
+        body.put("Uic", ri.uic());
+        body.put("AssetType", ri.assetType());
+        body.put("BuySell", opposite);
+        body.put("Amount", qty);
+        body.put("OrderType", "StopIfTraded");
+        body.put("OrderPrice", stopPrice);
+        body.put("ManualOrder", false);
+        body.put("AccountKey", ctx.accountKey());
+        body.set("OrderDuration", durationNode("GoodTillCancel"));
+
+        try {
+            JsonNode resp2 = client.post().uri("/trade/v2/orders")
+                    .header("Authorization", bearer())
+                    .header("X-Request-ID", UUID.randomUUID().toString())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .retrieve().body(JsonNode.class);
+            String orderId = resp2 == null ? null : resp2.path("OrderId").asString(null);
+            return OrderResult.accepted(orderId, null, "accepted");
+        } catch (RestClientResponseException e) {
+            return safeWriteError("POST /trade/v2/orders (placeProtectiveStop)", e);
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo placeProtectiveStop failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * True when the closing POST failed in a way that means Saxo did NOT place the order —
      * safe to restore the protective legs to full size. Mirrors the determinate statuses
      * {@link #writeError} (400 → parsed reject) and {@link #readError} (404/401/403/429) map

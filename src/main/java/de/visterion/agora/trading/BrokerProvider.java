@@ -48,6 +48,33 @@ public interface BrokerProvider {
      * the position) since the caller does not know the position size.
      */
     OrderResult flatten(String symbol, java.math.BigDecimal fraction, java.math.BigDecimal qty);
+
+    /**
+     * Place ONE protective stop order for {@code qty} shares of an existing position at
+     * {@code stopPrice}, on the side opposite the position (a stop protecting a long is a
+     * Sell, protecting a short is a Buy). This is purely additive: it cancels nothing, reads
+     * no other order, and never touches an existing protective leg. That is the entire point
+     * — it must be safe to call on a position whose protective state is already messy (e.g.
+     * a partial rollback left it partially covered), with no cancel window and no ids to lose.
+     *
+     * <p>Implementations reject, without calling the broker, when: there is no open position
+     * for {@code symbol}; {@code qty} is not positive; or {@code qty} exceeds the position
+     * size (placing more protective interest than shares held is exactly the failure this
+     * method exists to prevent).
+     *
+     * <p>The caller is responsible for not double-covering shares another working stop
+     * already covers — this method has no visibility into other orders by design.
+     *
+     * <p>The default implementation is honest about not supporting it: a provider that
+     * cannot place a standalone protective stop rejects with
+     * {@code PROTECTIVE_STOP_UNSUPPORTED} instead of silently doing nothing.
+     */
+    default OrderResult placeProtectiveStop(String symbol, java.math.BigDecimal qty, java.math.BigDecimal stopPrice) {
+        return OrderResult.rejected(
+                "provider " + name() + " does not support placing a standalone protective stop",
+                "PROTECTIVE_STOP_UNSUPPORTED");
+    }
+
     List<Position> positions();
     /** Closed (already-settled) positions — real fill prices/P&amp;L from broker trade history. */
     List<ClosedPosition> closedPositions();

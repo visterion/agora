@@ -1076,4 +1076,16 @@ class AlpacaBrokerProviderTest {
         assertThat(r.accepted()).isFalse();
         assertThat(r.rejectReason()).contains("stop-loss was already moved");
     }
+
+    // ---- placeProtectiveStop: Alpaca does not implement it ----
+
+    @Test
+    void placeProtectiveStop_isRejectedAsUnsupported() {
+        var r = provider.placeProtectiveStop("AAPL", new BigDecimal("10"), new BigDecimal("45.49"));
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("PROTECTIVE_STOP_UNSUPPORTED");
+        assertThat(r.rejectReason()).contains("does not support");
+        wm.verify(0, anyRequestedFor(urlMatching(".*")));
+    }
 }

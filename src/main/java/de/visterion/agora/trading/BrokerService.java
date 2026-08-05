@@ -34,6 +34,9 @@ public class BrokerService {
     public OrderResult flatten(String connection, String symbol, BigDecimal fraction, BigDecimal qty) {
         return resolveMutable(connection).flatten(symbol, fraction, qty);
     }
+    public OrderResult placeProtectiveStop(String connection, String symbol, BigDecimal qty, BigDecimal stopPrice) {
+        return resolveMutable(connection).placeProtectiveStop(symbol, qty, stopPrice);
+    }
     public List<Position> positions(String connection) { return resolve(connection).positions(); }
     public List<ClosedPosition> closedPositions(String connection) { return closedPositions(connection, null, null); }
     public List<ClosedPosition> closedPositions(String connection, String from, String to) {

@@ -2736,6 +2736,111 @@ class SaxoBrokerProviderTest {
                 && e.getFormattedMessage().contains("could not be"));
     }
 
+    // ---- placeProtectiveStop: additive-only single stop for an existing position ----
+
+    @Test
+    void placeProtectiveStopSendsSellStopForLongPosition() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .willReturn(okJson("{\"OrderId\":\"9200\"}")));
+
+        var r = provider.placeProtectiveStop("AAPL", new java.math.BigDecimal("34"), new java.math.BigDecimal("45.49"));
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.brokerOrderId()).isEqualTo("9200");
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell")))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded")))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("34")))
+                .withRequestBody(matchingJsonPath("$.OrderPrice", equalTo("45.49")))
+                .withRequestBody(matchingJsonPath("$.OrderDuration.DurationType", equalTo("GoodTillCancel"))));
+        wm.verify(0, deleteRequestedFor(urlPathMatching("/trade/v2/orders/.*")));
+    }
+
+    @Test
+    void placeProtectiveStopSendsBuyStopForShortPosition() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":-46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .willReturn(okJson("{\"OrderId\":\"9201\"}")));
+
+        var r = provider.placeProtectiveStop("AAPL", new java.math.BigDecimal("10"), new java.math.BigDecimal("160"));
+
+        assertThat(r.accepted()).isTrue();
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Buy")))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("10")))
+                .withRequestBody(matchingJsonPath("$.OrderPrice", equalTo("160"))));
+        wm.verify(0, deleteRequestedFor(urlPathMatching("/trade/v2/orders/.*")));
+    }
+
+    @Test
+    void placeProtectiveStopWithQtyExceedingPositionIsRejectedWithoutBrokerCall() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+
+        var r = provider.placeProtectiveStop("AAPL", new java.math.BigDecimal("50"), new java.math.BigDecimal("45.49"));
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("QTY_EXCEEDS_POSITION");
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        wm.verify(0, deleteRequestedFor(urlPathMatching("/trade/v2/orders/.*")));
+    }
+
+    @Test
+    void placeProtectiveStopWithoutPositionIsNotFound() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions"))
+                .willReturn(okJson("{\"Data\":[]}")));
+
+        assertThatThrownBy(() -> provider.placeProtectiveStop("AAPL", new java.math.BigDecimal("10"), new java.math.BigDecimal("45.49")))
+                .isInstanceOf(BrokerException.class)
+                .extracting(e -> ((BrokerException) e).kind())
+                .isEqualTo(BrokerException.Kind.NOT_FOUND);
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void placeProtectiveStopWithNonPositiveQtyIsRejectedWithoutAnyCall() {
+        var r = provider.placeProtectiveStop("AAPL", new java.math.BigDecimal("0"), new java.math.BigDecimal("45.49"));
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("INVALID_QTY");
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/port/v1/netpositions")));
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void placeProtectiveStopSerialisesTheNewOrderId() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .willReturn(okJson("{\"OrderId\":\"9202\"}")));
+
+        var r = provider.placeProtectiveStop("AAPL", new java.math.BigDecimal("34"), new java.math.BigDecimal("45.49"));
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.brokerOrderId()).isEqualTo("9202");
+        assertThat(r.status()).isEqualTo("accepted");
+    }
+
     // ---- pagination ----
 
     @Test

@@ -168,6 +168,68 @@ put back at all), but it is a real observability gap: a caller cannot repoint it
 this exception alone and must reconcile via `get_orders` to discover the sized legs Saxo
 actually holds live.
 
+## `place_protective_stop` — one additive stop, no cancel, no rollback
+
+### Tool schema
+
+`place_protective_stop(connection, symbol, qty, stop_price)`
+
+Places exactly ONE protective stop order for `qty` shares of an existing position at
+`stop_price`, on the side opposite the position (opposite a long is Sell, opposite a
+short is Buy — the same sign-of-`Amount` derivation `flatten` uses on Saxo).
+
+This tool exists for the case `flatten`'s leg-restore machinery is deliberately unable
+to cover: a position whose protective state is already messy — say, a partial rollback
+left some shares stopped and some not — and that needs one more stop placed *right now*,
+with nothing else touched. It is **purely additive**:
+
+- It **cancels nothing** and **reads no other order**. There is no cancel window and
+  nothing to roll back on failure — a rejected POST simply leaves the position exactly
+  as it was before the call.
+- It never looks at, resizes, or replaces any existing protective leg (including a
+  stop this same tool placed on an earlier call).
+
+### Rejections (no broker order-placement call made)
+
+- No open position for `symbol` → `NOT_FOUND` (broker exception, same as `flatten`).
+- `qty` not positive → `INVALID_QTY`.
+- `qty` exceeds the position size → `QTY_EXCEEDS_POSITION`. Placing more protective
+  interest than shares held is exactly the failure this tool exists to prevent, so it
+  is checked (against the broker's own net-position read) before any order is placed.
+
+### Response shape
+
+```json
+{ "accepted": true, "orderId": "...", "status": "accepted" }
+```
+or
+```json
+{ "accepted": false, "rejectReason": "...", "rejectCode": "..." }
+```
+
+### Caller responsibility: no double-covering
+
+This tool has **no visibility into other working orders** by design — that is what
+makes it safe to call against a messy protective state. It will happily place a second
+stop on top of shares another order already protects if asked to. **The caller must
+track which shares are already covered** (e.g. via `get_orders`) before deciding how
+many shares to pass as `qty`, exactly the way the IMAX case that motivated this tool
+worked: 46 shares held, 12 already protected by a surviving stop, so the call passed
+`qty=34` for the uncovered remainder.
+
+### Saxo implementation
+
+Resolves the instrument, reads the net position to derive the opposite side (no other
+order is read), then POSTs a single `StopIfTraded` order with `GoodTillCancel` duration
+— the same standalone-stop body shape the far-stop fallback already uses for a lone
+entry/stop pair.
+
+### Alpaca: not implemented
+
+Alpaca does not support this tool. Every call returns `accepted:false` with
+`rejectCode: "PROTECTIVE_STOP_UNSUPPORTED"` — no broker call is made — so a caller can
+tell "this provider doesn't do this" apart from "the call failed."
+
 ## `modify_bracket` — orderId semantics (read this before calling it)
 
 `modify_bracket(connection, orderId, symbol, stop?, target?, stopOrderId?, targetOrderId?)`
