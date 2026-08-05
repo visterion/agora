@@ -581,12 +581,19 @@ filled, Saxo starts listing the surviving OCO pair's two legs as *mutual*
 (`role="other"`, no `parentId`, `side`/`clientRef` populated) in addition to being the
 other leg's embedded child (its real `role` of `stop_loss`/`take_profit`, `parentId` set,
 `side`/`clientRef` blank) — live-verified via `get_orders` on a filled bracket. `get_orders`
-collapses same-`brokerOrderId` duplicates into one entry, preferring the more informative
-value per field (non-blank `parentId`/`side`/`clientRef`, a role other than `other`,
-non-null price/fill fields); on a field where both variants disagree and neither side is
-more informative (this includes `status`), the first-seen value wins. An *unfilled*
-bracket's children are never separately present at top level, so this merge is a no-op for
-the ordinary case.
+collapses same-`brokerOrderId` duplicates into one entry. `status`/`qty`/`type`/`symbol`
+always come from the TOP-LEVEL variant, never the embedded-child copy — the top-level entry
+is Saxo's own statement about that order, while the embedded copy is a context-dependent
+view from the sibling's perspective (its `Status` can read `NotWorking` while the same
+order's own top-level entry says `Working`, and it can omit `Amount` entirely, which would
+otherwise default to a false `qty=0`). Only `role`/`parentId` come from the child (the
+top-level variant is always `role="other"`/no `parentId` for a duplicated id). `side`/
+`clientRef`/prices/fill fields use whichever variant carries a non-blank/non-null value.
+The merged pair ends up with reciprocal `parentId`s (each leg's "parent" is really its OCO
+sibling, since the original bracket entry already filled and is no longer listed) — no
+current consumer walks parent links, so this doesn't loop, but it's not a real tree. An
+*unfilled* bracket's children are never separately present at top level, so this merge is a
+no-op for the ordinary case.
 
 `limitPrice`/`stopPrice` ← the node's own `Price` (bracket parent) or `OrderPrice` (a leg
 embedded in `RelatedOpenOrders`), classified by the node's own `OpenOrderType`: a stop

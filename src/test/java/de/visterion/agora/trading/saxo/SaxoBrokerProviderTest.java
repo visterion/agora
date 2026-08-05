@@ -375,16 +375,17 @@ class SaxoBrokerProviderTest {
 
     @Test
     void ordersOpen_parsesLimitAndStopPriceFromSaxo() {
-        // Real Saxo SIM bracket response captured in prod logs (see docstring on
+        // Hand-written synthetic bracket shape (see docstring on
         // SaxoBrokerProvider#classifyPrice): parent carries its price in "Price", each leg in
-        // RelatedOpenOrders carries it in "OrderPrice".
+        // RelatedOpenOrders carries it in "OrderPrice". Ids/prices are invented, not from a
+        // live account.
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
-            {"__count":1,"Data":[{"OpenOrderType":"Limit","OrderId":"5039279121","OrderRelation":"IfDoneMaster",
-              "Price":182.53,
-              "DisplayAndFormat":{"Symbol":"STT:xnys"},"BuySell":"Buy","Amount":6.0,"Status":"Working",
+            {"__count":1,"Data":[{"OpenOrderType":"Limit","OrderId":"2000000001","OrderRelation":"IfDoneMaster",
+              "Price":100.00,
+              "DisplayAndFormat":{"Symbol":"SYNTH:xnys"},"BuySell":"Buy","Amount":6.0,"Status":"Working",
               "RelatedOpenOrders":[
-                {"OpenOrderType":"Limit","OrderId":"5039279122","OrderPrice":226.03,"Status":"NotWorking"},
-                {"OpenOrderType":"StopIfTraded","OrderId":"5039279123","OrderPrice":168.03,"Status":"NotWorking"}
+                {"OpenOrderType":"Limit","OrderId":"2000000002","OrderPrice":120.00,"Status":"NotWorking"},
+                {"OpenOrderType":"StopIfTraded","OrderId":"2000000003","OrderPrice":80.00,"Status":"NotWorking"}
               ]}]}
             """)));
 
@@ -392,18 +393,18 @@ class SaxoBrokerProviderTest {
         assertThat(all).hasSize(3);
 
         var parent = all.get(0);
-        assertThat(parent.brokerOrderId()).isEqualTo("5039279121");
-        assertThat(parent.limitPrice()).isEqualByComparingTo("182.53");
+        assertThat(parent.brokerOrderId()).isEqualTo("2000000001");
+        assertThat(parent.limitPrice()).isEqualByComparingTo("100.00");
         assertThat(parent.stopPrice()).isNull();
 
         var tpLeg = all.get(1);
-        assertThat(tpLeg.brokerOrderId()).isEqualTo("5039279122");
-        assertThat(tpLeg.limitPrice()).isEqualByComparingTo("226.03");
+        assertThat(tpLeg.brokerOrderId()).isEqualTo("2000000002");
+        assertThat(tpLeg.limitPrice()).isEqualByComparingTo("120.00");
         assertThat(tpLeg.stopPrice()).isNull();
 
         var slLeg = all.get(2);
-        assertThat(slLeg.brokerOrderId()).isEqualTo("5039279123");
-        assertThat(slLeg.stopPrice()).isEqualByComparingTo("168.03");
+        assertThat(slLeg.brokerOrderId()).isEqualTo("2000000003");
+        assertThat(slLeg.stopPrice()).isEqualByComparingTo("80.00");
         assertThat(slLeg.limitPrice()).isNull();
     }
 
@@ -443,6 +444,49 @@ class SaxoBrokerProviderTest {
         assertThat(tp.parentId()).isEqualTo("1000000001");
         assertThat(tp.side()).isEqualTo("sell");
         assertThat(tp.clientRef()).isEqualTo("ref-tp");
+    }
+
+    @Test
+    void ordersOpen_mergedPairKeepsTopLevelStatusAndQtyNotChildVariant() {
+        // Adversarial shape: the embedded-child copy of an id can disagree with that same
+        // id's own top-level entry on Status, and can omit Amount entirely (Saxo's contextual
+        // sibling view vs. the order's own statement about itself). Raw parse order here is
+        // A-top, (child-of-A i.e. B), B-top, (child-of-B i.e. A) — so for id 3000000002 the
+        // FIRST-seen raw variant is the less-informative child (Status=NotWorking, Amount
+        // omitted -> would zero-default), and its real top-level entry (Status=Working,
+        // Amount=6.0) only arrives second. The merge must still keep the top-level values.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"3000000001","OpenOrderType":"StopIfTraded","Status":"Working","Uic":913,
+               "AssetType":"Stock","BuySell":"Sell","Amount":6.0,
+               "DisplayAndFormat":{"Symbol":"SYNTH:xnys"},
+               "RelatedOpenOrders":[
+                 {"OrderId":"3000000002","OpenOrderType":"Limit","Status":"NotWorking"}]},
+              {"OrderId":"3000000002","OpenOrderType":"Limit","Status":"Working","Uic":913,
+               "AssetType":"Stock","BuySell":"Sell","Amount":6.0,
+               "DisplayAndFormat":{"Symbol":"SYNTH:xnys"},
+               "RelatedOpenOrders":[
+                 {"OrderId":"3000000001","OpenOrderType":"StopIfTraded","Status":"Working","Amount":6.0}]}
+            ]}
+            """)));
+
+        var all = provider.orders(null);
+        assertThat(all).hasSize(2);
+
+        var stop = all.get(0);
+        assertThat(stop.brokerOrderId()).isEqualTo("3000000001");
+        assertThat(stop.status()).isEqualTo("working");
+        assertThat(stop.qty()).isEqualByComparingTo("6.0");
+        assertThat(stop.role()).isEqualTo("stop_loss");
+
+        var tp = all.get(1);
+        assertThat(tp.brokerOrderId()).isEqualTo("3000000002");
+        assertThat(tp.status()).isEqualTo("working");   // NOT "notworking" from the child copy
+        assertThat(tp.qty()).isEqualByComparingTo("6.0"); // NOT 0 from the child's omitted Amount
+        assertThat(tp.role()).isEqualTo("take_profit");
+
+        // A working take-profit must not silently vanish from a status="working" filter.
+        assertThat(provider.orders("working")).hasSize(2);
     }
 
     @Test

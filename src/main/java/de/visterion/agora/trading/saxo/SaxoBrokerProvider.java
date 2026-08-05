@@ -345,14 +345,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
     /**
      * Collapses same-{@code brokerOrderId} duplicates produced by Saxo's mutual {@code
      * RelatedOpenOrders} listing of a filled bracket's surviving OCO pair (see the javadoc on
-     * {@link #ordersOpen}) into a single entry per id, preserving first-seen order. Field by
-     * field, the more informative value wins — a non-blank {@code parentId}/{@code side}/
-     * {@code clientRef}, a role other than "other", a non-null price/fill field — taken from
-     * whichever of the two variants carries it. Any other field (including {@code status})
-     * that differs between the two variants keeps the first-seen value: the filter below then
-     * sees exactly the same status it would have seen from the first-seen raw entry, so a
-     * duplicate pair that disagrees on status cannot make an id appear once as included and
-     * once as excluded.
+     * {@link #ordersOpen}) into a single entry per id, preserving first-seen order.
      */
     private static List<Order> mergeDuplicateIds(List<Order> orders) {
         java.util.LinkedHashMap<String, Order> merged = new java.util.LinkedHashMap<>();
@@ -373,24 +366,47 @@ public class SaxoBrokerProvider implements BrokerProvider {
         return new ArrayList<>(merged.values());
     }
 
-    /** first is the first-seen variant, second the later duplicate; first's value wins ties. */
-    private static Order mergeOrderPair(Order first, Order second) {
+    /**
+     * {@code a}/{@code b} are the two raw variants of the same id (order within the pair
+     * doesn't matter — the top-level one is picked out below by {@code parentId == null}).
+     * {@code status}/{@code qty}/{@code type}/{@code symbol} always come from the TOP-LEVEL
+     * variant, never from the embedded-child variant, even when the child was parsed first:
+     * the top-level {@code Data} entry is Saxo's own statement about that order, while the
+     * embedded copy under the sibling's {@code RelatedOpenOrders} is a context-dependent view
+     * from the sibling's perspective — its {@code Status} can read "NotWorking" while the same
+     * order's own top-level entry says "Working" (the repo's own
+     * {@code ordersOpen_unfilledBracketChildrenNotDuplicated} test encodes exactly that shape
+     * for an unfilled bracket's children), and its {@code Amount} can be entirely absent,
+     * which {@code parseOrder}'s zero-defaulting {@code bd(Amount)} would otherwise turn into
+     * a false {@code qty=0}. Only {@code role}/{@code parentId} — which the top-level variant
+     * never carries correctly (it's always "other"/null there) — come from the child. The
+     * remaining fields use the more-informative-wins rule since either variant may carry them.
+     *
+     * <p><b>Reciprocal parentId:</b> the merged pair ends up with {@code stop.parentId ==
+     * tp.brokerOrderId()} and vice versa — each leg's "parent" is really its OCO sibling, not
+     * the original bracket entry (which already filled and is no longer listed at all). No
+     * current consumer walks parent links, so this doesn't loop today, but a future one that
+     * does must treat this pair specially rather than assuming a tree.
+     */
+    private static Order mergeOrderPair(Order a, Order b) {
+        Order top = a.parentId() == null ? a : (b.parentId() == null ? b : a);
+        Order child = (top == a) ? b : a;
         return new Order(
-                first.brokerOrderId(),
-                preferNonBlank(first.clientRef(), second.clientRef()),
-                first.symbol(),
-                preferNonBlank(first.side(), second.side()),
-                first.qty(),
-                first.type(),
-                first.status(),
-                preferRole(first.role(), second.role()),
-                preferNonNull(first.filledQty(), second.filledQty()),
-                preferNonNull(first.avgFillPrice(), second.avgFillPrice()),
-                preferNonNull(first.limitPrice(), second.limitPrice()),
-                preferNonNull(first.stopPrice(), second.stopPrice()),
-                preferNonBlank(first.parentId(), second.parentId()),
-                first.submittedAt(),
-                first.filledAt());
+                top.brokerOrderId(),
+                preferNonBlank(top.clientRef(), child.clientRef()),
+                top.symbol(),
+                preferNonBlank(top.side(), child.side()),
+                top.qty(),
+                top.type(),
+                top.status(),
+                preferRole(top.role(), child.role()),
+                preferNonNull(top.filledQty(), child.filledQty()),
+                preferNonNull(top.avgFillPrice(), child.avgFillPrice()),
+                preferNonNull(top.limitPrice(), child.limitPrice()),
+                preferNonNull(top.stopPrice(), child.stopPrice()),
+                preferNonBlank(top.parentId(), child.parentId()),
+                top.submittedAt(),
+                top.filledAt());
     }
 
     private static String preferNonBlank(String first, String second) {
