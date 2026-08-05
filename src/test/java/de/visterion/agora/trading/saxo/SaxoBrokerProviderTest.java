@@ -408,6 +408,70 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void ordersOpen_mergesMutualOcoDuplicatesIntoOneEntryPerId() {
+        // Hand-written synthetic shape of a filled bracket's surviving OCO pair: Saxo lists
+        // BOTH legs as top-level Data entries, each carrying the OTHER leg in its own
+        // RelatedOpenOrders. Ids/symbol are invented, not from any live account.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"1000000001","OpenOrderType":"StopIfTraded","Status":"Working","Uic":911,
+               "AssetType":"Stock","BuySell":"Sell","Amount":6.0,"OrderPrice":168.03,
+               "ExternalReference":"ref-sl","DisplayAndFormat":{"Symbol":"SYNTH:xnys"},
+               "RelatedOpenOrders":[
+                 {"OrderId":"1000000002","OpenOrderType":"Limit","Status":"Working","Amount":6.0}]},
+              {"OrderId":"1000000002","OpenOrderType":"Limit","Status":"Working","Uic":911,
+               "AssetType":"Stock","BuySell":"Sell","Amount":6.0,"OrderPrice":226.03,
+               "ExternalReference":"ref-tp","DisplayAndFormat":{"Symbol":"SYNTH:xnys"},
+               "RelatedOpenOrders":[
+                 {"OrderId":"1000000001","OpenOrderType":"StopIfTraded","Status":"Working","Amount":6.0}]}
+            ]}
+            """)));
+
+        var all = provider.orders(null);
+
+        assertThat(all).hasSize(2);
+        var stop = all.get(0);
+        assertThat(stop.brokerOrderId()).isEqualTo("1000000001");
+        assertThat(stop.role()).isEqualTo("stop_loss");
+        assertThat(stop.parentId()).isEqualTo("1000000002");
+        assertThat(stop.side()).isEqualTo("sell");
+        assertThat(stop.clientRef()).isEqualTo("ref-sl");
+
+        var tp = all.get(1);
+        assertThat(tp.brokerOrderId()).isEqualTo("1000000002");
+        assertThat(tp.role()).isEqualTo("take_profit");
+        assertThat(tp.parentId()).isEqualTo("1000000001");
+        assertThat(tp.side()).isEqualTo("sell");
+        assertThat(tp.clientRef()).isEqualTo("ref-tp");
+    }
+
+    @Test
+    void ordersOpen_unfilledBracketChildrenNotDuplicated() {
+        // Control case: an unfilled bracket's children are NOT separately present at top
+        // level, so nothing collides on id and the merge must be a no-op — three orders.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"1000000010","OpenOrderType":"Limit","Status":"Working","Uic":912,
+               "AssetType":"Stock","BuySell":"Buy","Amount":7.0,"OrderRelation":"IfDoneMaster",
+               "DisplayAndFormat":{"Symbol":"SYNTH:xnys"},
+               "RelatedOpenOrders":[
+                 {"OrderId":"1000000011","OpenOrderType":"Limit","Status":"NotWorking","Amount":7.0},
+                 {"OrderId":"1000000012","OpenOrderType":"StopIfTraded","Status":"NotWorking","Amount":7.0}]}
+            ]}
+            """)));
+
+        var all = provider.orders(null);
+
+        assertThat(all).hasSize(3);
+        assertThat(all.get(0).brokerOrderId()).isEqualTo("1000000010");
+        assertThat(all.get(0).role()).isEqualTo("entry");
+        assertThat(all.get(1).brokerOrderId()).isEqualTo("1000000011");
+        assertThat(all.get(1).role()).isEqualTo("take_profit");
+        assertThat(all.get(2).brokerOrderId()).isEqualTo("1000000012");
+        assertThat(all.get(2).role()).isEqualTo("stop_loss");
+    }
+
+    @Test
     void orderByClientRefFindsMatchOr404() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
             {"Data":[{"OrderId":"5001","BuySell":"Buy","Amount":1.0,"OpenOrderType":"Limit",

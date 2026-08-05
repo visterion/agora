@@ -294,6 +294,16 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * null for every Saxo order: {@code /port/v1/orders/me} is an *open*-orders endpoint and
      * we could not verify, without live credentials, a reliable fill-qty/fill-price field
      * on it — documented as a gap in exit-tools.md rather than guessed.
+     *
+     * <p>Once one leg of a bracket has filled, Saxo starts listing the OCO pair's surviving
+     * legs as mutual {@code RelatedOpenOrders}: each leg appears as its own top-level {@code
+     * Data} entry (role "other", no parentId, side/clientRef populated) AND as the other
+     * leg's embedded child (real role stop_loss/take_profit, parentId set, side/clientRef
+     * blank) — live-verified via {@code get_orders} on a filled STT bracket. An unfilled
+     * bracket's children are never separately present at top level, so nothing is duplicated
+     * there. {@link #mergeDuplicateIds} collapses same-id duplicates into one entry so
+     * downstream role/parentId-based logic (protection checks, flatten's opposite-side
+     * cancel) doesn't double count or double-act.
      */
     @Override
     public List<Order> orders(String status) {
@@ -309,26 +319,92 @@ public class SaxoBrokerProvider implements BrokerProvider {
 
     private List<Order> ordersOpen(String status) {
         JsonNode resp = followPagination(getJson("/port/v1/orders/me?FieldGroups=DisplayAndFormat"));
-        List<Order> out = new ArrayList<>();
+        List<Order> raw = new ArrayList<>();
         for (JsonNode n : resp.path("Data")) {
             Order parent = parseOrder(n, null, null);
-            if (status == null || status.isBlank() || parent.status().equalsIgnoreCase(status)) {
-                out.add(parent);
-            }
+            raw.add(parent);
             JsonNode children = n.path("RelatedOpenOrders");
             if (children.isArray()) {
                 // Legs embedded in RelatedOpenOrders rarely carry their own DisplayAndFormat —
                 // fall back to the parent's already-resolved symbol so a leg never surfaces
                 // with an empty symbol; only truly orphaned legs (no parent symbol either) get "?".
                 for (JsonNode c : children) {
-                    Order leg = parseOrder(c, parent.brokerOrderId(), parent.symbol());
-                    if (status == null || status.isBlank() || leg.status().equalsIgnoreCase(status)) {
-                        out.add(leg);
-                    }
+                    raw.add(parseOrder(c, parent.brokerOrderId(), parent.symbol()));
                 }
             }
         }
+        List<Order> out = new ArrayList<>();
+        for (Order o : mergeDuplicateIds(raw)) {
+            if (status == null || status.isBlank() || o.status().equalsIgnoreCase(status)) {
+                out.add(o);
+            }
+        }
         return out;
+    }
+
+    /**
+     * Collapses same-{@code brokerOrderId} duplicates produced by Saxo's mutual {@code
+     * RelatedOpenOrders} listing of a filled bracket's surviving OCO pair (see the javadoc on
+     * {@link #ordersOpen}) into a single entry per id, preserving first-seen order. Field by
+     * field, the more informative value wins — a non-blank {@code parentId}/{@code side}/
+     * {@code clientRef}, a role other than "other", a non-null price/fill field — taken from
+     * whichever of the two variants carries it. Any other field (including {@code status})
+     * that differs between the two variants keeps the first-seen value: the filter below then
+     * sees exactly the same status it would have seen from the first-seen raw entry, so a
+     * duplicate pair that disagrees on status cannot make an id appear once as included and
+     * once as excluded.
+     */
+    private static List<Order> mergeDuplicateIds(List<Order> orders) {
+        java.util.LinkedHashMap<String, Order> merged = new java.util.LinkedHashMap<>();
+        int duplicates = 0;
+        for (Order o : orders) {
+            Order existing = merged.get(o.brokerOrderId());
+            if (existing == null) {
+                merged.put(o.brokerOrderId(), o);
+            } else {
+                duplicates++;
+                merged.put(o.brokerOrderId(), mergeOrderPair(existing, o));
+            }
+        }
+        if (duplicates > 0) {
+            log.debug("ordersOpen: merged {} duplicate broker order id(s) from Saxo's mutual " +
+                    "RelatedOpenOrders listing of OCO pairs", duplicates);
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    /** first is the first-seen variant, second the later duplicate; first's value wins ties. */
+    private static Order mergeOrderPair(Order first, Order second) {
+        return new Order(
+                first.brokerOrderId(),
+                preferNonBlank(first.clientRef(), second.clientRef()),
+                first.symbol(),
+                preferNonBlank(first.side(), second.side()),
+                first.qty(),
+                first.type(),
+                first.status(),
+                preferRole(first.role(), second.role()),
+                preferNonNull(first.filledQty(), second.filledQty()),
+                preferNonNull(first.avgFillPrice(), second.avgFillPrice()),
+                preferNonNull(first.limitPrice(), second.limitPrice()),
+                preferNonNull(first.stopPrice(), second.stopPrice()),
+                preferNonBlank(first.parentId(), second.parentId()),
+                first.submittedAt(),
+                first.filledAt());
+    }
+
+    private static String preferNonBlank(String first, String second) {
+        boolean firstBlank = first == null || first.isBlank();
+        boolean secondBlank = second == null || second.isBlank();
+        return firstBlank && !secondBlank ? second : first;
+    }
+
+    private static String preferRole(String first, String second) {
+        return "other".equals(first) && second != null && !second.equals("other") ? second : first;
+    }
+
+    private static <T> T preferNonNull(T first, T second) {
+        return first != null ? first : second;
     }
 
     /**

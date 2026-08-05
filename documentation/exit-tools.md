@@ -575,6 +575,19 @@ or `status ∈ {closed, all}`) — see the Saxo two-endpoint split above for the
 fill, call `get_orders` with a `from`/`to` range or `status ∈ {closed, all}` rather than
 the default open-path call.
 
+**Post-fill OCO duplicates are merged, not returned twice.** Once one leg of a bracket has
+filled, Saxo starts listing the surviving OCO pair's two legs as *mutual*
+`RelatedOpenOrders`: each leg then also appears as its own top-level `Data` entry
+(`role="other"`, no `parentId`, `side`/`clientRef` populated) in addition to being the
+other leg's embedded child (its real `role` of `stop_loss`/`take_profit`, `parentId` set,
+`side`/`clientRef` blank) — live-verified via `get_orders` on a filled bracket. `get_orders`
+collapses same-`brokerOrderId` duplicates into one entry, preferring the more informative
+value per field (non-blank `parentId`/`side`/`clientRef`, a role other than `other`,
+non-null price/fill fields); on a field where both variants disagree and neither side is
+more informative (this includes `status`), the first-seen value wins. An *unfilled*
+bracket's children are never separately present at top level, so this merge is a no-op for
+the ordinary case.
+
 `limitPrice`/`stopPrice` ← the node's own `Price` (bracket parent) or `OrderPrice` (a leg
 embedded in `RelatedOpenOrders`), classified by the node's own `OpenOrderType`: a stop
 type (contains "Stop", e.g. `StopIfTraded`/`Stop`/`TriggerStop`/`TrailingStopIfTraded`)
