@@ -1048,9 +1048,11 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * WERE cancelled are eligible: if a cancel itself failed, the surviving old leg plus
      * freshly placed new ones would work against a smaller holding than either alone expects —
      * an unintended reverse position the moment one triggers. Any such incompleteness puts the
-     * legs that DID cancel cleanly back at their FULL original size and rejects the trim
-     * (LEG_CANCEL_INCOMPLETE / LEG_RESTORE_FAILED / LEG_RESTORE_FAILED_UNPROTECTED) rather than
-     * leaving a smaller, partially-protected mix. If placing the sized legs partially succeeds
+     * legs that DID cancel cleanly back at their FULL original size and rejects the trim with
+     * LEG_CANCEL_INCOMPLETE (every cancelled leg restored) or LEG_RESTORE_FAILED_UNPROTECTED
+     * (one of those restores itself failed) rather than leaving a smaller, partially-protected
+     * mix — a DIFFERENT failure mode from the sized-leg placement step below, which rejects with
+     * LEG_RESTORE_FAILED instead. If placing the sized legs partially succeeds
      * (some already live at the broker) before one fails, the already-placed ones are cancelled
      * BEFORE the full-size rollback — otherwise the rolled-back legs plus these orphans would
      * double the opposite-side interest against the holding. If cancelling an orphan itself

@@ -52,9 +52,14 @@ rejected partial close, failing every later stop modification with `LEG_NOT_FOUN
 fields are omitted on a full close (nothing was restored) and on any flatten call that
 never touched a protective leg.
 
-`legs_collapsed:true` means the remainder was too small to give every leg at least one
-share (e.g. two stop legs but only one share left after the close) — the allocator folds
-all protection into the single tightest stop rather than dropping any leg to zero.
+`legs_collapsed:true` means the remainder was too small to give every cancelled stop leg
+at least one share (e.g. three stop legs but only two shares left after the close). The
+allocator does **not** dump the whole remainder onto the single tightest leg — it fills
+greedily down tightness order, one share at a time, so more than one leg can still come
+back (three 1-share legs with 2 remaining yields two restored legs of 1 share each, not
+one of 2). The reliable signal is that **fewer legs may come back than were cancelled**,
+not that exactly one does — a caller must reconcile against the `replaces` ids rather
+than assume a count.
 
 **Two known limitations**, both already documented above and unchanged by this restore
 logic: Saxo flatten's whole-share truncation with no lot-size table, and the window
@@ -115,9 +120,13 @@ eligible for restoration: a leg whose price/id/amount couldn't be read back is l
 (uncancelled) on a partial close rather than being cancelled with nothing to put back —
 but on a full close (nothing is being restored anyway) it is still cancelled, matching
 the plain pre-restore flatten behaviour. If a cancel itself fails partway through, the
-legs that did cancel cleanly are put back at full size and the trim is rejected
-(`LEG_CANCEL_INCOMPLETE` / `LEG_RESTORE_FAILED` / `LEG_RESTORE_FAILED_UNPROTECTED`)
-rather than leaving a partially-protected mix.
+legs that did cancel cleanly are put back at full size and the trim is rejected with
+`LEG_CANCEL_INCOMPLETE` (every cancelled leg could be put back) or
+`LEG_RESTORE_FAILED_UNPROTECTED` (one of the put-back attempts itself failed, leaving a
+leg live and unaccounted for) rather than leaving a partially-protected mix. A separate
+failure mode — the sized-leg *placement* step itself failing, after every cancel
+succeeded — is rejected with `LEG_RESTORE_FAILED` instead; that case is not a cancel
+failure at all, and its own rollback is described next.
 
 A rollback — restoring cancelled legs to full size after a restore or close failure —
 **interleaves cancel-then-place per leg** rather than cancelling every sized leg first
