@@ -32,6 +32,15 @@ public class WikipediaService {
     private static final Pattern WIKILINK = Pattern.compile("\\[\\[([^\\]]+)\\]\\]");
     private static final Pattern TEMPLATE = Pattern.compile("\\{\\{([^{}]+)\\}\\}");
     private static final Pattern REF = Pattern.compile("<ref.*?(</ref>|/>)");
+    // Editor comments inside a cell, e.g. "<!-- DO NOT CHANGE THIS TICKER ... -->" on the real
+    // BRK.B / BF.B rows. DOTALL so a comment spanning multiple wikitext lines is matched as one
+    // block and non-greedy so two separate comments in the same cell don't merge into one match.
+    private static final Pattern COMMENT = Pattern.compile("<!--.*?-->", Pattern.DOTALL);
+    private static final Pattern WHITESPACE = Pattern.compile("\\s+");
+    // A stripped symbol must look like a ticker; whitespace or angle brackets mean stripWiki
+    // failed to fully remove some markup (an unanticipated wikitext variant) and the value must
+    // not be trusted downstream.
+    private static final Pattern BAD_SYMBOL_CHARS = Pattern.compile("[\\s<>]");
 
     private final RestClient http;
     private final String pageTitle;
@@ -152,6 +161,14 @@ public class WikipediaService {
             if (d == null) continue;
             String sym = stripWiki(c.get(symIdx));
             if (sym.isEmpty()) continue;
+            // Defensive gate: the wikitext is an editable third-party source, and a markup
+            // variant stripWiki doesn't yet handle must degrade to "skip this one row", never to
+            // a poisoned symbol (leftover markup/whitespace) travelling into provider URLs and
+            // agent tool output.
+            if (BAD_SYMBOL_CHARS.matcher(sym).find()) {
+                log.warn("Wikipedia S&P 500: skipping row with unparseable symbol cell: {}", truncate(sym, 60));
+                continue;
+            }
             String com = comIdx < c.size() ? stripWiki(c.get(comIdx)) : "";
             String sector = (sectorIdx >= 0 && sectorIdx < c.size()) ? stripWiki(c.get(sectorIdx)) : null;
             out.add(new Constituent(sym, com, sector, d));
@@ -185,9 +202,17 @@ public class WikipediaService {
         try { return LocalDate.parse(m.group(1)); } catch (Exception e) { return null; }
     }
 
-    private static String stripWiki(String cell) {
+    // Package-private (not private) for direct unit testing: the line-based `cells()` tokenizer
+    // above cannot deliver a cell value containing a raw newline (any physical line not starting
+    // with the cell marker is dropped), so a comment spanning multiple wikitext lines can only be
+    // exercised by calling stripWiki directly, not through the full fetch/parse path.
+    static String stripWiki(String cell) {
         if (cell == null) return "";
-        String s = REF.matcher(cell).replaceAll("");
+        // Strip HTML comments FIRST, before <ref>/template/wikilink handling: a comment can sit
+        // right after a wikilink (e.g. "[[Berkshire Hathaway|BRK.B]] <!-- ... -->") and, left in
+        // place, its fragments would otherwise survive into the parsed symbol.
+        String s = COMMENT.matcher(cell).replaceAll("");
+        s = REF.matcher(s).replaceAll("");
         // {{NyseSymbol|MMM}} / {{NasdaqSymbol|AOS}} -> last template parameter (the ticker).
         s = replaceInline(TEMPLATE, s, inner -> {
             int pipe = inner.lastIndexOf('|');
@@ -199,7 +224,14 @@ public class WikipediaService {
             int pipe = inner.indexOf('|');
             return pipe >= 0 ? inner.substring(pipe + 1) : inner;
         });
-        return s.trim();
+        // Collapse whatever internal whitespace the comment removal left behind (e.g. a trailing
+        // "BRK.B  " once the comment that followed it is gone) down to single spaces.
+        s = WHITESPACE.matcher(s.trim()).replaceAll(" ");
+        return s;
+    }
+
+    private static String truncate(String s, int max) {
+        return s.length() <= max ? s : s.substring(0, max) + "...";
     }
 
     /** Replace every match of {@code p} inline with a value derived from its first capture group. */

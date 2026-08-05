@@ -67,6 +67,42 @@ class WikipediaServiceTest {
         assertThat(c.get(1).sector()).isEqualTo("Industrials");
     }
 
+    @Test void stripsEditorCommentFromSymbolCell() {
+        // Real editor comment from the "List of S&P 500 companies" page: it sits right after the
+        // wikilink in the Symbol cell of the BRK.B row and, if not stripped, its fragments leak
+        // into the parsed symbol and poison every downstream provider call.
+        String wikitext = "{| class=\"wikitable sortable\" id=\"constituents\"\n! Symbol !! Security !! GICS Sector !! Date added\n" +
+                "|-\n| [[Berkshire Hathaway|BRK.B]] <!-- DO NOT CHANGE THIS TICKER TO BRK-B. IT IS NOT CORRECT AND WILL BE REVERTED. YOU'VE BEEN WARNED! --> || Berkshire Hathaway || Financials || 2010-02-16\n|}";
+        wm.stubFor(get(urlPathEqualTo("/w/api.php"))
+                .willReturn(okJson("{\"parse\":{\"wikitext\":" + toJsonString(wikitext) + "}}")));
+        List<Constituent> c = svc().constituents("sp500");
+        assertThat(c).hasSize(1);
+        assertThat(c.get(0).symbol()).isEqualTo("BRK.B");
+    }
+
+    @Test void stripsMultiLineHtmlCommentFromCell() {
+        // A comment can also span multiple wikitext lines; the DOTALL match must still remove it
+        // as one block rather than leaving fragments of the opening/closing markers behind. The
+        // row/cell tokenizer above is strictly line-based (any physical line inside a cell that
+        // doesn't start with the cell marker is dropped, so it can never hand a raw multi-line
+        // cell value through the full fetch/parse path) — so this exercises stripWiki directly.
+        String cell = "[[Berkshire Hathaway|BRK.B]] <!--\n  DO NOT CHANGE THIS TICKER\n  MULTIPLE LINES\n-->";
+        assertThat(WikipediaService.stripWiki(cell)).isEqualTo("BRK.B");
+    }
+
+    @Test void skipsRowWhoseSymbolStillContainsWhitespaceAfterStripping() {
+        // A markup variant stripWiki doesn't handle must degrade to "one missing constituent",
+        // never to a poisoned multi-word symbol travelling downstream.
+        String wikitext = "{| class=\"wikitable sortable\" id=\"constituents\"\n! Symbol !! Security !! GICS Sector !! Date added\n" +
+                "|-\n| FOO BAR || Foo Bar Inc. || Industrials || 2020-01-01\n" +
+                "|-\n| MSFT || Microsoft || Information Technology || 1994-06-01\n|}";
+        wm.stubFor(get(urlPathEqualTo("/w/api.php"))
+                .willReturn(okJson("{\"parse\":{\"wikitext\":" + toJsonString(wikitext) + "}}")));
+        List<Constituent> c = svc().constituents("sp500");
+        assertThat(c).hasSize(1);
+        assertThat(c.get(0).symbol()).isEqualTo("MSFT");
+    }
+
     @Test void unknownIndexThrowsUnavailable() {
         assertThatThrownBy(() -> svc().constituents("nasdaq100")).isInstanceOf(MarketDataException.class);
     }
