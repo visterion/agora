@@ -18,6 +18,7 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -1037,6 +1038,23 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * accepted result's status carries a visible warning so the caller knows the legs were
      * not verified/canceled and may need manual cleanup.
      *
+     * <p><b>S7a — partial close restores the legs:</b> when {@code remainingQty > 0}, the
+     * cancelled protective legs are not simply dropped — they are re-placed sized to the
+     * remainder ({@link LegAllocation#allocate}) BEFORE the closing Market order goes out, so a
+     * restore failure costs nothing (only cancels have happened yet) rather than leaving a
+     * freshly-trimmed position unprotected. Only legs that were actually cancelled above are
+     * eligible for restoration — a leg whose cancel failed, or whose price/id/amount couldn't
+     * be read ({@link ProtectiveLeg#from}), is never restored: putting a new, smaller leg next
+     * to a surviving old one would work against less than either leg expects, i.e. an
+     * unintended reverse position the moment one triggers. Any such incompleteness puts the
+     * legs that DID cancel cleanly back at their FULL original size and rejects the trim
+     * (LEG_CANCEL_INCOMPLETE / LEG_RESTORE_FAILED / LEG_RESTORE_FAILED_UNPROTECTED) rather than
+     * leaving a smaller, partially-protected mix.
+     * <b>Known limitation (spec §4.1, closed by S7c, not here):</b> between the closing order
+     * being accepted and it actually filling, the holding briefly exceeds what the restored
+     * stops cover — the position is still full-sized while the new legs already assume the
+     * post-close remainder.
+     *
      * <p><b>M-T6 — idempotent retry:</b> the same lookup also counts any already-working
      * opposite-side Market order on this Uic (a prior flatten call whose HTTP response was
      * lost to the caller, e.g. on a timeout, but which the broker accepted). Protective
@@ -1130,21 +1148,76 @@ public class SaxoBrokerProvider implements BrokerProvider {
         // SL/TP for this position is always opposite-side). Same-side Stop/Limit orders are
         // unrelated (e.g. a resting add-to-position limit, or a stop-entry for a new position
         // on the same instrument) and must be left alone.
+        BigDecimal remainingQty = available.subtract(closeQty);
+        List<ProtectiveLeg> cancelled = new ArrayList<>();
+        boolean cancelIncomplete = false;
         for (JsonNode n : related.orders()) {
             String type = n.path("OpenOrderType").asString("");
             boolean protectiveType = type.contains("Stop") || "Limit".equalsIgnoreCase(type);
             boolean oppositeSide = opposite.equalsIgnoreCase(n.path("BuySell").asString(""));
-            if (protectiveType && oppositeSide) {
-                String legOrderId = n.path("OrderId").asString(null);
-                if (legOrderId != null) {
-                    try {
-                        cancel(legOrderId);
-                    } catch (Exception e) {
-                        related = related.withError("failed to cancel related order " + legOrderId
-                                + ": " + e.getMessage());
-                    }
-                }
+            if (!protectiveType || !oppositeSide) continue;
+            String legOrderId = n.path("OrderId").asString(null);
+            if (legOrderId == null) continue;
+
+            // Cancel first, exactly like today's full-flatten behaviour — this does NOT depend
+            // on the leg being reconstructible, so a full flatten (remainingQty == 0, where
+            // nothing gets restored anyway) still cancels every protective leg it always did.
+            try {
+                cancel(legOrderId);
+            } catch (Exception e) {
+                cancelIncomplete = true;
+                related = related.withError("failed to cancel related order " + legOrderId
+                        + ": " + e.getMessage());
+                continue;
             }
+
+            Optional<ProtectiveLeg> leg = ProtectiveLeg.from(n);
+            if (leg.isEmpty()) {
+                // Cancelled cleanly, but not reconstructible (no usable price/amount).
+                // Restoring it later would mean guessing a price, and a stop at a guessed
+                // level is worse than no trim at all.
+                cancelIncomplete = true;
+                continue;
+            }
+            cancelled.add(leg.get());
+        }
+
+        // S7a: a partial close (remainingQty > 0) must put the protective legs back sized to
+        // the remainder BEFORE placing the closing order — a failure here costs nothing (no
+        // broker state has changed beyond the cancels above), whereas a failure discovered
+        // after the close would leave a filled position with no protection at all. Only legs
+        // that were actually cancelled above are eligible: if one cancel failed (or a leg
+        // wasn't reconstructible), the surviving old leg plus freshly placed new ones would
+        // work against a smaller holding than either alone expects — an unintended reverse
+        // position the moment one triggers. So any incompleteness here puts the cancelled legs
+        // back at FULL size and rejects the trim rather than risk that.
+        if (remainingQty.signum() > 0 && cancelIncomplete) {
+            List<RestoredLeg> back = placeLegsAtFullSize(ctx, ri, cancelled);
+            return OrderResult.rejectedWithLegs(
+                    "could not cancel every protective leg cleanly; the close was not placed",
+                    back.size() == cancelled.size() ? "LEG_CANCEL_INCOMPLETE"
+                                                    : "LEG_RESTORE_FAILED_UNPROTECTED",
+                    back, false);
+        }
+
+        List<RestoredLeg> restored = List.of();
+        boolean legsCollapsed = false;
+        String allocWarning = null;
+        if (remainingQty.signum() > 0) {
+            LegAllocation.Result alloc = LegAllocation.allocate(cancelled, remainingQty, available);
+            if (alloc.warning() != null) log.warn("flatten {}: {}", symbol, alloc.warning());
+            restored = placeSizedLegs(ctx, ri, alloc.sized());
+            if (restored.size() != alloc.sized().size()) {
+                // Stage 1: put protection back at full size, reject the trim. Same protection, NEW ids.
+                List<RestoredLeg> back = placeLegsAtFullSize(ctx, ri, cancelled);
+                return OrderResult.rejectedWithLegs(
+                        "could not restore the protective legs for the remainder; the close was not placed",
+                        back.size() == cancelled.size() ? "LEG_RESTORE_FAILED"
+                                                        : "LEG_RESTORE_FAILED_UNPROTECTED",
+                        back, false);
+            }
+            legsCollapsed = alloc.collapsed();
+            allocWarning = alloc.warning();
         }
 
         ObjectNode body = MAPPER.createObjectNode();
@@ -1165,16 +1238,70 @@ public class SaxoBrokerProvider implements BrokerProvider {
                     .body(body)
                     .retrieve().body(JsonNode.class);
             String orderId = resp2 == null ? null : resp2.path("OrderId").asString(null);
-            BigDecimal remainingQty = available.subtract(closeQty);
             String status = related.error() == null ? "accepted"
                     : "accepted (warning: " + related.error() + ")";
-            return OrderResult.accepted(orderId, null, status, effectiveCloseQty, remainingQty, null);
+            if (allocWarning != null) status = status + " (warning: " + allocWarning + ")";
+            return OrderResult.acceptedWithLegs(orderId, null, status, effectiveCloseQty, remainingQty, null,
+                    restored, legsCollapsed);
         } catch (RestClientResponseException e) {
             return writeError("POST /trade/v2/orders (flatten)", e);
         } catch (Exception e) {
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "saxo flatten failed: " + e.getMessage(), e);
         }
+    }
+
+    /** Places one protective order; returns null when the broker did not hand back an order id. */
+    private RestoredLeg placeLeg(AccountContext ctx, SaxoInstrumentResolver.ResolvedInstrument ri,
+                                 ProtectiveLeg leg, BigDecimal qty) {
+        ObjectNode body = MAPPER.createObjectNode();
+        body.put("Uic", ri.uic());
+        body.put("AssetType", leg.assetType());
+        body.put("BuySell", leg.buySell());
+        body.put("Amount", qty);
+        body.put("OrderType", leg.openOrderType());
+        body.put("OrderPrice", leg.price());
+        if (leg.stopLimitPrice() != null) body.put("StopLimitPrice", leg.stopLimitPrice());
+        body.put("ManualOrder", false);
+        body.put("AccountKey", ctx.accountKey());
+        body.set("OrderDuration", durationNode(leg.duration()));
+        try {
+            JsonNode resp = client.post().uri("/trade/v2/orders")
+                    .header("Authorization", bearer())
+                    .header("X-Request-ID", UUID.randomUUID().toString())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(body)
+                    .retrieve().body(JsonNode.class);
+            String id = resp == null ? null : resp.path("OrderId").asString(null);
+            return id == null ? null : new RestoredLeg(leg.orderId(), id, qty, leg.price());
+        } catch (Exception e) {
+            log.warn("saxo restore of protective leg {} ({} @ {}) failed: {}",
+                    leg.orderId(), qty.toPlainString(), leg.price().toPlainString(), e.getMessage());
+            return null;
+        }
+    }
+
+    /** Places the sized legs in order; stops at the first placement failure so the caller can roll back. */
+    private List<RestoredLeg> placeSizedLegs(AccountContext ctx, SaxoInstrumentResolver.ResolvedInstrument ri,
+                                             List<LegAllocation.Sized> sized) {
+        List<RestoredLeg> out = new ArrayList<>();
+        for (LegAllocation.Sized s : sized) {
+            RestoredLeg r = placeLeg(ctx, ri, s.leg(), s.qty());
+            if (r == null) return out;   // caller rolls back
+            out.add(r);
+        }
+        return out;
+    }
+
+    /** Puts every given leg back at its original (pre-cancel) size — the rollback path. */
+    private List<RestoredLeg> placeLegsAtFullSize(AccountContext ctx, SaxoInstrumentResolver.ResolvedInstrument ri,
+                                                  List<ProtectiveLeg> legs) {
+        List<RestoredLeg> out = new ArrayList<>();
+        for (ProtectiveLeg l : legs) {
+            RestoredLeg r = placeLeg(ctx, ri, l, l.amount());
+            if (r != null) out.add(r);
+        }
+        return out;
     }
 
     /** Open orders sharing a position's Uic, plus an optional lookup-failure message (H6/M-T6). */

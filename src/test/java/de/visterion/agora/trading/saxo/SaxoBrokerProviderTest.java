@@ -6,6 +6,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.github.tomakehurst.wiremock.WireMockServer;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
+import com.github.tomakehurst.wiremock.verification.LoggedRequest;
 import de.visterion.agora.trading.BrokerException;
 import de.visterion.agora.trading.ConnectionConfig;
 import org.junit.jupiter.api.*;
@@ -14,6 +15,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.client.RestClient;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
@@ -1509,6 +1511,320 @@ class SaxoBrokerProviderTest {
 
         assertThat(r.accepted()).isTrue();
         wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    // ---- S7a: partial flatten restores protective legs ----
+
+    /**
+     * All requests WireMock has recorded, oldest first — used to assert request ORDER.
+     * {@code WireMockServer.getAllServeEvents()} returns the journal newest-first (see
+     * {@code AbstractRequestJournal#getRequestsMatching}, which reverses the same source list
+     * to produce oldest-first); this reverses it back rather than sorting by logged timestamp,
+     * since two fast successive local calls can tie at millisecond resolution.
+     */
+    private List<LoggedRequest> requestJournalInOrder() {
+        List<LoggedRequest> newestFirst = wm.getAllServeEvents().stream()
+                .map(com.github.tomakehurst.wiremock.stubbing.ServeEvent::getRequest)
+                .toList();
+        List<LoggedRequest> oldestFirst = new java.util.ArrayList<>(newestFirst);
+        java.util.Collections.reverse(oldestFirst);
+        return oldestFirst;
+    }
+
+    /** "METHOD /path" (query string stripped) for each request, in the order it was received. */
+    private List<String> requestJournalMethodsAndPaths() {
+        return requestJournalInOrder().stream()
+                .map(req -> req.getMethod().value() + " " + req.getUrl().split("\\?")[0])
+                .toList();
+    }
+
+    @Test
+    void partialFlattenRestoresBothStopLegsSizedToTheRemainder() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        // Two detached Sell StopIfTraded legs, 24 and 22 shares, both at 45.49 — flatten(0.5)
+        // trims to 23 shares, leaving 23 to still protect.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-24","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-22","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":22.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("restore-both")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"R24\"}"))
+                .willSetStateTo("leg1-restored"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("restore-both")
+                .whenScenarioStateIs("leg1-restored")
+                .willReturn(okJson("{\"OrderId\":\"R22\"}"))
+                .willSetStateTo("leg2-restored"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("restore-both")
+                .whenScenarioStateIs("leg2-restored")
+                .willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.closedQty()).isEqualByComparingTo("23");
+        assertThat(r.remainingQty()).isEqualByComparingTo("23");
+        assertThat(r.legsCollapsed()).isFalse();
+
+        assertThat(requestJournalMethodsAndPaths()).containsSubsequence(
+                "DELETE /trade/v2/orders/leg-24",
+                "DELETE /trade/v2/orders/leg-22",
+                "POST /trade/v2/orders",
+                "POST /trade/v2/orders",
+                "POST /trade/v2/orders");
+
+        var posts = requestJournalInOrder().stream()
+                .filter(req -> "POST".equals(req.getMethod().value())).toList();
+        assertThat(posts).hasSize(3);
+
+        var restore1 = SaxoBrokerProvider.MAPPER.readTree(posts.get(0).getBodyAsString());
+        assertThat(restore1.path("Amount").decimalValue()).isEqualByComparingTo("12");
+        assertThat(restore1.path("OrderPrice").decimalValue()).isEqualByComparingTo("45.49");
+        assertThat(restore1.path("BuySell").asString()).isEqualTo("Sell");
+        assertThat(restore1.path("OrderType").asString()).isEqualTo("StopIfTraded");
+
+        var restore2 = SaxoBrokerProvider.MAPPER.readTree(posts.get(1).getBodyAsString());
+        assertThat(restore2.path("Amount").decimalValue()).isEqualByComparingTo("11");
+        assertThat(restore2.path("OrderPrice").decimalValue()).isEqualByComparingTo("45.49");
+
+        var close = SaxoBrokerProvider.MAPPER.readTree(posts.get(2).getBodyAsString());
+        assertThat(close.path("Amount").decimalValue()).isEqualByComparingTo("23");
+        assertThat(close.path("OrderType").asString()).isEqualTo("Market");
+    }
+
+    @Test
+    void partialFlattenPostsTheRestoredPriceFromPriceNotOrderPrice() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":140.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        // orders/me returns a TOP-LEVEL order, which carries "Price" (never "OrderPrice") —
+        // see ProtectiveLeg's javadoc. Reading the wrong field silently yields 0 via bd()'s
+        // zero-default; a restored stop at price 0 is exactly the bug this test guards against.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-1","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":10.0,"Price":145.30,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-1")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("price-not-orderprice")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"R1\"}"))
+                .willSetStateTo("leg-restored"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("price-not-orderprice")
+                .whenScenarioStateIs("leg-restored")
+                .willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.4"), null);
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.closedQty()).isEqualByComparingTo("4");
+        assertThat(r.remainingQty()).isEqualByComparingTo("6");
+
+        var posts = requestJournalInOrder().stream()
+                .filter(req -> "POST".equals(req.getMethod().value())).toList();
+        assertThat(posts).hasSize(2);
+        var restore = SaxoBrokerProvider.MAPPER.readTree(posts.get(0).getBodyAsString());
+        assertThat(restore.path("Amount").decimalValue()).isEqualByComparingTo("6");
+        assertThat(restore.path("OrderPrice").decimalValue()).isEqualByComparingTo("145.30");
+        assertThat(restore.path("OrderPrice").decimalValue()).isNotEqualByComparingTo("0");
+    }
+
+    @Test
+    void fullFlattenRestoresNothingAndKeepsTodaysBehaviour() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-sl","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":10.0,"Price":140.0,"AssetType":"Stock"},
+              {"OrderId":"leg-tp","Uic":211,"OpenOrderType":"Limit","BuySell":"Sell",
+               "Amount":10.0,"Price":160.0,"AssetType":"Stock"}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-sl")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-tp")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        // fraction and qty both absent -> full flatten, nothing to restore.
+        var r = provider.flatten("AAPL", null, null);
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.closedQty()).isEqualByComparingTo("10");
+        assertThat(r.remainingQty()).isEqualByComparingTo("0");
+        assertThat(r.protectiveLegs()).isEmpty();
+        assertThat(r.legsCollapsed()).isFalse();
+        // exactly ONE POST — the closing Market order. No restore POSTs at all.
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("10.0"))));
+    }
+
+    @Test
+    void aFailedCancelBlocksThePlacementAndRejects() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":20.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":50.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-a","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":12.0,"Price":50.0,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-b","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":8.0,"Price":50.0,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-a")).willReturn(aResponse().withStatus(200)));
+        // leg B's cancel fails outright.
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-b")).willReturn(aResponse().withStatus(500)));
+        // the only POST that may happen is leg A being put back at its FULL original amount (12).
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"back-a\"}")));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_CANCEL_INCOMPLETE");
+        assertThat(r.protectiveLegs()).hasSize(1);
+        assertThat(r.protectiveLegs().get(0).replaces()).isEqualTo("leg-a");
+        assertThat(r.protectiveLegs().get(0).qty()).isEqualByComparingTo("12");
+
+        // exactly one POST — leg A restored at FULL size, never the closing Market order.
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("12.0")))
+                .withRequestBody(matchingJsonPath("$.OrderPrice", equalTo("50.0")))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded"))));
+    }
+
+    @Test
+    void restoredLegsCarryTheIdTheyReplace() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-24","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-22","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":22.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("restore-ids")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"new-24\"}"))
+                .willSetStateTo("leg1-restored"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("restore-ids")
+                .whenScenarioStateIs("leg1-restored")
+                .willReturn(okJson("{\"OrderId\":\"new-22\"}"))
+                .willSetStateTo("leg2-restored"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("restore-ids")
+                .whenScenarioStateIs("leg2-restored")
+                .willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.protectiveLegs()).hasSize(2);
+        assertThat(r.protectiveLegs()).extracting("replaces", "orderId")
+                .containsExactly(
+                        tuple("leg-24", "new-24"),
+                        tuple("leg-22", "new-22"));
+    }
+
+    @Test
+    void aLegWithoutAUsablePriceIsTreatedAsAFailedRestore() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":150.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        // Neither Price nor OrderPrice present — ProtectiveLeg.from must refuse this leg, not
+        // guess a price of 0. It is still cancelled exactly like any other protective leg (the
+        // cancel step never depends on reconstructibility — see rule 3, full-flatten-unchanged),
+        // but rule 2 (task-4 brief) says a leg that cannot be read back is treated EXACTLY like
+        // a failed cancel for restoration purposes: it never enters the "cancelled" list, so
+        // there is nothing to put back and the trim is rejected.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-no-price","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":10.0,"AssetType":"Stock"}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-no-price")).willReturn(aResponse().withStatus(200)));
+
+        var r = provider.flatten("AAPL", null, new java.math.BigDecimal("4"));
+
+        assertThat(r.accepted()).isFalse();
+        // Nothing was ever added to the restorable "cancelled" list (the leg couldn't be read
+        // back), so there is nothing to put back and no Market close is placed.
+        assertThat(r.rejectCode()).isEqualTo("LEG_CANCEL_INCOMPLETE");
+        assertThat(r.protectiveLegs()).isEmpty();
+        wm.verify(1, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/leg-no-price")));
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    @Test
+    void collapseIsReportedOnTheResult() {
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        // Two Sell stops; the tighter (higher-price) one is leg-x at 50, the wider is leg-y at 45.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-x","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":50.0,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-y","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":22.0,"Price":45.0,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-x")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-y")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("collapse")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"R1\"}"))
+                .willSetStateTo("leg-restored"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("collapse")
+                .whenScenarioStateIs("leg-restored")
+                .willReturn(okJson("{\"OrderId\":\"9100\"}")));
+
+        // qty=45 of 46 -> only 1 share remains to protect, not enough for one per stop leg.
+        var r = provider.flatten("AAPL", null, new java.math.BigDecimal("45"));
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.remainingQty()).isEqualByComparingTo("1");
+        assertThat(r.legsCollapsed()).isTrue();
+        assertThat(r.protectiveLegs()).hasSize(1);
+        assertThat(r.protectiveLegs().get(0).replaces()).isEqualTo("leg-x");
+        assertThat(r.protectiveLegs().get(0).qty()).isEqualByComparingTo("1");
+
+        var posts = requestJournalInOrder().stream()
+                .filter(req -> "POST".equals(req.getMethod().value())).toList();
+        assertThat(posts).hasSize(2);
+        var restore = SaxoBrokerProvider.MAPPER.readTree(posts.get(0).getBodyAsString());
+        assertThat(restore.path("Amount").decimalValue()).isEqualByComparingTo("1");
     }
 
     // ---- pagination ----
