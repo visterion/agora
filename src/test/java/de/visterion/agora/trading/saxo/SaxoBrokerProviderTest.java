@@ -49,7 +49,6 @@ class SaxoBrokerProviderTest {
                 resolver());
         provider.legLookupDelayMillis = 0;   // don't actually sleep in tests
         provider.farStopDelayMillis = 0;     // ditto for the pre-fallback spacing
-        provider.restoreRetryDelayMillis = 0; // ditto for the 429 restore retry
         stubAccounts();
     }
 
@@ -1802,9 +1801,16 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
-    void aFailedOrphanCancelIsReportedAsUnprotectedWithBothLegSetsVisible() {
-        // If the orphan itself cannot be cancelled, it is live, unaccounted-for protection —
-        // it must be surfaced, never silently dropped, per fix-round-1 finding 1.
+    void aFailedOrphanCancelStopsTheRollbackImmediatelyAndReportsUnprotected() {
+        // If the orphan itself cannot be cancelled, it is live, unaccounted-for protection — it
+        // must be surfaced, never silently dropped (fix-round-1 finding 1). Fix round 3 finding
+        // 3: this branch is now interleaved the same as its twin (the determinate-close-failure
+        // rollback) — the loop stops the INSTANT orphan-12's cancel fails, before leg-22's full
+        // size is ever attempted. So the live state stays at just the orphan (12 shares, under
+        // leg-24's original 24), never grows to include back-24/back-22 at all. Per-leg
+        // classification (fix round 2) then correctly calls this UNDER-protected: leg-24 has 12
+        // of its original 24 live, leg-22 has none of its 22 — neither leg has MORE than its
+        // own original, so this is never OVERCOMMITTED.
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
             {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
@@ -1826,33 +1832,85 @@ class SaxoBrokerProviderTest {
                 .willSetStateTo("leg1-placed"));
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-uncancellable")
                 .whenScenarioStateIs("leg1-placed")
-                .willReturn(aResponse().withStatus(500))
-                .willSetStateTo("leg2-failed"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-uncancellable")
-                .whenScenarioStateIs("leg2-failed")
-                .willReturn(okJson("{\"OrderId\":\"back-24\"}"))
-                .willSetStateTo("rollback1-placed"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("orphan-uncancellable")
-                .whenScenarioStateIs("rollback1-placed")
-                .willReturn(okJson("{\"OrderId\":\"back-22\"}")));
+                .willReturn(aResponse().withStatus(500)));
+        // NOTE: no stub for a rollback POST (back-24/back-22) — the loop must stop before ever
+        // attempting one, since orphan-12's cancel (below) fails first.
         // The orphan's own cancel fails — it stays live.
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/orphan-12")).willReturn(aResponse().withStatus(500)));
 
         var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
 
         assertThat(r.accepted()).isFalse();
-        // 12 (uncancellable orphan) + 24 + 22 (both full-size legs) = 58 shares of Sell interest
-        // against a 46-share position — MORE than held, not less. Fix round 2 finding 2: this is
-        // the opposite hazard from "no stop working" (an unintended reverse position once the
-        // extra 12 triggers) and must carry its own code, not the same UNPROTECTED code an
-        // under-protected reject also uses — a consumer reacting to UNPROTECTED by adding MORE
-        // protection would make this worse, not better.
-        assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_FAILED_OVERCOMMITTED");
-        // Both the rolled-back full-size legs AND the uncancellable orphan must be visible so
-        // the caller can reconcile all THREE live protective orders against the 46-share position.
-        assertThat(r.protectiveLegs()).hasSize(3);
-        assertThat(r.protectiveLegs()).extracting("orderId")
-                .containsExactlyInAnyOrder("back-24", "back-22", "orphan-12");
+        assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_FAILED_UNPROTECTED");
+        // Only the uncancellable orphan is live — never back-24/back-22, which were never placed.
+        assertThat(r.protectiveLegs()).hasSize(1);
+        assertThat(r.protectiveLegs()).extracting("orderId").containsExactly("orphan-12");
+        assertThat(r.protectiveLegs().get(0).qty()).isEqualByComparingTo("12");
+
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("24.0"))));
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("22.0"))));
+    }
+
+    @Test
+    void aSustainedFailureOnTheSizedLegPlacementBranchLeavesSomeProtectionWorkingNotZero() {
+        // Fix round 3 finding 3: the placeSizedLegs-failure branch used to cancel every orphan
+        // first and place every full-size leg after, unconditionally — the exact same
+        // "sustained failure strips protection to zero" defect the determinate-close-failure
+        // branch was fixed for one round earlier. Three stop legs (20+16+10=46, matching the
+        // 46-share holding) sized to a 23-share remainder (10+8+5=23): the first two size
+        // placements succeed (R-A=10, R-B=8), the third fails outright — triggering this branch.
+        // R-A's cancel then succeeds, but its full-size restore (20) fails SUSTAINED — the loop
+        // must stop right there, leaving R-B (8 shares, leg-B's sized replacement) untouched and
+        // still live, rather than cancelling it too before finding out the restore won't work.
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-A","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":20.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-B","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":16.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-C","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":10.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-A")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-B")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-C")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R-A")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("10")))
+                .willReturn(okJson("{\"OrderId\":\"R-A\"}")));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("8")))
+                .willReturn(okJson("{\"OrderId\":\"R-B\"}")));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("5")))
+                .willReturn(aResponse().withStatus(500)));
+        // leg-A's full-size restore (20) is a SUSTAINED failure.
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("20.0")))
+                .willReturn(aResponse().withStatus(500)));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_FAILED_UNPROTECTED");
+        // NEVER zero: R-B (leg-B's sized replacement, 8 shares) was never touched and stays live.
+        assertThat(r.protectiveLegs()).hasSize(1);
+        assertThat(r.protectiveLegs().get(0).orderId()).isEqualTo("R-B");
+        assertThat(r.protectiveLegs().get(0).qty()).isEqualByComparingTo("8");
+
+        wm.verify(0, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/R-B")));
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("16.0"))));
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("10.0"))));
     }
 
     @Test
@@ -2270,9 +2328,13 @@ class SaxoBrokerProviderTest {
         // position with ZERO working stops on the single most routine failure status.
         //
         // The interleaved fix must never reach zero: R12 (leg-24's sized replacement) gets
-        // cancelled, its full-size restore then fails (429, even after one retry) — the loop
-        // stops there WITHOUT ever touching leg-22's pair, so R11 (11 shares) is never
-        // cancelled and stays live.
+        // cancelled, its full-size restore then fails (429) — the loop stops there WITHOUT ever
+        // touching leg-22's pair, so R11 (11 shares) is never cancelled and stays live. (Fix
+        // round 3: there is deliberately no provider-level retry on this 429 — Apache
+        // HttpClient5's own transport-level auto-retry already covers the transient case in
+        // production, and a provider-level retry on top of it was found unsafe: placeLeg's
+        // fresh X-Request-ID per call means a retry after Saxo had actually queued the order
+        // would place a second full-size leg.)
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
             {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
@@ -2329,14 +2391,17 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
-    void aRateLimitedFullSizeRestoreCanRecoverOnRetryAndRestoreBothLegs() {
-        // Complements the sustained-429 test above: when the 429 on the full-size restore
-        // CLEARS after one attempt (rather than persisting), the leg must not be given up on —
-        // it gets placed on the next try and the rollback completes for both legs. (The exact
-        // layer that performs the retry — this provider's own placeLegWithRetry, or the test
-        // harness's transport-level auto-retry on 429 observed elsewhere in this suite — is not
-        // distinguishable from outside; what matters here is the observable outcome: the leg
-        // ends up restored, not abandoned after a single 429.)
+    void aBracketsStopAndTakeProfitAreClassifiedPerLegNotByCrossLegSum() {
+        // Fix round 2 finding 2: submitBracket places the stop-loss AND the take-profit EACH at
+        // the full position qty — both opposite-side, both matched by flatten's own protective-
+        // leg filter — so a HEALTHY bracketed position always carries 2x the holding in
+        // protective interest by design (46+46=92 against 46 held is normal, not a defect). A
+        // cross-leg SUM comparison against `available` would therefore call almost any bracket
+        // rollback OVERCOMMITTED. Measured (the exact probe that found this): 46 held, sl-46 +
+        // tp-46, sized 23+23, close rejected (400), the take-profit's sized replacement (S23b)
+        // fails to cancel. Actual live state: back-sl(46, matches its own original exactly) +
+        // S23b(23, HALF of its own original 46) — the take-profit is under-restored, not
+        // anything over-committed. Per-leg classification must call this UNPROTECTED.
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
             {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
@@ -2345,54 +2410,55 @@ class SaxoBrokerProviderTest {
             """)));
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
             {"Data":[
-              {"OrderId":"leg-24","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
-               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
-              {"OrderId":"leg-22","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
-               "Amount":22.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+              {"OrderId":"sl-46","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":46.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"tp-46","Uic":211,"OpenOrderType":"Limit","BuySell":"Sell",
+               "Amount":46.0,"Price":55.0,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
             """)));
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R12")).willReturn(aResponse().withStatus(200)));
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R11")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/sl-46")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/tp-46")).willReturn(aResponse().withStatus(200)));
+        // Both sized restores (23 each) place cleanly — discriminated by OrderType, since both
+        // share the same Amount (23) as the close order below.
         wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
-                .withRequestBody(matchingJsonPath("$.Amount", equalTo("12")))
-                .willReturn(okJson("{\"OrderId\":\"R12\"}")));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
-                .withRequestBody(matchingJsonPath("$.Amount", equalTo("11")))
-                .willReturn(okJson("{\"OrderId\":\"R11\"}")));
-        // The close itself is a plain 400 — a routine determinate reject, not another 429, to
-        // isolate the retry behaviour under test to the full-size restore alone.
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded")))
                 .withRequestBody(matchingJsonPath("$.Amount", equalTo("23")))
+                .willReturn(okJson("{\"OrderId\":\"S23a\"}")));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Limit")))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("23")))
+                .willReturn(okJson("{\"OrderId\":\"S23b\"}")));
+        // The close (Market, Amount 23) is rejected.
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
                 .willReturn(aResponse().withStatus(400).withHeader("Content-Type", "application/json")
                         .withBody("""
                             {"ErrorInfo":{"ErrorCode":"OrderRejected","Message":"close rejected by broker"}}
                             """)));
-        // leg-24's full-size restore: 429 once, then clears.
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("retry-rescue")
-                .whenScenarioStateIs(Scenario.STARTED)
-                .withRequestBody(matchingJsonPath("$.Amount", equalTo("24.0")))
-                .willReturn(aResponse().withStatus(429))
-                .willSetStateTo("cleared"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("retry-rescue")
-                .whenScenarioStateIs("cleared")
-                .withRequestBody(matchingJsonPath("$.Amount", equalTo("24.0")))
-                .willReturn(okJson("{\"OrderId\":\"back-24\"}")));
+        // sl-46's full-size restore (46) succeeds.
         wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
-                .withRequestBody(matchingJsonPath("$.Amount", equalTo("22.0")))
-                .willReturn(okJson("{\"OrderId\":\"back-22\"}")));
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded")))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("46.0")))
+                .willReturn(okJson("{\"OrderId\":\"back-sl\"}")));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/S23a")).willReturn(aResponse().withStatus(200)));
+        // S23b's (the take-profit's sized replacement) cancel fails outright — it stays live.
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/S23b")).willReturn(aResponse().withStatus(500)));
 
         var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
 
         assertThat(r.accepted()).isFalse();
-        assertThat(r.rejectCode()).isEqualTo("OrderRejected");
-        // Both legs fully restored despite the transient 429 on leg-24's restore.
+        // NOT overcommitted, despite 46+23=69 > 46 held — see the test comment above.
+        assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_FAILED_UNPROTECTED");
         assertThat(r.protectiveLegs()).hasSize(2);
-        assertThat(r.protectiveLegs()).extracting("orderId")
-                .containsExactlyInAnyOrder("back-24", "back-22");
-        // More than one request reached the Amount-24 endpoint — the 429 did not end the attempt.
-        wm.verify(moreThanOrExactly(2), postRequestedFor(urlEqualTo("/trade/v2/orders"))
-                .withRequestBody(matchingJsonPath("$.Amount", equalTo("24.0"))));
+        assertThat(r.protectiveLegs()).extracting("replaces", "orderId")
+                .containsExactlyInAnyOrder(
+                        tuple("sl-46", "back-sl"),
+                        tuple("tp-46", "S23b"));
+
+        // The take-profit's full-size restore (46) must never have been attempted — the loop
+        // stopped at S23b's failed cancel.
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Limit")))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("46.0"))));
     }
 
     @Test
