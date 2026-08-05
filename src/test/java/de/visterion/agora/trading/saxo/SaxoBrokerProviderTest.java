@@ -2214,6 +2214,61 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
+    void aSingleLegRollbackCanGenuinelyDropProtectionToZero() {
+        // exit-tools.md limitation: interleaving cannot help when there is only ONE original
+        // leg to interleave against. Its sized replacement cancels cleanly (freeing it), but the
+        // full-size restore then fails — there is no second leg still holding sized protection
+        // to fall back on, so live protection is genuinely zero for a moment. Distinct from the
+        // two-leg cases above, where the untouched/orphaned second leg always keeps SOME
+        // protection live.
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-46","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":46.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-46")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/R23")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("single-leg-unprotected")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"R23\"}"))
+                .willSetStateTo("sized"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("single-leg-unprotected")
+                .whenScenarioStateIs("sized")
+                .willReturn(aResponse().withStatus(400).withHeader("Content-Type", "application/json")
+                        .withBody("""
+                            {"ErrorInfo":{"ErrorCode":"OrderRejected","Message":"close rejected by broker"}}
+                            """))
+                .willSetStateTo("close-failed"));
+        // The full-size (46) restore is a sustained failure — never succeeds.
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("single-leg-unprotected")
+                .whenScenarioStateIs("close-failed")
+                .willReturn(aResponse().withStatus(429)));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_FAILED_UNPROTECTED");
+        // Nothing is live: R23 was cancelled cleanly (freeing it) and the full-size replacement
+        // never got placed — genuinely zero protective legs, not "empty because nothing needed
+        // reporting".
+        assertThat(r.protectiveLegs()).isEmpty();
+
+        // The sized (23) leg was placed and then cancelled cleanly before the full-size (46)
+        // restore was attempted — confirming the rollback did reach and touch this single leg
+        // rather than skipping it.
+        wm.verify(1, deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/R23")));
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("23")))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded"))));
+    }
+
+    @Test
     void aRateLimitedCloseIsDeterminateAndAlsoRestoresFullSizedLegs() {
         // This is the case the first spec draft got wrong: a routine 429 must not leave the
         // position permanently under-protected. Same shape as the 400 test above.

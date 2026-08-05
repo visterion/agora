@@ -138,8 +138,15 @@ A rollback — restoring cancelled legs to full size after a restore or close fa
 **interleaves cancel-then-place per leg** rather than cancelling every sized leg first
 and placing every full-size leg after: cancelling everything before placing anything back
 can leave the position fully naked if a failure (e.g. a sustained rate limit) hits between
-the two phases. Interleaving means protective coverage never drops to zero and the
-opposite-side interest working against the holding never exceeds it, even mid-rollback.
+the two phases. Interleaving keeps the opposite-side interest working against the holding
+from ever exceeding it, even mid-rollback, and means coverage never drops to zero *while
+more than one leg is being rolled back* — a leg not yet reached keeps its sized protection.
+**Known limitation with exactly one original leg**: interleaving cannot help when there is
+only one leg to interleave against. If that leg's sized replacement is cancelled cleanly
+but the full-size replacement then fails to place, protection is genuinely zero for a
+moment — reported as `LEG_RESTORE_FAILED_UNPROTECTED` with an empty `protective_legs` list.
+This is a real, if narrow, gap: a single-leg position (no bracket take-profit, one stop)
+hitting a rollback during a sustained outage has no fallback leg to fall back on.
 
 Whether a rollback happens at all is governed by a **determinate/indeterminate split** on
 the closing order's own failure: a determinate failure (400/401/403/404/429 — the broker's
@@ -150,6 +157,16 @@ actually gone through and only the response was lost — restoring full-size pro
 top of a close that silently filled would leave *more* opposite-side interest working than
 the position holds, so this case escalates as a broker error instead of guessing, leaving
 the legs exactly as sized to the remainder.
+
+**Known gap: the indeterminate-failure escalation carries no leg payload.** This path
+throws a broker exception rather than returning a rejected result — Java exceptions here
+carry no `protective_legs` field, so the new (sized-to-remainder) leg ids placed just before
+the close attempt never reach the caller on this branch. The caller's book keeps whatever
+ids it had before the call (now-cancelled, replaced-but-unreported ids). This is still
+strictly better than the pre-restore behaviour (legs used to be cancelled outright and never
+put back at all), but it is a real observability gap: a caller cannot repoint its book from
+this exception alone and must reconcile via `get_orders` to discover the sized legs Saxo
+actually holds live.
 
 ## `modify_bracket` — orderId semantics (read this before calling it)
 
