@@ -205,4 +205,45 @@ class LegAllocationTest {
 
         assertThat(qtyOf(r, "L")).isNull();
     }
+
+    /**
+     * Fix round 1, finding 1: the collapse branch used to dump the whole target on the tightest
+     * leg regardless of its own amount, growing a 1-share foreign leg to 2. With three stop legs
+     * and a small remainder, a greedy fill down the tightness order must instead keep every leg
+     * within its original amount while still summing to the target exactly.
+     */
+    @Test
+    void collapseGreedilyFillsLegsWithoutGrowingAnyPastItsAmount() {
+        var r = LegAllocation.allocate(
+                List.of(stop("FOREIGN", "1", "45.60", "Sell"),
+                        stop("A", "24", "45.49", "Sell"),
+                        stop("B", "22", "45.49", "Sell")),
+                new BigDecimal("2"), new BigDecimal("46"));
+
+        assertThat(r.collapsed()).isTrue();
+        assertThat(r.target()).isEqualByComparingTo("2");
+        assertThat(r.sized()).allSatisfy(s ->
+                assertThat(s.qty()).isLessThanOrEqualTo(s.leg().amount()));
+        assertThat(r.sized().stream().map(LegAllocation.Sized::qty)
+                .reduce(BigDecimal.ZERO, BigDecimal::add)).isEqualByComparingTo("2");
+        // FOREIGN (tightest, price 45.60) is capped at its own amount of 1; the remaining 1
+        // share is greedily filled into the next-tightest leg instead of being lost.
+        assertThat(qtyOf(r, "FOREIGN")).isEqualByComparingTo("1");
+    }
+
+    /**
+     * Fix round 1, finding 2: remaining == 0 means the position was fully closed, not that the
+     * cancelled stop legs summed to zero. The two facts must not share a warning message.
+     */
+    @Test
+    void noWarningAndEmptyResultWhenRemainingIsZero() {
+        var r = LegAllocation.allocate(
+                List.of(stop("A", "24", "45.49", "Sell"), stop("B", "22", "45.49", "Sell")),
+                BigDecimal.ZERO, new BigDecimal("46"));
+
+        assertThat(r.warning()).isNull();
+        assertThat(r.sized()).isEmpty();
+        assertThat(r.collapsed()).isFalse();
+        assertThat(r.target()).isEqualByComparingTo("0");
+    }
 }

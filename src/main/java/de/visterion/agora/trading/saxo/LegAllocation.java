@@ -52,9 +52,19 @@ public final class LegAllocation {
             List<ProtectiveLeg> byTightness = stops.stream().sorted(tightestFirst()).toList();
 
             if (target.compareTo(BigDecimal.valueOf(stops.size())) < 0) {
-                // Not enough shares for one per leg: fold everything into the tightest stop.
+                // Not enough shares for one per leg: greedy-fill down tightness order instead of
+                // dumping the whole target on the tightest leg — that would grow it past its own
+                // amount whenever a foreign leg with a smaller amount sorts first.
                 collapsed = true;
-                sized.add(new Sized(byTightness.getFirst(), target));
+                BigDecimal remainingTarget = target;
+                for (ProtectiveLeg l : byTightness) {
+                    if (remainingTarget.signum() <= 0) break;
+                    BigDecimal q = l.amount().min(remainingTarget);
+                    if (q.signum() > 0) {
+                        sized.add(new Sized(l, q));
+                        remainingTarget = remainingTarget.subtract(q);
+                    }
+                }
             } else {
                 sized.addAll(distribute(byTightness, sumStop, target));
             }
@@ -64,7 +74,9 @@ public final class LegAllocation {
                         + " of the remaining " + remaining.toPlainString()
                         + " shares — the position was already under-protected before this close";
             }
-        } else if (!stops.isEmpty()) {
+        } else if (!stops.isEmpty() && remaining.signum() > 0) {
+            // remaining == 0 means there is nothing left to restore, not that the stop legs
+            // summed to zero — those are different facts and only the second is a warning.
             warning = "no usable stop quantity to restore (sum of cancelled stop legs was zero)";
         }
 
