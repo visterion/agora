@@ -25,11 +25,46 @@ called out explicitly rather than guessed.
 
 ```json
 { "accepted": true, "orderId": "...", "clientRef": "...", "status": "...",
-  "closedQty": "...", "remainingQty": "...", "avgFillPrice": "..." }
+  "closedQty": "...", "remainingQty": "...", "avgFillPrice": "...",
+  "protective_legs": [ { "replaces": "...", "order_id": "...", "qty": "...", "price": "..." } ],
+  "legs_collapsed": false }
 ```
 
 `closedQty`/`remainingQty`/`avgFillPrice` are omitted entirely when the broker didn't
 supply them (they are never fabricated) — treat their absence as "unknown", not "zero".
+
+### Partial close restores protective legs (Saxo)
+
+A partial close on Saxo (`remainingQty > 0`) restores the cancelled protective orders
+sized to the remainder before placing the closing Market order, rather than leaving the
+remaining shares unprotected. **Monotonicity**: a restored leg is never larger than the
+order it replaces — a 5-share stop next to a 20-share close shrinks to at most 5, never
+grows.
+
+The response carries `protective_legs` — each entry's `replaces` is the id the caller
+already has on file, `order_id` the new id Saxo issued — and `legs_collapsed`. **Both
+fields appear on the rejected branch too**: when a partial close fails after the legs
+were already cancelled and rolled back, Saxo issues brand-new order ids for the restored
+legs even though the close itself never went through. Callers **must** persist these new
+ids on every branch — the stop ratchet addresses legs by id, and a caller that only reads
+`protective_legs` on `accepted:true` ends up pointing at cancelled orders after any
+rejected partial close, failing every later stop modification with `LEG_NOT_FOUND`. Both
+fields are omitted on a full close (nothing was restored) and on any flatten call that
+never touched a protective leg.
+
+`legs_collapsed:true` means the remainder was too small to give every cancelled stop leg
+at least one share (e.g. three stop legs but only two shares left after the close). The
+allocator does **not** dump the whole remainder onto the single tightest leg — it fills
+greedily down tightness order, one share at a time, so more than one leg can still come
+back (three 1-share legs with 2 remaining yields two restored legs of 1 share each, not
+one of 2). The reliable signal is that **fewer legs may come back than were cancelled**,
+not that exactly one does — a caller must reconcile against the `replaces` ids rather
+than assume a count.
+
+**Two known limitations**, both already documented above and unchanged by this restore
+logic: Saxo flatten's whole-share truncation with no lot-size table, and the window
+between the closing order being accepted and it actually filling, during which the
+holding briefly exceeds what the newly sized-down stops cover.
 
 **`remainingQty` semantics differ by broker**: Saxo's `remainingQty` is a **projected**
 value (`available - closeQty`, computed before the market order fills); Alpaca's
@@ -75,6 +110,63 @@ just with a smaller `Amount`:
 `closedQty`/`remainingQty` are computed locally (`available - closeQty`) since Saxo's
 placement response carries only `{"OrderId": "..."}`. `avgFillPrice` is **always null**
 for Saxo flatten — a Market order's placement response has no synchronous fill price.
+
+**Restore mechanics.** Before placing the closing Market order, this provider cancels
+the position's protective (opposite-side Stop/Limit) legs and, on a partial close, puts
+them back sized to the remainder — restoration happens *before* the close, so a restore
+failure costs nothing (only cancels have happened) rather than being discovered after a
+filled, now-unprotected close. Only legs that were **successfully cancelled** are
+eligible for restoration: a leg whose price/id/amount couldn't be read back is left alone
+(uncancelled) on a partial close rather than being cancelled with nothing to put back —
+but on a full close (nothing is being restored anyway) it is still cancelled, matching
+the plain pre-restore flatten behaviour. That untouched leg is still real, working
+protection under its **original** id, so it is still named in `protective_legs`
+(`replaces` and `order_id` both equal to that original id) with `qty`/`price` omitted —
+there is nothing parsed to report and a fabricated value would be worse than none. A
+caller that only reads `protective_legs` for ids it must track should not treat this
+entry's absence-of-size as absence-of-order: the id is still live at the broker. If a
+cancel itself fails partway through, the
+legs that did cancel cleanly are put back at full size and the trim is rejected with
+`LEG_CANCEL_INCOMPLETE` (every cancelled leg could be put back) or
+`LEG_RESTORE_FAILED_UNPROTECTED` (one of the put-back attempts itself failed, leaving a
+leg live and unaccounted for) rather than leaving a partially-protected mix. A separate
+failure mode — the sized-leg *placement* step itself failing, after every cancel
+succeeded — is rejected with `LEG_RESTORE_FAILED` instead; that case is not a cancel
+failure at all, and its own rollback is described next.
+
+A rollback — restoring cancelled legs to full size after a restore or close failure —
+**interleaves cancel-then-place per leg** rather than cancelling every sized leg first
+and placing every full-size leg after: cancelling everything before placing anything back
+can leave the position fully naked if a failure (e.g. a sustained rate limit) hits between
+the two phases. Interleaving keeps the opposite-side interest working against the holding
+from ever exceeding it, even mid-rollback, and means coverage never drops to zero *while
+more than one leg is being rolled back* — a leg not yet reached keeps its sized protection.
+**Known limitation with exactly one original leg**: interleaving cannot help when there is
+only one leg to interleave against. If that leg's sized replacement is cancelled cleanly
+but the full-size replacement then fails to place, protection is genuinely zero for a
+moment — reported as `LEG_RESTORE_FAILED_UNPROTECTED` with an empty `protective_legs` list.
+This is a real, if narrow, gap: a single-leg position (no bracket take-profit, one stop)
+hitting a rollback during a sustained outage has no fallback leg to fall back on.
+
+Whether a rollback happens at all is governed by a **determinate/indeterminate split** on
+the closing order's own failure: a determinate failure (400/401/403/404/429 — the broker's
+synchronous response says the close was *not* placed) is safe to roll back, since no
+broker state changed beyond the leg restore/cancels already done. An indeterminate failure
+(409 duplicate-request replay, 5xx, or no response at all) means the close may have
+actually gone through and only the response was lost — restoring full-size protection on
+top of a close that silently filled would leave *more* opposite-side interest working than
+the position holds, so this case escalates as a broker error instead of guessing, leaving
+the legs exactly as sized to the remainder.
+
+**Known gap: the indeterminate-failure escalation carries no leg payload.** This path
+throws a broker exception rather than returning a rejected result — Java exceptions here
+carry no `protective_legs` field, so the new (sized-to-remainder) leg ids placed just before
+the close attempt never reach the caller on this branch. The caller's book keeps whatever
+ids it had before the call (now-cancelled, replaced-but-unreported ids). This is still
+strictly better than the pre-restore behaviour (legs used to be cancelled outright and never
+put back at all), but it is a real observability gap: a caller cannot repoint its book from
+this exception alone and must reconcile via `get_orders` to discover the sized legs Saxo
+actually holds live.
 
 ## `modify_bracket` — orderId semantics (read this before calling it)
 
