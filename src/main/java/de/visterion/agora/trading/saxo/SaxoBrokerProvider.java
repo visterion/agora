@@ -1159,6 +1159,12 @@ public class SaxoBrokerProvider implements BrokerProvider {
         // on the same instrument) and must be left alone.
         BigDecimal remainingQty = available.subtract(closeQty);
         List<ProtectiveLeg> cancelled = new ArrayList<>();
+        // T5 rollback finding: a leg whose CANCEL call itself failed is left LIVE at the broker
+        // under its original id — that id never entered `cancelled` (only successfully cancelled
+        // legs do) and so never reached the rollback's restored-legs list either, even though it
+        // is real, working protection. Tracked separately here so every rejected result below can
+        // still name it.
+        List<RestoredLeg> uncancelledLive = new ArrayList<>();
         boolean cancelIncomplete = false;
         for (JsonNode n : related.orders()) {
             String type = n.path("OpenOrderType").asString("");
@@ -1186,6 +1192,10 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 cancelIncomplete = true;
                 related = related.withError("failed to cancel related order " + legOrderId
                         + ": " + e.getMessage());
+                // The cancel failed, so the leg is still live at the broker under its ORIGINAL
+                // id — never place a "new" order for it, just report the id that is already
+                // working (see the uncancelledLive javadoc note above).
+                leg.ifPresent(l -> uncancelledLive.add(new RestoredLeg(l.orderId(), l.orderId(), l.amount(), l.price())));
                 continue;
             }
 
@@ -1203,11 +1213,13 @@ public class SaxoBrokerProvider implements BrokerProvider {
         // back at FULL size and rejects the trim rather than risk that.
         if (remainingQty.signum() > 0 && cancelIncomplete) {
             List<RestoredLeg> back = placeLegsAtFullSize(ctx, ri, cancelled);
+            List<RestoredLeg> allKnown = new ArrayList<>(back);
+            allKnown.addAll(uncancelledLive);
             return OrderResult.rejectedWithLegs(
                     "could not cancel every protective leg cleanly; the close was not placed",
                     back.size() == cancelled.size() ? "LEG_CANCEL_INCOMPLETE"
                                                     : "LEG_RESTORE_FAILED_UNPROTECTED",
-                    back, false);
+                    allKnown, false);
         }
 
         List<RestoredLeg> restored = List.of();
@@ -1285,10 +1297,89 @@ public class SaxoBrokerProvider implements BrokerProvider {
             return OrderResult.acceptedWithLegs(orderId, null, status, effectiveCloseQty, remainingQty, null,
                     restored, legsCollapsed);
         } catch (RestClientResponseException e) {
-            return writeError("POST /trade/v2/orders (flatten)", e);
-        } catch (Exception e) {
+            if (remainingQty.signum() <= 0) {
+                // Full flatten: nothing was restored above (remainingQty == 0 skips the whole
+                // restore block), so there is nothing to roll back either — unchanged behaviour,
+                // byte for byte, matching today's plain reject/throw via writeError.
+                return writeError("POST /trade/v2/orders (flatten)", e);
+            }
+            if (isDeterminateWriteFailure(e)) {
+                // The broker's synchronous response says the close was NOT placed — safe to
+                // grow the sized-down legs back to their full original size.
+                List<RestoredLeg> back = placeLegsAtFullSize(ctx, ri, cancelled);
+                OrderResult closeReject = safeWriteError("POST /trade/v2/orders (flatten)", e);
+                List<RestoredLeg> allKnown = new ArrayList<>(back);
+                allKnown.addAll(uncancelledLive);
+                if (back.size() != cancelled.size()) {
+                    log.error("saxo flatten {}: close rejected ({}) AND protective legs could not be "
+                            + "restored — position uic={} holds {} shares with only {} of {} legs working",
+                            symbol, closeReject.rejectReason(), ri.uic(),
+                            available.toPlainString(), back.size(), cancelled.size());
+                    return OrderResult.rejectedWithLegs(closeReject.rejectReason(),
+                            "LEG_RESTORE_FAILED_UNPROTECTED", allKnown, false);
+                }
+                return OrderResult.rejectedWithLegs(closeReject.rejectReason(),
+                        closeReject.rejectCode(), allKnown, false);
+            }
+            // Indeterminate: the broker may already have accepted the close (409 duplicate
+            // X-Request-ID replay, 5xx, or any other status readError maps to UNAVAILABLE) and
+            // the synchronous response merely failed to communicate it — the exact lost-response
+            // case M-T6 (see this method's class javadoc) exists to reconcile on retry. Restoring
+            // full-size protection now, on top of a close that actually filled, would leave MORE
+            // opposite-side interest working than the position holds: a naked reverse position
+            // the moment it triggers. So the legs stay exactly as sized to the remainder and this
+            // escalates instead of silently rolling back.
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
-                    "saxo flatten failed: " + e.getMessage(), e);
+                    "saxo flatten close outcome unknown; protective legs remain sized to the "
+                            + "remainder: " + e.getMessage(), e);
+        } catch (Exception e) {
+            if (remainingQty.signum() <= 0) {
+                throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                        "saxo flatten failed: " + e.getMessage(), e);
+            }
+            // Transport-level failure (timeout, connection reset, …): same indeterminate
+            // reasoning as the RestClientResponseException branch above — the request may have
+            // reached Saxo even though the response never came back, so the legs stay sized to
+            // the remainder rather than being grown back on a guess.
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo flatten failed after leg restore; protective legs remain sized to the "
+                            + "remainder: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * True when the closing POST failed in a way that means Saxo did NOT place the order —
+     * safe to restore the protective legs to full size. Mirrors the determinate statuses
+     * {@link #writeError} (400 → parsed reject) and {@link #readError} (404/401/403/429) map
+     * synchronously, before the order ever reaches the book: 400 is a parsed rejection, 401/403
+     * is an auth failure that never got as far as order entry, 404 means there was nothing to
+     * place against, and 429 means the request was throttled, not executed. Everything else —
+     * 409 duplicate-request replay, 5xx, or no response at all — is indeterminate: the broker may
+     * have accepted the order and only the response was lost (see the caller for why that matters).
+     */
+    private static boolean isDeterminateWriteFailure(RestClientResponseException e) {
+        int status = e.getStatusCode().value();
+        return status == 400 || status == 401 || status == 403 || status == 404 || status == 429;
+    }
+
+    /**
+     * {@link #writeError} returns an {@code OrderResult.rejected} for HTTP 400 but THROWS a
+     * {@link BrokerException} for every other status it maps — 404/401/403/429 included, since
+     * those are normally reached via reads ({@link #readError} through {@link #exchange}), not
+     * writes. The rollback path needs a reason/code for ALL of its determinate statuses, so this
+     * converts that thrown exception back into a rejected result instead of letting it propagate:
+     * the close is being reported as rejected either way, only the code/message differ by status.
+     */
+    private static OrderResult safeWriteError(String endpoint, RestClientResponseException e) {
+        try {
+            return writeError(endpoint, e);
+        } catch (BrokerException be) {
+            String code = switch (be.kind()) {
+                case NOT_FOUND -> "NOT_FOUND";
+                case NOT_READY -> "RATE_LIMITED";
+                case UNAVAILABLE -> "UNAVAILABLE";
+            };
+            return OrderResult.rejected(be.getMessage(), code);
         }
     }
 

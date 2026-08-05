@@ -9,6 +9,7 @@ import com.github.tomakehurst.wiremock.stubbing.Scenario;
 import com.github.tomakehurst.wiremock.verification.LoggedRequest;
 import de.visterion.agora.trading.BrokerException;
 import de.visterion.agora.trading.ConnectionConfig;
+import de.visterion.agora.trading.OrderResult;
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.LoggerFactory;
@@ -1701,9 +1702,18 @@ class SaxoBrokerProviderTest {
 
         assertThat(r.accepted()).isFalse();
         assertThat(r.rejectCode()).isEqualTo("LEG_CANCEL_INCOMPLETE");
-        assertThat(r.protectiveLegs()).hasSize(1);
-        assertThat(r.protectiveLegs().get(0).replaces()).isEqualTo("leg-a");
-        assertThat(r.protectiveLegs().get(0).qty()).isEqualByComparingTo("12");
+        // leg A comes back restored at full size under a NEW id; leg B's cancel itself failed,
+        // so it never moved — it is still live at the broker under its ORIGINAL id, and must be
+        // named too (T5 finding: a leg whose cancel failed must not vanish from protectiveLegs()).
+        assertThat(r.protectiveLegs()).hasSize(2);
+        assertThat(r.protectiveLegs()).extracting("replaces", "orderId")
+                .containsExactlyInAnyOrder(
+                        tuple("leg-a", "back-a"),
+                        tuple("leg-b", "leg-b"));
+        assertThat(r.protectiveLegs().stream().filter(l -> l.replaces().equals("leg-a")).findFirst()
+                .orElseThrow().qty()).isEqualByComparingTo("12");
+        assertThat(r.protectiveLegs().stream().filter(l -> l.replaces().equals("leg-b")).findFirst()
+                .orElseThrow().qty()).isEqualByComparingTo("8");
 
         // exactly one POST — leg A restored at FULL size, never the closing Market order.
         wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders")));
@@ -1994,6 +2004,299 @@ class SaxoBrokerProviderTest {
         var posts = requestJournalInOrder().stream()
                 .filter(req -> "POST".equals(req.getMethod().value())).toList();
         assertThat(posts).hasSize(2);   // one restore (stop only) + the closing Market order
+    }
+
+    // ---- T5: rollback only on a determinate close failure ----
+
+    @Test
+    void aDeterminateCloseRejectionRestoresFullSizedLegs() {
+        // The closing Market POST comes back 400 — Saxo's synchronous parsed reject, so the
+        // close was definitely never placed. Expect the sized-down legs (12/11) to have already
+        // gone out, then the close attempt, then the ORIGINAL amounts (24/22) restored on top.
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-24","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-22","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":22.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("determinate-400")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"R12\"}"))
+                .willSetStateTo("sized1"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("determinate-400")
+                .whenScenarioStateIs("sized1")
+                .willReturn(okJson("{\"OrderId\":\"R11\"}"))
+                .willSetStateTo("sized2"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("determinate-400")
+                .whenScenarioStateIs("sized2")
+                .willReturn(aResponse().withStatus(400).withHeader("Content-Type", "application/json")
+                        .withBody("""
+                            {"ErrorInfo":{"ErrorCode":"OrderRejected","Message":"close rejected by broker"}}
+                            """))
+                .willSetStateTo("close-failed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("determinate-400")
+                .whenScenarioStateIs("close-failed")
+                .willReturn(okJson("{\"OrderId\":\"back-24\"}"))
+                .willSetStateTo("rollback1"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("determinate-400")
+                .whenScenarioStateIs("rollback1")
+                .willReturn(okJson("{\"OrderId\":\"back-22\"}")));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("OrderRejected");
+        assertThat(r.rejectReason()).isEqualTo("close rejected by broker");
+        assertThat(r.protectiveLegs()).hasSize(2);
+        assertThat(r.protectiveLegs()).extracting("replaces", "orderId")
+                .containsExactlyInAnyOrder(
+                        tuple("leg-24", "back-24"),
+                        tuple("leg-22", "back-22"));
+
+        assertThat(requestJournalMethodsAndPaths()).containsSubsequence(
+                "DELETE /trade/v2/orders/leg-24",
+                "DELETE /trade/v2/orders/leg-22",
+                "POST /trade/v2/orders",
+                "POST /trade/v2/orders",
+                "POST /trade/v2/orders",
+                "POST /trade/v2/orders",
+                "POST /trade/v2/orders");
+
+        var posts = requestJournalInOrder().stream()
+                .filter(req -> "POST".equals(req.getMethod().value())).toList();
+        assertThat(posts).hasSize(5);
+        var rollback1 = SaxoBrokerProvider.MAPPER.readTree(posts.get(3).getBodyAsString());
+        assertThat(rollback1.path("Amount").decimalValue()).isEqualByComparingTo("24");
+        var rollback2 = SaxoBrokerProvider.MAPPER.readTree(posts.get(4).getBodyAsString());
+        assertThat(rollback2.path("Amount").decimalValue()).isEqualByComparingTo("22");
+    }
+
+    @Test
+    void aRateLimitedCloseIsDeterminateAndAlsoRestoresFullSizedLegs() {
+        // This is the case the first spec draft got wrong: a routine 429 must not leave the
+        // position permanently under-protected. Same shape as the 400 test above.
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-24","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-22","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":22.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("determinate-429")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"R12\"}"))
+                .willSetStateTo("sized1"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("determinate-429")
+                .whenScenarioStateIs("sized1")
+                .willReturn(okJson("{\"OrderId\":\"R11\"}"))
+                .willSetStateTo("sized2"));
+        // The close order (Amount 23) always gets 429 here — matched on its own amount, NOT
+        // advanced by scenario state, so the underlying HTTP client's own automatic retry on
+        // 429 (observed elsewhere in this suite) hits the identical stub again rather than
+        // accidentally consuming the full-size rollback stubs below.
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("23")))
+                .willReturn(aResponse().withStatus(429)));
+        // The full-size rollback POSTs are matched by their OWN amount (24 / 22), independent
+        // of scenario state, for the same reason.
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("24.0")))
+                .willReturn(okJson("{\"OrderId\":\"back-24\"}")));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("22.0")))
+                .willReturn(okJson("{\"OrderId\":\"back-22\"}")));
+
+        var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.protectiveLegs()).hasSize(2);
+        assertThat(r.protectiveLegs()).extracting("replaces", "orderId")
+                .containsExactlyInAnyOrder(
+                        tuple("leg-24", "back-24"),
+                        tuple("leg-22", "back-22"));
+
+        // Exactly one full-size restore POST per leg — regardless of how many times the close
+        // attempt itself was retried at the transport level.
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("24.0"))));
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("22.0"))));
+        assertThat(requestJournalMethodsAndPaths()).containsSubsequence(
+                "DELETE /trade/v2/orders/leg-24",
+                "DELETE /trade/v2/orders/leg-22",
+                "POST /trade/v2/orders",
+                "POST /trade/v2/orders");
+    }
+
+    @Test
+    void anIndeterminateCloseLeavesTheReducedLegsInPlace() {
+        // The closing Market POST comes back 500 — the broker may have accepted it and only the
+        // response was lost. Growing the legs back to full size would risk a naked reverse
+        // position if the close actually filled, so this must escalate WITHOUT restoring, and
+        // the 12/11 sized legs already placed must be left exactly as they are.
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-24","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-22","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":22.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("indeterminate-500")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"R12\"}"))
+                .willSetStateTo("sized1"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("indeterminate-500")
+                .whenScenarioStateIs("sized1")
+                .willReturn(okJson("{\"OrderId\":\"R11\"}"))
+                .willSetStateTo("sized2"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("indeterminate-500")
+                .whenScenarioStateIs("sized2")
+                .willReturn(aResponse().withStatus(500)));
+
+        assertThatThrownBy(() -> provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null))
+                .isInstanceOfSatisfying(BrokerException.class,
+                        e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE));
+
+        // Exactly 3 POSTs total: the two sized restores and the failed close attempt. NO
+        // further POST — the legs stay at 12/11, sized to the remainder, not grown back.
+        var posts = requestJournalInOrder().stream()
+                .filter(req -> "POST".equals(req.getMethod().value())).toList();
+        assertThat(posts).hasSize(3);
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("24.0"))));
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("22.0"))));
+    }
+
+    @Test
+    void aTimedOutCloseLeavesTheReducedLegsInPlace() {
+        // A transport-level failure (connection reset, timeout, …) on the closing POST is the
+        // same "outcome unknown" case as a 500 — the request may already have reached Saxo.
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-24","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-22","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":22.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("timeout-close")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"R12\"}"))
+                .willSetStateTo("sized1"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("timeout-close")
+                .whenScenarioStateIs("sized1")
+                .willReturn(okJson("{\"OrderId\":\"R11\"}"))
+                .willSetStateTo("sized2"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("timeout-close")
+                .whenScenarioStateIs("sized2")
+                .willReturn(aResponse().withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER)));
+
+        assertThatThrownBy(() -> provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null))
+                .isInstanceOfSatisfying(BrokerException.class,
+                        e -> assertThat(e.kind()).isEqualTo(BrokerException.Kind.UNAVAILABLE));
+
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("24.0"))));
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders"))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("22.0"))));
+    }
+
+    @Test
+    void aFailedRollbackReportsUnprotected() {
+        // The closing POST fails determinately (400), but the full-size restore POSTs ALSO
+        // fail — the cancelled legs are gone and nothing came back. Must be flagged loudly
+        // as unprotected, not silently reported as a plain restore failure.
+        stubInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"leg-24","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"leg-22","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":22.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-24")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-22")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("failed-rollback")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"R12\"}"))
+                .willSetStateTo("sized1"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("failed-rollback")
+                .whenScenarioStateIs("sized1")
+                .willReturn(okJson("{\"OrderId\":\"R11\"}"))
+                .willSetStateTo("sized2"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("failed-rollback")
+                .whenScenarioStateIs("sized2")
+                .willReturn(aResponse().withStatus(400).withHeader("Content-Type", "application/json")
+                        .withBody("""
+                            {"ErrorInfo":{"ErrorCode":"OrderRejected","Message":"close rejected by broker"}}
+                            """))
+                .willSetStateTo("close-failed"));
+        // Both full-size restore attempts fail too — the legs are gone.
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("failed-rollback")
+                .whenScenarioStateIs("close-failed")
+                .willReturn(aResponse().withStatus(500))
+                .willSetStateTo("rollback1-failed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("failed-rollback")
+                .whenScenarioStateIs("rollback1-failed")
+                .willReturn(aResponse().withStatus(500)));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(SaxoBrokerProvider.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.INFO);
+        OrderResult r;
+        try {
+            r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_FAILED_UNPROTECTED");
+        assertThat(r.protectiveLegs()).isEmpty();
+
+        assertThat(appender.list).anyMatch(e -> e.getLevel() == Level.ERROR
+                && e.getFormattedMessage().contains("AAPL")
+                && e.getFormattedMessage().contains("could not be"));
     }
 
     // ---- pagination ----
