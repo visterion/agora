@@ -186,8 +186,49 @@ class GetIndicatorsToolTest {
         assertThat(tool(rising(30)).call(badSeries).available()).isFalse();
 
         assertThat(tool(null).call(mapper.createObjectNode().put("symbol", "A")).available()).isFalse();
+    }
 
-        assertThat(tool(List.of()).call(mapper.createObjectNode().put("symbol", "A")).available()).isFalse();
+    // --- NOT_FOUND vs UNAVAILABLE at the tool boundary -----------------------
+    // "this symbol has no history" is a data statement, and get_indicators_batch has always
+    // answered it with an available:false entry. The single-symbol tool now agrees, instead of
+    // raising an error envelope the caller reads as an Agora outage.
+
+    private GetIndicatorsTool toolNotFound() {
+        MarketDataProvider p = new MarketDataProvider() {
+            public String name() { return "stub"; }
+            public Quote quote(String s) { throw new MarketDataException(MarketDataException.Kind.NOT_FOUND, "no " + s, null); }
+            public List<OhlcBar> ohlc(String s, int d) {
+                throw new MarketDataException(MarketDataException.Kind.NOT_FOUND, "no ohlc for " + s, null);
+            }
+        };
+        return new GetIndicatorsTool(new MarketDataService(List.of(p), 120L), registry(),
+                List.of("atr"), 260);
+    }
+
+    @Test
+    void notFoundIsAnAvailableNoDataPayloadNotAnOutage() {
+        var r = toolNotFound().call(mapper.createObjectNode().put("symbol", "SYNA"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("symbol").asString()).isEqualTo("SYNA");
+        assertThat(r.output().get("available").asBoolean()).isFalse();
+        assertThat(r.output().get("error").asString()).contains("SYNA");
+        assertThat(r.output().has("values")).isFalse();
+    }
+
+    @Test
+    void emptyBarsIsTheSameNoDataStatement() {
+        var r = tool(List.of()).call(mapper.createObjectNode().put("symbol", "SYNA"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("available").asBoolean()).isFalse();
+        assertThat(r.output().get("error").asString()).isEqualTo("no data for SYNA");
+    }
+
+    @Test
+    void unavailableStaysAnErrorEnvelope() {
+        // tool(null) makes the stub provider throw UNAVAILABLE ("stub down").
+        var r = tool(null).call(mapper.createObjectNode().put("symbol", "SYNA"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("stub down");
     }
 
     @Test

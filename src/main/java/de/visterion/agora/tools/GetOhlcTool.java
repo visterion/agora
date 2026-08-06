@@ -63,8 +63,18 @@ public class GetOhlcTool implements AgoraTool {
                 o.put("close", b.close());
                 o.put("volume", b.volume());
             }
+            out.put("available", true);
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
+            if (e.kind() == MarketDataException.Kind.NOT_FOUND) {
+                // Every provider that could serve this instrument answered "I don't know it" (or
+                // the negative cache remembers that they did). The chain is healthy; this one
+                // symbol has no daily history. Not an outage — see ToolResult#noData.
+                ObjectNode out = mapper.createObjectNode();
+                out.put("symbol", symbol);
+                out.putArray("bars");
+                return ToolResult.noData(out, e.getMessage());
+            }
             return ToolResult.unavailable(e.getMessage());
         }
     }

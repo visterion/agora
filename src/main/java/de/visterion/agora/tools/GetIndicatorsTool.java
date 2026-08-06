@@ -98,9 +98,16 @@ public class GetIndicatorsTool implements AgoraTool {
         try {
             bars = service.ohlc(symbol, parsed.days());
         } catch (MarketDataException e) {
+            // NOT_FOUND = this one symbol has no history anywhere in the chain. get_indicators_batch
+            // has always answered that with an available:false entry rather than an error; the
+            // single-symbol tool now says the identical thing in the identical shape.
+            if (e.kind() == MarketDataException.Kind.NOT_FOUND) {
+                return ToolResult.ok(evaluator.unavailable(symbol, e.getMessage()));
+            }
             return ToolResult.unavailable(e.getMessage());
         }
-        if (bars.isEmpty()) return ToolResult.unavailable("no data for " + symbol);
+        // Same statement, reached without an exception: bars came back empty for this symbol.
+        if (bars.isEmpty()) return ToolResult.ok(evaluator.unavailable(symbol, "no data for " + symbol));
 
         return ToolResult.ok(evaluator.evaluate(symbol, bars, parsed.specs(), parsed.seriesN()));
     }

@@ -67,8 +67,18 @@ public class GetIntradayTool implements AgoraTool {
                 o.put("close", b.close());
                 o.put("volume", b.volume());
             }
+            out.put("available", true);
             return ToolResult.ok(out);
         } catch (MarketDataException e) {
+            if (e.kind() == MarketDataException.Kind.NOT_FOUND) {
+                // "no intraday bars for X" / "symbol X not found": Yahoo answered, this one
+                // instrument has nothing to serve (unknown symbol variant, dead session). An
+                // error envelope here reads as an outage at the consumer — see ToolResult#noData.
+                ObjectNode out = mapper.createObjectNode();
+                out.put("symbol", symbol);
+                out.putArray("bars");
+                return ToolResult.noData(out, e.getMessage());
+            }
             return ToolResult.unavailable(e.getMessage());
         }
     }

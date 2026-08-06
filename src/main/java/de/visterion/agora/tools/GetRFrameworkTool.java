@@ -124,7 +124,15 @@ public class GetRFrameworkTool implements AgoraTool {
 
         List<OhlcBar> bars;
         try { bars = service.ohlc(symbol, fetchDays); }
-        catch (MarketDataException e) { return ToolResult.unavailable(e.getMessage()); }
+        catch (MarketDataException e) {
+            // NOT_FOUND = no provider knows this instrument. The tool already emits a top-level
+            // available flag on success; say available:false rather than raising an error
+            // envelope the caller reads as "Agora is down" (see ToolResult#noData).
+            if (e.kind() == MarketDataException.Kind.NOT_FOUND) {
+                return ToolResult.noData(mapper.createObjectNode().put("symbol", symbol), e.getMessage());
+            }
+            return ToolResult.unavailable(e.getMessage());
+        }
 
         Indicators ind = indicators.compute(bars);
         if (ind.currentClose() == null) return ToolResult.unavailable("no price for " + symbol);

@@ -44,6 +44,36 @@ class GetOhlcToolTest {
         assertThat(r.output().get("bars").get(0).get("volume").asLong()).isEqualTo(55_123_456L);
     }
 
+    // --- NOT_FOUND vs UNAVAILABLE at the tool boundary -----------------------
+
+    private MarketDataProvider notFoundProvider() {
+        return new MarketDataProvider() {
+            public String name() { return "stub"; }
+            public Quote quote(String s) { throw new MarketDataException(MarketDataException.Kind.NOT_FOUND, "no " + s, null); }
+            public List<OhlcBar> ohlc(String s, int d) {
+                throw new MarketDataException(MarketDataException.Kind.NOT_FOUND, "no ohlc for " + s, null);
+            }
+        };
+    }
+
+    @Test
+    void notFoundIsAnAvailableNoDataPayloadNotAnOutage() {
+        var tool = new GetOhlcTool(svcWith(notFoundProvider()));
+        var r = tool.call(mapper.createObjectNode().put("symbol", "SYNA"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("symbol").asString()).isEqualTo("SYNA");
+        assertThat(r.output().get("available").asBoolean()).isFalse();
+        assertThat(r.output().get("error").asString()).contains("SYNA");
+        assertThat(r.output().get("bars")).isEmpty();
+    }
+
+    @Test
+    void successPayloadCarriesAvailableTrue() {
+        var r = new GetOhlcTool(svcWith(okProvider())).call(mapper.createObjectNode().put("symbol", "SYNA"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("available").asBoolean()).isTrue();
+    }
+
     @Test
     void unavailableWhenNoSymbol() {
         var tool = new GetOhlcTool(svcWith(okProvider()));

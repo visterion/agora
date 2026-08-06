@@ -52,6 +52,36 @@ class GetRFrameworkToolTest {
                 List.of(BigDecimal.ONE, new BigDecimal("2")), 260);
     }
 
+    private GetRFrameworkTool toolWithChainError(MarketDataException.Kind kind, String message) {
+        MarketDataProvider p = new MarketDataProvider() {
+            public String name() { return "stub"; }
+            public Quote quote(String s) { throw new MarketDataException(kind, message, null); }
+            public List<OhlcBar> ohlc(String s, int d) { throw new MarketDataException(kind, message, null); }
+        };
+        IndicatorService ind = new IndicatorService(new IndicatorService.Params(
+                3, new BigDecimal("3.0"), 2, 4, 5));
+        return new GetRFrameworkTool(new MarketDataService(List.of(p), 120L), ind, new BigDecimal("3.0"),
+                List.of(BigDecimal.ONE, new BigDecimal("2")), 260);
+    }
+
+    @org.junit.jupiter.api.Test
+    void notFoundIsAnAvailableNoDataPayloadNotAnOutage() {
+        var r = toolWithChainError(MarketDataException.Kind.NOT_FOUND, "no ohlc for SYNA")
+                .call(mapper.createObjectNode().put("symbol", "SYNA"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("symbol").asString()).isEqualTo("SYNA");
+        assertThat(r.output().get("available").asBoolean()).isFalse();
+        assertThat(r.output().get("error").asString()).isEqualTo("no ohlc for SYNA");
+    }
+
+    @org.junit.jupiter.api.Test
+    void unavailableStaysAnErrorEnvelope() {
+        var r = toolWithChainError(MarketDataException.Kind.UNAVAILABLE, "chain down")
+                .call(mapper.createObjectNode().put("symbol", "SYNA"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("chain down");
+    }
+
     private GetRFrameworkTool toolWithMultiples(List<OhlcBar> bars, List<BigDecimal> multiples) {
         IndicatorService ind = new IndicatorService(new IndicatorService.Params(
                 3, new BigDecimal("3.0"), 2, 4, 5));

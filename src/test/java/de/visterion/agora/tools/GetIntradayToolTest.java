@@ -65,6 +65,47 @@ class GetIntradayToolTest {
         verifyNoInteractions(svc);
     }
 
+    // --- NOT_FOUND vs UNAVAILABLE at the tool boundary -----------------------
+    // "no intraday bars for X" is a statement about ONE instrument, not about Yahoo.
+    // It must ride out as an AVAILABLE result (adapter: isError=false) carrying
+    // available:false + error, not as an error envelope the caller reads as an outage.
+
+    @Test void notFoundIsAnAvailableNoDataPayloadNotAnOutage() {
+        IntradayService svc = Mockito.mock(IntradayService.class);
+        when(svc.intraday(any(), any(), any()))
+                .thenThrow(new MarketDataException(MarketDataException.Kind.NOT_FOUND,
+                        "no intraday bars for SYNA", null));
+        var tool = new GetIntradayTool(svc);
+        var r = tool.call(mapper.createObjectNode().put("symbol", "SYNA"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("symbol").asString()).isEqualTo("SYNA");
+        assertThat(r.output().get("available").asBoolean()).isFalse();
+        assertThat(r.output().get("error").asString()).isEqualTo("no intraday bars for SYNA");
+        assertThat(r.output().get("bars")).isEmpty();
+    }
+
+    @Test void unavailableStaysAnErrorEnvelope() {
+        IntradayService svc = Mockito.mock(IntradayService.class);
+        when(svc.intraday(any(), any(), any()))
+                .thenThrow(new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                        "Yahoo intraday unreachable: connect timeout", null));
+        var tool = new GetIntradayTool(svc);
+        var r = tool.call(mapper.createObjectNode().put("symbol", "SYNA"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("Yahoo intraday unreachable");
+    }
+
+    @Test void successPayloadCarriesAvailableTrue() {
+        IntradayService svc = Mockito.mock(IntradayService.class);
+        when(svc.intraday(any(), any(), any())).thenReturn(List.of(
+                new IntradayBar(Instant.ofEpochSecond(1749600000L),
+                        new BigDecimal("11.0"), new BigDecimal("11.4"),
+                        new BigDecimal("10.8"), new BigDecimal("11.2"), 250L)));
+        var r = new GetIntradayTool(svc).call(mapper.createObjectNode().put("symbol", "SYNA"));
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("available").asBoolean()).isTrue();
+    }
+
     @Test void namespaceIsGeneral() {
         assertThat(new GetIntradayTool(Mockito.mock(IntradayService.class)).namespace()).isEqualTo("general");
     }

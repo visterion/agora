@@ -18,6 +18,61 @@ consumer. Agora only passes through an opaque `client_ref` on orders.
 
 ---
 
+## Tool result semantics: the two `available` flags, and `NOT_FOUND` vs `UNAVAILABLE`
+
+Two different `available` flags travel the same wire and mean opposite things. Getting them
+confused is the single most repeated defect in this system, so the rule is stated once, here.
+
+| Flag | Where | Meaning |
+|---|---|---|
+| **envelope** `available` | the `ToolResult` itself; MCP maps it to `isError = !available`, the webhook to the body `{"available": false, "error": …}` | **The SOURCE could not answer.** An outage, a rate limit, a refusal, a bad argument. Retriable or a caller bug. |
+| **payload** `available` | a key *inside* a successful output (`get_indicators`, `get_indicators_batch`, `get_r_framework`, `get_ohlc`, `get_intraday`) | **The SOURCE answered; THIS ONE ITEM has nothing.** A data statement. Not retriable, not an outage. |
+
+`isError` is the only outage discriminator a consumer has. Therefore:
+
+> **A statement about one item must never be sent as a statement about the source.**
+> `MarketDataException.Kind.NOT_FOUND` — this instrument/document/company has nothing to
+> serve — leaves as an **available** result carrying `available:false` plus an `error` reason.
+> `UNAVAILABLE` (and `RATE_LIMITED` / `TOO_LARGE`) still leave as an **error envelope**.
+
+The shape of a `NOT_FOUND` answer is a payload that is otherwise well-formed and empty, plus
+the two flags — nothing has to special-case a missing container:
+
+```json
+{ "symbol": "SYNA", "bars": [], "available": false, "error": "no intraday bars for SYNA" }
+```
+
+Symmetrically, the same tools now put `"available": true` into their **successful** payload, so
+a consumer reading the flag with a `false` default never mistakes a good answer for a bad one.
+
+Tools that follow this today: `get_intraday`, `get_ohlc`, `get_indicators`,
+`get_indicators_batch`, `get_r_framework` (payload flag + reason), and
+`get_company_facts`, `get_fundamental_concepts`, `get_fundamental_score` (empty well-formed
+payload, no reason). The trading equivalents are `get_order_by_ref` (`order: null`) and
+`cancel_order` (`accepted:false`, `rejectCode:"NOT_FOUND"`) — see
+[`exit-tools.md`](exit-tools.md).
+
+Deliberately **not** following it:
+
+- **`get_quote`** — the per-symbol `NOT_FOUND` is swallowed inside `MarketDataService.quotes`,
+  so the tool cannot tell "unknown symbol" from "chain down" when *nothing* resolved; it keeps
+  the error envelope. A partial batch already reports the misses in `unresolved[]`, and a
+  no-data row is deliberately **never** placed inside `quotes[]` — a consumer looping that array
+  would coerce a missing price to 0.
+- **EDGAR tools** (`get_filings`, `search_filings`, `get_filing_text`, `get_company_concept`,
+  `get_form4_*`, `get_eps_history`) — their `NOT_FOUND` also covers `invalid CIK (must be
+  numeric)`, a malformed argument that is right to be an error. The kind is overloaded there;
+  splitting it is a separate change.
+- **`get_fundamentals`** — reachable `NOT_FOUND` only on the non-US path
+  (`GlobalMetricsService`); the US path raises `UNAVAILABLE` for the very same "no fundamentals
+  for X". Fixing only one half would be worse than fixing neither. Reclassify upstream first.
+
+Neither negative cache is affected: `MarketDataService`'s `ohlcNotFoundCache` /
+`quoteNotFoundCache` and `IntradayService`'s "never cache an empty result as success" both live
+*below* the tool boundary and still see the exception unchanged.
+
+---
+
 ## Market data
 
 | Tool | Description |
@@ -29,6 +84,11 @@ consumer. Agora only passes through an opaque `client_ref` on orders.
 
 **Provider chain (quotes / OHLC):** Alpaca → Saxo → TwelveData → Finnhub → Yahoo  
 **Intraday:** Yahoo chart. **FX:** Yahoo pairs (optional scheduled warmer).
+
+`get_ohlc` and `get_intraday` answer "this symbol has nothing to serve" with an available
+result — `{symbol, bars: [], available: false, error}` — and reserve the error envelope for a
+real source failure. Successful payloads carry `available: true`. See
+[Tool result semantics](#tool-result-semantics-the-two-available-flags-and-not_found-vs-unavailable).
 
 ---
 
