@@ -160,18 +160,29 @@ archive document per hit under a 110 ms throttle and a 30 s aggregate deadline, 
 market-wide call parses a few hundred filings before reporting `truncated: true` — raising
 `limit` does not lift that second bound.
 
-The throttle is a **rate limit, not a fixed delay**: it spaces consecutive archive requests
-110 ms apart measured from the previous request's *start*, so a fetch that took 80 ms waits
-only the remaining 30 ms, and one that already overran the window waits not at all. That keeps
-the service at 9.09 req/s, just under SEC's published maximum of **10 requests/second**
-("Current max request rate: 10 requests/second", *Accessing EDGAR Data*; the Internet Security
-Policy adds that the ceiling counts regardless of how many machines a user submits from).
-Until this was fixed the 110 ms was slept *before* every fetch, so the real spacing was
-110 ms + the fetch itself (~190 ms measured, ~5.3 req/s) and roughly 40 % of the deadline went
-on an unintended over-sleep. The deadline now buys about **272 filings per call** rather than
-~159 — *derived from the pacing arithmetic, not yet confirmed by a production run*; the live
-figure drops below it whenever the archive answers slower than 110 ms, since such a fetch
-paces itself.
+The throttle is a **rate limit, not a fixed delay**: it spaces consecutive requests 110 ms apart
+measured from the previous request's *start*, so a fetch that took 80 ms waits only the
+remaining 30 ms, and one that already overran the window waits not at all. That keeps the
+service at 9.09 req/s, just under SEC's published maximum of **10 requests/second** ("Current
+max request rate: 10 requests/second", *Accessing EDGAR Data*; the Internet Security Policy adds
+that the ceiling counts regardless of how many machines a user submits from). Until this was
+fixed the 110 ms was slept *before* every fetch, so the real spacing was 110 ms + the fetch
+itself (~190 ms measured, ~5.3 req/s) and roughly 40 % of the deadline went on an unintended
+over-sleep. The deadline now buys about **272 filings per call** rather than ~159 — *derived
+from the pacing arithmetic, not yet confirmed by a production run*; the live figure drops below
+it whenever the archive answers slower than 110 ms, since such a fetch paces itself.
+
+The budget is **one shared limiter per `EdgarSearchService` instance**, not one per loop: the
+EFTS page walk and the Form-4 archive GETs both draw on it, so the first archive GET after a
+search waits out the remainder of that search's window rather than starting immediately. This
+matters because SEC's ceiling is per *user*, not per code path — a paced archive stream running
+alongside an unpaced EFTS burst exceeds the limit while each half looks compliant on its own.
+
+**Still outside the limiter** (a separate, cross-class change): `get_filing_text`'s archive
+fetches, which run on their own 8-permit concurrency bound, and the `EdgarCikResolver` /
+`EdgarService` clients. Worst case a single process can therefore still exceed 10 req/s if
+those paths run concurrently with a Form-4 call; today they do not, because the only consumer
+serialises its tool calls.
 
 ### EFTS answers 500 intermittently — the page fetch retries
 
@@ -237,7 +248,7 @@ unaffected — verified live on window 2026-02-01..2026-08-01: `DEFM14A` 133, `S
 `DEFM14A,SC TO-T` **256** = 133 + 123; `10-12B` 34, `10-12G` 93, `10-12B,10-12G` **127** =
 34 + 93. Callers of `search_filings` should pass root forms only.
 
-### Form-4 window: the caller's window is searched before the late-filing pad
+### Form-4 window: the pad's order depends on the window's width
 
 A Form 4 is filed *after* the trade it reports, so `get_form4_transactions` must look past the
 end of the caller's window to catch in-window trades filed late. It does that as **two**
@@ -245,6 +256,29 @@ searches over disjoint filing-date ranges, in strict priority order: first `[fro
 `(to, to+10d]`. The `limit` is shared — the pad search only gets what the window search left
 over, and is skipped entirely once the limit is full (which reports `truncated: true`). A cap
 hit in either search truncates the whole result.
+
+**How far behind a trade its filing is.** SEC gives a filer two business days: *"Form 4 must be
+filed before the end of the second business day following the day on which the subject
+transaction has been executed"* (17 CFR 240.16a-3(g)(1)). The same rule's (g)(2)–(g)(4) can
+defer the *deemed* execution date by up to three further business days, which is what the
+10-day pad width covers. So a trade dated D is mostly reported by filings filed **D+1 or D+2**,
+not on D.
+
+**Why the pad's order cannot be fixed.** For a *wide* window that lag is a rounding error:
+nearly every day in `[from, to]` has its filings inside `[from, to]` too, so the window search
+holds the bulk of the answer and must be read first — the measured case below. For a **narrow**
+window it inverts. At `from = to = D` the window search returns only the filings filed *on* D
+and eats almost the whole per-call fetch budget; the sliver left goes to the pad, and because
+EFTS sorts `file_date` **descending** a single `D+1..D+10` pad search hands back the D+10
+filings first, whose transactions post-date the window and are all discarded. The filings
+carrying D's trades sit at the far end of that list and are never reached.
+
+So a window of **at most 4 calendar days** — the widest calendar span two business days can
+occupy, a Thursday or Friday trade reporting the following Monday or Tuesday — walks the pad
+**oldest-first, one day per search**, stopping as soon as it holds what the deadline could
+fetch (one extra EFTS request in the common case). Wider windows keep the single descending pad
+search. Note the replay that established window-first ordering used an **8-day** window; that
+result does not generalise to a 1-day window, which is why the width now selects the order.
 
 The order is load-bearing, not cosmetic. EFTS returns hits **`file_date` descending**, and the
 fetch budget (1000 hits, then the 30 s deadline over ~110 ms-spaced archive GETs) is an order

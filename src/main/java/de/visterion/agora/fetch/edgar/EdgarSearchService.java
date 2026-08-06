@@ -208,6 +208,7 @@ public class EdgarSearchService {
     private final String archiveBase;
     private final LongSupplier now;
     private final Sleeper sleeper;
+    private final EdgarRequestPacer pacer;
     private final long maxFilingBytes;
     private final TickerUniverse tickerUniverse;
     private final java.util.concurrent.Semaphore filingFetchPermits;
@@ -288,6 +289,10 @@ public class EdgarSearchService {
         this.archiveBase = archiveBase;
         this.now = now;
         this.sleeper = sleeper;
+        // ONE spacing budget for every sec.gov request this instance makes — the EFTS page walk
+        // and the Form-4 archive GETs both draw on it. See EdgarRequestPacer for why the budget
+        // must be instance-level rather than local to fetchForm4's loop.
+        this.pacer = new EdgarRequestPacer(THROTTLE_MS, now, sleeper);
         this.maxFilingBytes = maxFilingBytes;
         this.tickerUniverse = tickerUniverse;
         this.searchCache = new TtlCache<>(ttlSeconds * 1000L, 512, now);
@@ -471,8 +476,16 @@ public class EdgarSearchService {
                 "EDGAR search unreachable: " + e.getMessage(), e);
     }
 
-    /** One EFTS request, no retry, no exception translation — the unit {@link #fetchPage} retries. */
+    /** One EFTS request, no retry, no exception translation — the unit {@link #fetchPage} retries.
+     *
+     *  <p>Paced on the SAME budget as the archive GETs (see {@link EdgarRequestPacer}): efts.sec.gov
+     *  and www.sec.gov are one host family for the purposes of SEC's per-user rate ceiling, and a
+     *  page walk is up to {@link #HARD_FETCH_CAP}/{@link #PAGE_SIZE} requests in a row. Note the
+     *  pacing sits INSIDE the unit that {@link #fetchPage} retries, so a retried attempt is spaced
+     *  from its predecessor too — the retry backoff (250/750ms) already exceeds the spacing, so in
+     *  practice this only ever costs a retry zero extra wait. */
     private JsonNode requestPage(String formsCsv, String query, String cik, LocalDate from, LocalDate to, int offset) {
+        pacer.acquireUninterruptibly();
         return http.get()
                 .uri(uri -> {
                     uri.path("/LATEST/search-index")
@@ -813,50 +826,23 @@ public class EdgarSearchService {
         // `hits.size() >= limit` holds.
         boolean truncated = capped || hits.size() >= limit;
         long deadline = now.getAsLong() + FORM4_DEADLINE_MS;
-        // A RATE LIMITER, not a fixed delay (BUG-S1a). What SEC's limit constrains is the SPACING
-        // between two request STARTS, so the wait owed before a fetch is whatever remains of the
-        // THROTTLE_MS window since the previous fetch STARTED — not the whole window. The old code
-        // slept a flat THROTTLE_MS before each GET and therefore spaced them THROTTLE_MS + the
-        // fetch duration apart: at the measured ~80ms archive GET that was ~190ms, i.e. ~5.3 req/s
-        // where the constant declares ~9.1/s, and it cost ~40% of the filings the deadline can buy.
-        //
-        // This only removes an unintended OVER-sleep; it never goes faster than THROTTLE_MS
-        // already allows. SEC publishes a maximum of 10 requests/second ("Current max request
-        // rate: 10 requests/second", sec.gov Accessing EDGAR Data / Internet Security Policy /
-        // webmaster FAQ, re-checked 2026-08-06), so THROTTLE_MS=110 -> 9.09 req/s stays strictly
-        // under the published ceiling, with the headroom living in the constant rather than in an
-        // accident of how long a fetch happens to take. A fetch that already outran the window
-        // waits zero and is then paced by its own duration, which is slower still.
-        //
-        // The clock is read rather than projected: a real Thread.sleep can only overshoot, so
-        // taking the actual post-sleep instant keeps every gap >= THROTTLE_MS. Both
-        // form4Transactions() and form4TransactionsByCik() run this loop, so both are paced
-        // identically.
-        long previousFetchStartedAt = Long.MIN_VALUE;
+        // The archive GETs are spaced by the instance-wide pacer, applied inside parseForm4 right
+        // before each request (see EdgarRequestPacer, and requestPage for the EFTS half of the same
+        // budget). This loop therefore only owns the DEADLINE; it must not do its own spacing, or
+        // the process would have two independent limiters that each believe they own the headroom.
         for (FilingHit hit : hits) {
             if (out.size() >= limit) {
                 truncated = true;   // hits remain unprocessed beyond the transaction limit
                 break;
             }
-            long nowMs = now.getAsLong();
-            if (nowMs >= deadline) {
+            if (now.getAsLong() >= deadline) {
                 truncated = true;
                 break;
             }
-            if (previousFetchStartedAt != Long.MIN_VALUE) {
-                long waitMs = THROTTLE_MS - (nowMs - previousFetchStartedAt);
-                if (waitMs > 0) {
-                    try {
-                        sleeper.sleep(waitMs);
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        truncated = true;
-                        break;
-                    }
-                    nowMs = now.getAsLong();
-                }
+            if (Thread.currentThread().isInterrupted()) {
+                truncated = true;   // the pacer was interrupted mid-wait; stop rather than sprint
+                break;
             }
-            previousFetchStartedAt = nowMs;
             try {
                 parseForm4(hit, out, from, to);
             } catch (Exception e) {
@@ -999,6 +985,9 @@ public class EdgarSearchService {
 
         String xml;
         try {
+            // Paced on the shared budget, immediately before the request rather than in the caller's
+            // loop: a hit with no url returns above without spending a slot it never used.
+            pacer.acquireUninterruptibly();
             // hit.url() is absolute (archiveBase + /Archives/...); archiveHttp's baseUrl == archiveBase resolves it correctly.
             xml = archiveHttp.get().uri(hit.url()).retrieve().body(String.class);
         } catch (Exception e) {

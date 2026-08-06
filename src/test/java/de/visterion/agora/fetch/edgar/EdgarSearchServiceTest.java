@@ -949,7 +949,10 @@ class EdgarSearchServiceTest {
         EdgarSearchService s = pacedSvc(new FakeClock(), 0L, sleeps);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(3);
-        assertThat(sleeps).hasSize(2); // n-1 gaps between 3 sequential archive GETs
+        // 4 gaps, not 2: the two EFTS searches draw on the SAME budget as the three archive GETs
+        // (fix round 2, finding 3), so the sequence is search, search, GET, GET, GET — four gaps.
+        // With a zero-cost fetch every gap is the whole window.
+        assertThat(sleeps).hasSize(4);
         assertThat(sleeps).allMatch(ms -> ms == 110L);
     }
 
@@ -1772,20 +1775,44 @@ class EdgarSearchServiceTest {
     /** Records what the retry backoff asked to sleep, so the schedule is pinned by assertion. */
     private final java.util.List<Long> searchSleeps = new java.util.ArrayList<>();
 
-    /** Service whose EFTS client points at WireMock and whose Sleeper only records (never sleeps). */
+    /** The fake clock backing {@link #retryingSvc()} — advanced by the sleeper and by each request. */
+    private FakeClock searchClock;
+
     private EdgarSearchService retryingSvc() {
-        return retryingSvc(System::currentTimeMillis);
+        return retryingSvc(0L);
     }
 
     /**
-     * Both clients come from {@link #wmClient()}, i.e. the factory production pins — which is
-     * load-bearing for these tests in particular: on a bare builder the Apache client's own retry
-     * strategy would repeat the 429/503 stubs and the request counts asserted below would be
-     * measuring it rather than the service's retry.
+     * Service whose EFTS client points at WireMock, with a COHERENT fake clock/sleeper pair: the
+     * recording sleeper advances the clock by what it was asked to sleep, and each EFTS request
+     * advances it by {@code perRequestMs}.
+     *
+     * <p>That pairing became load-bearing once the shared {@link EdgarRequestPacer} started spacing
+     * the EFTS requests too. These tests used to pair a REAL clock with a fake sleeper, so a
+     * 250 ms backoff advanced the clock by nothing and the pacer then charged a ~109 ms spacing
+     * wait on the next attempt — an artifact of the test harness, not of production, where the
+     * sleeper really sleeps and a backoff of 250/750 ms therefore always exceeds the 110 ms
+     * spacing and costs a retry no extra wait. With the clock and the sleeper agreeing, the
+     * backoff schedules below assert exactly that production relationship.
+     *
+     * <p>Both clients come from {@link #wmClient()}, i.e. the factory production pins — load-bearing
+     * here in particular: on a bare builder the Apache client's own retry strategy would repeat the
+     * 429/503 stubs and the request counts asserted below would be measuring it rather than the
+     * service's retry.
      */
-    private EdgarSearchService retryingSvc(java.util.function.LongSupplier now) {
-        return new EdgarSearchService(wmClient(), wmClient(),
-                wm.baseUrl(), 3600L, now, searchSleeps::add, 5L * 1024 * 1024, TICKERS);
+    private EdgarSearchService retryingSvc(long perRequestMs) {
+        searchClock = new FakeClock();
+        org.springframework.http.client.ClientHttpRequestInterceptor costsTime =
+                (request, body, execution) -> {
+                    // advanced BEFORE the call, so a failed attempt costs its time too
+                    searchClock.advance(perRequestMs);
+                    return execution.execute(request, body);
+                };
+        return new EdgarSearchService(
+                de.visterion.agora.data.DataHttp.clientBuilder(15_000, costsTime).baseUrl(wm.baseUrl()).build(),
+                wmClient(), wm.baseUrl(), 3600L, searchClock,
+                ms -> { searchSleeps.add(ms); searchClock.advance(ms); },
+                5L * 1024 * 1024, TICKERS);
     }
 
     private static final String ONE_HIT_PAGE = """
@@ -1886,8 +1913,9 @@ class EdgarSearchServiceTest {
 
     /**
      * The retry budget is aggregate over the whole search, not per page — a systematic outage must
-     * not cost pages x attempts x backoff. The clock advances 1200ms per reading, so page 1's one
-     * retry charges 1200ms + 250ms backoff against the 2500ms budget; page 2's failure then finds
+     * not cost pages x attempts x backoff. Each EFTS REQUEST costs 1200ms of fake time (rather than
+     * every clock reading, which the pacer's own readings would now distort), so page 0's one retry
+     * charges 1200ms + 250ms backoff against the 2500ms budget; page 1's failure then finds
      * 1050 - 1200 ms left, i.e. nothing, and is not retried at all.
      */
     @Test void aggregateRetryBudgetStopsRetryingAcrossPages() {
@@ -1903,8 +1931,7 @@ class EdgarSearchServiceTest {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("100"))
                 .willReturn(aResponse().withStatus(500)));
 
-        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
-        var svc = retryingSvc(() -> clock.getAndAdd(1200L));
+        var svc = retryingSvc(1200L);
         assertThatThrownBy(() -> svc.search(List.of("10-12B"), null,
                 LocalDate.parse("2026-07-17"), LocalDate.parse("2026-08-06"), 300))
                 .isInstanceOf(MarketDataException.class);
@@ -2094,6 +2121,42 @@ class EdgarSearchServiceTest {
                 .withQueryParam("startdt", equalTo("2025-05-16")).withQueryParam("enddt", equalTo("2025-05-25")));
     }
 
+    /**
+     * BUG-S1a fix round 2, finding 3 — the EFTS page walk and the archive GETs draw on ONE budget.
+     *
+     * <p>The pacing used to be a local variable in {@code fetchForm4}'s hit loop, so the 9 %
+     * headroom under SEC's 10 req/s was a property of that loop rather than of the process: the
+     * page walk that feeds it was unpaced and ran flat out alongside it. The tell is the FIRST
+     * archive GET after a search — under one shared budget it must wait out the remainder of the
+     * window left by the search request, and under two independent ones it starts immediately.
+     *
+     * <p>Here the EFTS search costs 40 ms of fake time, so the first archive GET owes 110-40 = 70 ms
+     * before it may start. Against the old code that sleep did not exist at all.
+     */
+    @Test void theEftsPageWalkAndTheArchiveGetsSharePacingBudget() {
+        stubForm4Filings(2);
+        var clock = new FakeClock();
+        var sleeps = new java.util.ArrayList<Long>();
+        // Both clients advance the same fake clock, so an EFTS request costs time exactly as an
+        // archive request does — which is the point: to SEC they are the same budget.
+        org.springframework.http.client.ClientHttpRequestInterceptor costs40ms =
+                (request, body, execution) -> { clock.advance(40L); return execution.execute(request, body); };
+        var s = new EdgarSearchService(
+                de.visterion.agora.data.DataHttp.clientBuilder(15_000, costs40ms).baseUrl(wm.baseUrl()).build(),
+                de.visterion.agora.data.DataHttp.clientBuilder(15_000, costs40ms).baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, clock,
+                ms -> { sleeps.add(ms); clock.advance(ms); },
+                5L * 1024 * 1024, TICKERS);
+
+        s.form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100);
+
+        // search 1 at t=0 (no predecessor) -> ends t=40; search 2 (the pad) owes 70 -> starts 110,
+        // ends 150; archive GET 1 owes 70 -> starts 220, ends 260; GET 2 owes 70 -> starts 330.
+        // Every gap is the remainder of the window, and the archive stream is spaced from the
+        // SEARCH that preceded it rather than starting fresh.
+        assertThat(sleeps).containsExactly(70L, 70L, 70L);
+    }
+
     /** Fake millisecond clock, advanced explicitly — never by wall time. Single-threaded by use. */
     private static final class FakeClock implements java.util.function.LongSupplier {
         private long t;
@@ -2175,9 +2238,13 @@ class EdgarSearchServiceTest {
                 .form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100);
 
         assertThat(r.transactions()).hasSize(3);
-        assertThat(sleeps).containsExactly(30L, 30L);
-        // 3 GETs starting 110 apart: 0, 110, 220 — and the last one ends at 220 + 80.
-        assertThat(clock.getAsLong()).isEqualTo(300L);
+        // The two leading 110s are the EFTS searches, which cost no fake time here and therefore
+        // owe the whole window; the 30s are the archive GETs, each owing only the remainder after
+        // its 80ms fetch. Both halves draw on one budget — see
+        // theEftsPageWalkAndTheArchiveGetsSharePacingBudget.
+        assertThat(sleeps).containsExactly(110L, 110L, 30L, 30L);
+        // archive GETs start at 220, 330, 440 — i.e. 110 apart — and the last ends at 440 + 80.
+        assertThat(clock.getAsLong()).isEqualTo(520L);
     }
 
     /** A fetch that already overran the window owes nothing — it must not sleep at all. */
@@ -2189,8 +2256,12 @@ class EdgarSearchServiceTest {
                 .form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100);
 
         assertThat(r.transactions()).hasSize(3);
-        assertThat(sleeps).isEmpty();              // 150ms > 110ms window: nothing left to wait for
-        assertThat(clock.getAsLong()).isEqualTo(450L);   // fetch-bound, i.e. 3 x 150
+        // Two waits only, and neither follows an overrunning fetch: the pad search owes the whole
+        // window after the zero-cost window search, and archive GET 1 owes it after the zero-cost
+        // pad search. GETs 2 and 3 each follow a 150ms fetch that has already overrun the 110ms
+        // window, so they owe NOTHING and are paced by their own duration instead.
+        assertThat(sleeps).containsExactly(110L, 110L);
+        assertThat(clock.getAsLong()).isEqualTo(670L);   // 110 + 110 waits + 3 x 150 fetch
     }
 
     /**
@@ -2210,11 +2281,16 @@ class EdgarSearchServiceTest {
         var r = pacedSvc(clock, 80L, sleeps)
                 .form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 1000);
 
-        // one transaction per filing, so the row count IS the filings-read count
-        assertThat(r.transactions()).hasSize(273);      // 30_000 / 110; the flat delay read 159
-        assertThat(r.truncated()).isTrue();             // 400 hits offered, 273 read
-        // Every gap is the remainder of the window, never the whole window.
-        assertThat(sleeps).isNotEmpty();
-        assertThat(sleeps).allMatch(ms -> ms == 30L);
+        // one transaction per filing, so the row count IS the filings-read count.
+        // 272 = MAX_FILINGS_PER_DEADLINE (30_000 / 110). The flat delay read 159. It is 272 rather
+        // than 273 because the first archive GET is now spaced from the EFTS search that preceded
+        // it — one shared budget, so the searches are part of the same 110ms cadence.
+        assertThat(r.transactions()).hasSize(272);
+        assertThat(r.truncated()).isTrue();             // 400 hits offered, 272 read
+        // The first two waits are the EFTS searches (zero-cost here, so they owe the whole window)
+        // plus archive GET 1 spaced off the last of them. Every gap from then on is the REMAINDER
+        // of the window after an 80ms fetch, never the whole window.
+        assertThat(sleeps).hasSizeGreaterThan(3);
+        assertThat(sleeps.subList(3, sleeps.size())).allMatch(ms -> ms == 30L);
     }
 }
