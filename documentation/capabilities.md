@@ -160,6 +160,40 @@ archive document per hit under a 110 ms throttle and a 30 s aggregate deadline, 
 market-wide call in practice parses roughly 140 filings before reporting `truncated: true`
 — raising `limit` does not lift that second bound.
 
+### EFTS answers 500 intermittently — the page fetch retries
+
+Measured on the production container 2026-08-06, **2 of 13** EFTS calls in one hour returned
+HTTP 500, and the *same* `forms=10-12B` query returned both 200 and 500 inside that window —
+so the failure is transient, not query-shaped. Without a retry, one such 500 blinded both the
+spin-off and the merger consumer for a whole nightly run.
+
+Each EFTS page is therefore fetched with up to **3 attempts**, backing off **250 ms** then
+**750 ms** (both above the 110 ms SEC throttle spacing, so a retry never speeds this service up
+against SEC). Retryable is **HTTP 5xx and transport-level failures** (connect/read timeout,
+connection reset) only:
+
+- **4xx is never retried.** SEC answers 403 when it is blocking a client; hammering a block is
+  how a block becomes a longer one.
+- **429 is deliberately not retried either.** It does not say "the server hiccuped", it says
+  this client is already over SEC's published rate, and sustained excess escalates to a 403 IP
+  ban. The correct response is to slow down — i.e. raise the throttle — not to retry harder.
+
+The retries share **one 2 500 ms aggregate budget per search**, across all its pages, charged
+with both the backoff slept and the wall-clock the failed attempt itself burned. A systematic
+outage therefore costs at most that budget plus the one attempt still in flight when it goes
+negative — not pages × attempts × backoff. The number is set by the *caller's* budget: a
+consumer's `search_filings` call runs on a 25 s request timeout against a measured 3.7 s
+ten-page walk, and `get_form4_transactions` on 45 s against a documented 39.1 s worst case, so
+2.5 s fits inside the tighter of the two headrooms.
+
+Every retried failure is logged at WARN with its attempt number and status, so a degrading
+upstream is visible before it fails outright. Exhausted retries throw the unchanged
+`unavailable` error — the downstream "the source is DOWN" reporting is correct and stays.
+
+Both bounds are compiled constants next to `THROTTLE_MS` and `FORM4_DEADLINE_MS` in
+`EdgarSearchService`, not configuration: they are derived from the caller's timeout and SEC's
+rate contract, and neither is an operator dial.
+
 ### How EFTS reads `forms`: root forms, and why `4,4/A` is a trap
 
 The `forms` parameter selects **root** form types, and a root form **already includes its

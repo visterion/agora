@@ -1736,4 +1736,161 @@ class EdgarSearchServiceTest {
         }
         return sb.append("]}}").toString();
     }
+
+    // ---------------------------------------------------------------------------------------
+    // BUG-S19 — EFTS answers 500 intermittently and one transient failure blinded a whole run.
+    // Measured on the production container 2026-08-06: 2 of 13 EFTS calls in one hour returned
+    // 500, and the SAME `forms=10-12B` query returned both 200 and 500 inside that window, so it
+    // is transient rather than query-shaped. All fixtures below are hand-written.
+    // ---------------------------------------------------------------------------------------
+
+    /** Records what the retry backoff asked to sleep, so the schedule is pinned by assertion. */
+    private final java.util.List<Long> searchSleeps = new java.util.ArrayList<>();
+
+    /** Service whose EFTS client points at WireMock and whose Sleeper only records (never sleeps). */
+    private EdgarSearchService retryingSvc() {
+        return retryingSvc(System::currentTimeMillis);
+    }
+
+    /**
+     * Built through {@link de.visterion.agora.data.DataHttp#clientBuilder(long)} — the SAME
+     * factory the production constructor uses — not through a bare {@code RestClient.builder()}.
+     * That is load-bearing here: a bare builder lets Spring auto-detect Apache HttpClient 5 from
+     * the classpath, whose DefaultHttpRequestRetryStrategy silently repeats a GET on 429/503
+     * once. Measured while writing this test: a single 429 stub was hit twice. Production pins
+     * the JDK factory, so a test on the bare builder would be measuring a retry layer that does
+     * not exist in production.
+     */
+    private EdgarSearchService retryingSvc(java.util.function.LongSupplier now) {
+        return new EdgarSearchService(
+                de.visterion.agora.data.DataHttp.clientBuilder(15_000).baseUrl(wm.baseUrl()).build(),
+                de.visterion.agora.data.DataHttp.clientBuilder(15_000).baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, now, searchSleeps::add, 5L * 1024 * 1024, TICKERS);
+    }
+
+    private static final String ONE_HIT_PAGE = """
+            {"hits":{"total":{"value":1},"hits":[
+              {"_id":"a-1:d1.htm","_source":{"ciks":["0000000042"],"display_names":["Acme Corp  (ACME)  (CIK 0000000042)"],"file_date":"2025-05-01","file_type":"10-12B"}}
+            ]}}""";
+
+    /** A transient 500 on attempt 1 must not blind the caller — attempt 2 answers, no throw. */
+    @Test void transientServerErrorIsRetriedAndSucceeds() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).inScenario("efts-flaky")
+                .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willReturn(aResponse().withStatus(500).withBody("{\"message\": \"Internal server error\"}"))
+                .willSetStateTo("recovered"));
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).inScenario("efts-flaky")
+                .whenScenarioStateIs("recovered")
+                .willReturn(okJson(ONE_HIT_PAGE)));
+
+        List<FilingHit> hits = retryingSvc().search(List.of("10-12B"), null,
+                LocalDate.parse("2026-07-17"), LocalDate.parse("2026-08-06"), 100);
+
+        assertThat(hits).hasSize(1);
+        assertThat(hits.getFirst().ticker()).isEqualTo("ACME");
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/LATEST/search-index")));
+    }
+
+    /** Exhausted retries must still be the exact failure the caller gets today. */
+    @Test void persistentServerErrorStillThrowsUnavailableAfterExactlyThreeAttempts() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(aResponse().withStatus(500).withBody("{\"message\": \"Internal server error\"}")));
+
+        assertThatThrownBy(() -> retryingSvc().search(List.of("10-12B"), null,
+                LocalDate.parse("2026-07-17"), LocalDate.parse("2026-08-06"), 100))
+                .isInstanceOf(MarketDataException.class)
+                .satisfies(e -> {
+                    var m = (MarketDataException) e;
+                    assertThat(m.kind()).isEqualTo(MarketDataException.Kind.UNAVAILABLE);
+                    assertThat(m.getMessage()).startsWith("EDGAR search unreachable: ");
+                });
+        wm.verify(3, getRequestedFor(urlPathEqualTo("/LATEST/search-index")));
+    }
+
+    /** 403 is SEC blocking this client. Retrying it makes the block worse — exactly one request. */
+    @Test void forbiddenIsNotRetried() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).willReturn(aResponse().withStatus(403)));
+
+        assertThatThrownBy(() -> retryingSvc().search(List.of("10-12B"), null,
+                LocalDate.parse("2026-07-17"), LocalDate.parse("2026-08-06"), 100))
+                .isInstanceOf(MarketDataException.class);
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index")));
+        assertThat(searchSleeps).isEmpty();
+    }
+
+    /**
+     * 429 is deliberately NOT retried: it says this client is already over SEC's published rate,
+     * and SEC escalates a sustained excess to a 403 IP block. See the comment on
+     * {@code SEARCH_RETRY_BACKOFF_MS} in the service.
+     */
+    @Test void tooManyRequestsIsNotRetried() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).willReturn(aResponse().withStatus(429)));
+
+        assertThatThrownBy(() -> retryingSvc().search(List.of("10-12B"), null,
+                LocalDate.parse("2026-07-17"), LocalDate.parse("2026-08-06"), 100))
+                .isInstanceOf(MarketDataException.class);
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index")));
+        assertThat(searchSleeps).isEmpty();
+    }
+
+    /**
+     * The backoff schedule is pinned: it goes through the injected Sleeper (so tests never really
+     * sleep) and every step stays at or above THROTTLE_MS=110, i.e. a retry can never make this
+     * service faster against SEC than the throttle allows.
+     */
+    @Test void backoffScheduleGoesThroughTheSleeperAndIsPinned() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(aResponse().withStatus(500)));
+
+        assertThatThrownBy(() -> retryingSvc().search(List.of("10-12B"), null,
+                LocalDate.parse("2026-07-17"), LocalDate.parse("2026-08-06"), 100))
+                .isInstanceOf(MarketDataException.class);
+        assertThat(searchSleeps).containsExactly(250L, 750L);
+        assertThat(searchSleeps).allMatch(ms -> ms >= 110L);
+    }
+
+    /** A transport-level failure (connection reset before any status line) is retryable too. */
+    @Test void transportFailureIsRetriedAndSucceeds() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).inScenario("efts-reset")
+                .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willReturn(aResponse().withFault(com.github.tomakehurst.wiremock.http.Fault.CONNECTION_RESET_BY_PEER))
+                .willSetStateTo("recovered"));
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).inScenario("efts-reset")
+                .whenScenarioStateIs("recovered")
+                .willReturn(okJson(ONE_HIT_PAGE)));
+
+        assertThat(retryingSvc().search(List.of("10-12B"), null,
+                LocalDate.parse("2026-07-17"), LocalDate.parse("2026-08-06"), 100)).hasSize(1);
+        assertThat(searchSleeps).containsExactly(250L);
+    }
+
+    /**
+     * The retry budget is aggregate over the whole search, not per page — a systematic outage must
+     * not cost pages x attempts x backoff. The clock advances 1200ms per reading, so page 1's one
+     * retry charges 1200ms + 250ms backoff against the 2500ms budget; page 2's failure then finds
+     * 1050 - 1200 ms left, i.e. nothing, and is not retried at all.
+     */
+    @Test void aggregateRetryBudgetStopsRetryingAcrossPages() {
+        // page 0: 500 once, then a full 100-hit page reporting more to come
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("0"))
+                .inScenario("efts-budget")
+                .whenScenarioStateIs(com.github.tomakehurst.wiremock.stubbing.Scenario.STARTED)
+                .willReturn(aResponse().withStatus(500)).willSetStateTo("page0-ok"));
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("0"))
+                .inScenario("efts-budget").whenScenarioStateIs("page0-ok")
+                .willReturn(okJson(pageOf(0, 100, 300))));
+        // page 1: always 500 — with budget left it would be retried twice; here it must not be.
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("100"))
+                .willReturn(aResponse().withStatus(500)));
+
+        java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong();
+        var svc = retryingSvc(() -> clock.getAndAdd(1200L));
+        assertThatThrownBy(() -> svc.search(List.of("10-12B"), null,
+                LocalDate.parse("2026-07-17"), LocalDate.parse("2026-08-06"), 300))
+                .isInstanceOf(MarketDataException.class);
+
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("0")));
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("100")));
+        assertThat(searchSleeps).containsExactly(250L);   // page 1 never got to sleep
+    }
 }

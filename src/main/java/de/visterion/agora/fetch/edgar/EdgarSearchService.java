@@ -48,6 +48,63 @@ public class EdgarSearchService {
     /** Aggregate deadline for a single form4Transactions() call's sequential archive GETs. */
     private static final long FORM4_DEADLINE_MS = 30_000;
     /**
+     * Backoff before retry attempt 1 and 2 of an EFTS page fetch, i.e. 3 attempts in total.
+     *
+     * <p>Why a retry exists at all: efts.sec.gov answers 500 intermittently. Measured on the
+     * production container 2026-08-06, 2 of 13 EFTS calls in one hour returned
+     * {@code status=500}, and the SAME {@code forms=10-12B} query returned both 200 and 500
+     * inside that window — so the failure is transient, not query-shaped. Without a retry, one
+     * such 500 blinded the spin AND merger hunters for a whole nightly run (both report
+     * {@code status=unavailable}, correctly, but the night's data is gone) when a second attempt
+     * a moment later would very likely have answered.
+     *
+     * <p>Why these numbers: 250ms then 750ms, both comfortably above {@link #THROTTLE_MS}=110, so
+     * a retry can never push this service faster against SEC than the rate contract allows.
+     * Three attempts is where the marginal value collapses — at a per-call failure rate of ~15%
+     * (2/13 measured) three independent attempts leave ~0.3% residual, and a fourth would buy
+     * 0.05% while doubling the tail latency the caller has to budget for. A geometric step keeps
+     * the second wait meaningful against a brief upstream wobble without turning a genuinely dead
+     * source into a slow failure.
+     *
+     * <p>What is retryable: HTTP 5xx and transport-level failures (connect/read timeout,
+     * connection reset). Nothing else. A 4xx is NOT retried — SEC answers 403 when it is blocking
+     * a client, and hammering a block is how a block becomes a longer block.
+     *
+     * <p><b>429 is deliberately NOT retried</b>, even though it is the classic "retry me" status.
+     * It does not mean "the server hiccuped", it means this client is already over SEC's
+     * published ~10 req/s, and SEC escalates sustained excess to a 403 IP ban that costs every
+     * hunter for hours. The correct response to a rate refusal is to slow down, and this service
+     * already has exactly one mechanism for that ({@link #THROTTLE_MS}); a 250ms in-request
+     * backoff is not a rate correction, it is the same excess with a pause in it. So 429 fails
+     * fast and loudly, and a recurring one is a signal to raise the throttle, not to retry harder.
+     */
+    private static final long[] SEARCH_RETRY_BACKOFF_MS = {250, 750};
+    /**
+     * Aggregate retry budget for ONE search, shared by every page it walks.
+     *
+     * <p>Per-page retries are right for an isolated 500 but wrong for a systematic outage: a
+     * 10-page walk would otherwise cost 10 x 2 retries x backoff plus 20 failing requests. Same
+     * shape as {@link #FORM4_DEADLINE_MS} — bound the whole multi-request operation, not each
+     * request. Charged with both the backoff slept AND the wall-clock the failed attempt itself
+     * burned, so a request that dies on the 15s read timeout exhausts the budget immediately
+     * instead of licensing a second 15s wait.
+     *
+     * <p>Why 2 500 ms — it is the caller's budget that sets this ceiling, not our taste. Dracul
+     * reaches this path through Agora's MCP tools:
+     * <ul>
+     *   <li>{@code search_filings} (the spin + merger hunters) has no per-tool override and runs
+     *       on Dracul's global {@code dracul.agora.timeout-ms} = 25 000 ms. A 10-page search
+     *       measured 3.7 s on prod 2026-08-04, so ~21 s is unspent.</li>
+     *   <li>{@code get_form4_transactions} is budgeted at 45 000 ms against a documented 39 090 ms
+     *       worst case, i.e. ~5.9 s of headroom.</li>
+     * </ul>
+     * 2 500 ms of added retry fits inside the tighter of those two headrooms with room left for
+     * the one attempt that may already be in flight when the budget goes negative. A retry that
+     * outlives the caller's timeout converts a fast honest failure into a slow one and gains
+     * nothing.
+     */
+    private static final long SEARCH_RETRY_BUDGET_MS = 2_500;
+    /**
      * How far past {@code to} the Form-4 search looks for LATE filings — trades inside the
      * caller's window that were filed after it closed (the transaction-date filter below narrows
      * back to the caller's exact window).
@@ -270,9 +327,11 @@ public class EdgarSearchService {
         List<FilingHit> out = new ArrayList<>();
         int offset = 0;
         boolean capped = false;
+        // One budget for the whole page walk — see SEARCH_RETRY_BUDGET_MS.
+        RetryBudget retryBudget = new RetryBudget(SEARCH_RETRY_BUDGET_MS);
         while (out.size() < limit) {
             if (offset >= HARD_FETCH_CAP) { capped = true; break; }
-            JsonNode search = fetchPage(formsCsv, query, cik, from, to, offset);
+            JsonNode search = fetchPage(formsCsv, query, cik, from, to, offset, retryBudget);
             JsonNode hitsNode = search == null ? null : search.path("hits");
             JsonNode hits = hitsNode == null ? null : hitsNode.path("hits");
             if (hits == null || !hits.isArray() || hits.isEmpty()) {
@@ -310,28 +369,102 @@ public class EdgarSearchService {
         return new SearchResult(List.copyOf(out), capped);
     }
 
-    private JsonNode fetchPage(String formsCsv, String query, String cik, LocalDate from, LocalDate to, int offset) {
-        try {
-            return http.get()
-                    .uri(uri -> {
-                        uri.path("/LATEST/search-index")
-                                .queryParam("forms", formsCsv)
-                                .queryParam("from", offset)
-                                .queryParam("size", PAGE_SIZE);
-                        if (from != null || to != null) {
-                            uri.queryParam("dateRange", "custom")
-                                    .queryParam("startdt", from == null ? "" : from.toString())
-                                    .queryParam("enddt", to == null ? "" : to.toString());
-                        }
-                        if (query != null && !query.isBlank()) uri.queryParam("q", query);
-                        if (cik != null && !cik.isBlank()) uri.queryParam("ciks", cik);
-                        return uri.build();
-                    })
-                    .retrieve()
-                    .body(JsonNode.class);
-        } catch (Exception e) {
-            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "EDGAR search unreachable: " + e.getMessage(), e);
+    /** Mutable remaining-retry-time counter, shared by every page of one search. */
+    private static final class RetryBudget {
+        private long remainingMs;
+        RetryBudget(long remainingMs) { this.remainingMs = remainingMs; }
+    }
+
+    /**
+     * Fetches one EFTS page, retrying a transient failure per {@link #SEARCH_RETRY_BACKOFF_MS}
+     * within the search's shared {@link RetryBudget}.
+     *
+     * <p>When the retries are exhausted — by attempt count, by budget, or because the failure was
+     * never retryable — this throws EXACTLY what it threw before the retry existed: the caller's
+     * {@code status=unavailable} reporting downstream is correct and must not change shape.
+     */
+    private JsonNode fetchPage(String formsCsv, String query, String cik, LocalDate from, LocalDate to,
+                               int offset, RetryBudget budget) {
+        for (int attempt = 1; ; attempt++) {
+            long startedAt = now.getAsLong();
+            try {
+                return requestPage(formsCsv, query, cik, from, to, offset);
+            } catch (MarketDataException e) {
+                throw e;
+            } catch (Exception e) {
+                long spentMs = Math.max(0, now.getAsLong() - startedAt);
+                if (attempt > SEARCH_RETRY_BACKOFF_MS.length || !isRetryable(e)) throw unreachable(e);
+                long backoffMs = SEARCH_RETRY_BACKOFF_MS[attempt - 1];
+                if (budget.remainingMs - spentMs < backoffMs) {
+                    log.warn("EFTS page fetch failed ({}) and the {}ms aggregate retry budget for this "
+                                    + "search is exhausted — giving up (forms={}, query={}, offset={})",
+                            describe(e), SEARCH_RETRY_BUDGET_MS, formsCsv, query, offset);
+                    throw unreachable(e);
+                }
+                budget.remainingMs -= spentMs + backoffMs;
+                // Loud on purpose: a retry that silently succeeds hides a degrading upstream, and
+                // the daily analysis can only flag a flaky source it can see.
+                log.warn("EFTS page fetch failed ({}) on attempt {}/{} — retrying in {}ms "
+                                + "(forms={}, query={}, offset={})",
+                        describe(e), attempt, SEARCH_RETRY_BACKOFF_MS.length + 1, backoffMs,
+                        formsCsv, query, offset);
+                try {
+                    sleeper.sleep(backoffMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw unreachable(e);
+                }
+            }
         }
+    }
+
+    /**
+     * Retry only what a second attempt can plausibly fix: a 5xx (the measured EFTS failure mode)
+     * and a transport-level failure — connect/read timeout, connection reset — which surfaces as
+     * {@link org.springframework.web.client.ResourceAccessException}. Every 4xx, 429 included, is
+     * a refusal by SEC rather than a hiccup; see {@link #SEARCH_RETRY_BACKOFF_MS} for why
+     * retrying one makes the situation worse. Anything else (a JSON parse failure, say) is
+     * deterministic and would fail identically on attempt two.
+     */
+    private static boolean isRetryable(Exception e) {
+        if (e instanceof org.springframework.web.client.RestClientResponseException r) {
+            if (r.getStatusCode().value() == 429) return false;
+            return r.getStatusCode().is5xxServerError();
+        }
+        return e instanceof org.springframework.web.client.ResourceAccessException;
+    }
+
+    /** Log-safe one-liner: the HTTP status when there was one, else the transport failure class. */
+    private static String describe(Exception e) {
+        return e instanceof org.springframework.web.client.RestClientResponseException r
+                ? "status=" + r.getStatusCode().value()
+                : "transport=" + e.getClass().getSimpleName();
+    }
+
+    private static MarketDataException unreachable(Exception e) {
+        return new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                "EDGAR search unreachable: " + e.getMessage(), e);
+    }
+
+    /** One EFTS request, no retry, no exception translation — the unit {@link #fetchPage} retries. */
+    private JsonNode requestPage(String formsCsv, String query, String cik, LocalDate from, LocalDate to, int offset) {
+        return http.get()
+                .uri(uri -> {
+                    uri.path("/LATEST/search-index")
+                            .queryParam("forms", formsCsv)
+                            .queryParam("from", offset)
+                            .queryParam("size", PAGE_SIZE);
+                    if (from != null || to != null) {
+                        uri.queryParam("dateRange", "custom")
+                                .queryParam("startdt", from == null ? "" : from.toString())
+                                .queryParam("enddt", to == null ? "" : to.toString());
+                    }
+                    if (query != null && !query.isBlank()) uri.queryParam("q", query);
+                    if (cik != null && !cik.isBlank()) uri.queryParam("ciks", cik);
+                    return uri.build();
+                })
+                .retrieve()
+                .body(JsonNode.class);
     }
 
     private FilingHit parseHit(JsonNode hit) {

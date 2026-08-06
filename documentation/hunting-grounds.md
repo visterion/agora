@@ -152,6 +152,8 @@ Both brokers support headless self-contained OAuth that refreshes without intera
 
 **Fail-soft data providers:** Yahoo fundamentals and some market-data fallbacks degrade to `unavailable` on error, never throwing exceptions.
 
+**SEC full-text search retries a transient failure:** efts.sec.gov answers HTTP 500 intermittently (2 of 13 calls in one measured production hour, 2026-08-06, same query returning both 200 and 500). Each EFTS page is fetched with up to 3 attempts, 250 ms then 750 ms backoff, under one 2 500 ms aggregate budget per search. Only 5xx and transport failures are retried — 4xx is a refusal by SEC, and **429 is deliberately not retried** because it means this client is already over SEC's rate and a sustained excess escalates to a 403 IP ban. Exhausted retries still surface as `unavailable`. See `documentation/capabilities.md`.
+
 **Reporting currency:** Concepts in the fundamentals response include a `unit` field that reflects the reporting currency (e.g., a Swiss company reports in CHF, a Hong Kong company in HKD). This may differ from the listing currency (a Hong Kong-listed company trading in HKD may report consolidated results in USD or CNY). Consumers must normalize currencies if needed.
 
 **Future upgrades:** Non-US fundamentals are currently sourced via Yahoo's unofficial `fundamentals-timeseries` (free, SPARSE, fail-soft). A planned upgrade path exists via EODHD's official data feed for improved reliability and completeness on non-US markets.
