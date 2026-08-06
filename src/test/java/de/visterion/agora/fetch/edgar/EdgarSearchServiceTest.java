@@ -886,8 +886,16 @@ class EdgarSearchServiceTest {
         assertThat(tx.get(0).form()).isEqualTo("4/A");
     }
 
-    // M-F10: sequential per-hit archive GETs are throttled (~110ms spacing) via the injected
+    // M-F10: sequential per-hit archive GETs are throttled (110ms spacing) via the injected
     // Sleeper — asserts sleep() is invoked once per gap between hits (n-1 times for n hits).
+    //
+    // BUG-S1a note: this used to run on System::currentTimeMillis and assert a flat 110ms per
+    // gap, which is the FIXED-DELAY contract, not the rate-limit one. It now runs on the
+    // deterministic fake clock with a ZERO-cost fetch — the case in which the remainder of the
+    // window IS the whole window, so the historical 110/110 expectation is preserved exactly
+    // while no longer depending on how fast WireMock answered. The remainder arithmetic for a
+    // fetch that actually consumes time is pinned by
+    // throttleSleepsOnlyTheRemainderOfTheWindowAfterASlowFetch below.
     @Test void form4ArchiveFetchesAreThrottled() {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
                 .withQueryParam("forms", equalTo("4"))
@@ -917,11 +925,7 @@ class EdgarSearchServiceTest {
         wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/1/000032019325000003/f3.xml")).willReturn(aResponse().withHeader("Content-Type","application/xml").withBody(txXml)));
 
         java.util.List<Long> sleeps = new java.util.ArrayList<>();
-        EdgarSearchService.Sleeper recordingSleeper = sleeps::add;
-        EdgarSearchService s = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                wm.baseUrl(), 3600L, System::currentTimeMillis, recordingSleeper, 5L * 1024 * 1024, TICKERS);
+        EdgarSearchService s = pacedSvc(new FakeClock(), 0L, sleeps);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(3);
         assertThat(sleeps).hasSize(2); // n-1 gaps between 3 sequential archive GETs
@@ -1892,5 +1896,145 @@ class EdgarSearchServiceTest {
         wm.verify(2, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("0")));
         wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("100")));
         assertThat(searchSleeps).containsExactly(250L);   // page 1 never got to sleep
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // BUG-S1a — THROTTLE_MS must SPACE the archive GETs, not delay each one.
+    //
+    // The old loop slept a flat 110ms BEFORE every fetch, so the spacing between two consecutive
+    // archive GETs was 110ms + however long the fetch itself took. The service's own measured
+    // note recorded the consequence: ~140 filings read per call at ~190ms each, i.e. ~5.3 req/s
+    // against the ~9.1/s the constant declares — while a market-wide 7-day window holds ~1,700
+    // Form-4 filings (measured live 2026-08-04).
+    //
+    // The harness below is a fully deterministic fake. The clock advances ONLY when the fake
+    // sleeper sleeps and when the archive client fetches, so "how long a fetch took" is an exact
+    // scripted number rather than a measured one — which is what lets these tests assert sleep
+    // DURATIONS instead of a sleep count. A count-only assertion is exactly what let the flat
+    // delay survive: the old test asserted "n-1 sleeps of 110ms" and the bug satisfied it.
+    // ---------------------------------------------------------------------------------------
+
+    /** Fake millisecond clock, advanced explicitly — never by wall time. Single-threaded by use. */
+    private static final class FakeClock implements java.util.function.LongSupplier {
+        private long t;
+        @Override public long getAsLong() { return t; }
+        void advance(long ms) { t += ms; }
+    }
+
+    /**
+     * A service whose every archive GET consumes exactly {@code fetchMs} of fake time and whose
+     * throttle sleeps advance the same fake clock, so the whole schedule is deterministic.
+     *
+     * <p>Both clients go through {@link de.visterion.agora.data.DataHttp} — the factory production
+     * pins — for the reason spelled out on {@link #retryingSvc(java.util.function.LongSupplier)}.
+     */
+    private EdgarSearchService pacedSvc(FakeClock clock, long fetchMs, java.util.List<Long> sleeps) {
+        org.springframework.http.client.ClientHttpRequestInterceptor costsFakeTime =
+                (request, body, execution) -> {
+                    clock.advance(fetchMs);
+                    return execution.execute(request, body);
+                };
+        return new EdgarSearchService(
+                de.visterion.agora.data.DataHttp.clientBuilder(15_000).baseUrl(wm.baseUrl()).build(),
+                de.visterion.agora.data.DataHttp.clientBuilder(15_000, costsFakeTime).baseUrl(wm.baseUrl()).build(),
+                wm.baseUrl(), 3600L, clock,
+                ms -> { sleeps.add(ms); clock.advance(ms); },
+                5L * 1024 * 1024, TICKERS);
+    }
+
+    /** One non-derivative transaction, dated inside every window these tests use. */
+    private static final String ONE_TX_FORM4 = """
+            <ownershipDocument>
+              <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+              <reportingOwner><reportingOwnerId><rptOwnerName>X</rptOwnerName></reportingOwnerId></reportingOwner>
+              <nonDerivativeTable><nonDerivativeTransaction>
+                <transactionDate><value>2025-05-01</value></transactionDate>
+                <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                <transactionAmounts><transactionShares><value>1</value></transactionShares>
+                  <transactionPricePerShare><value>1</value></transactionPricePerShare></transactionAmounts>
+              </nonDerivativeTransaction></nonDerivativeTable>
+            </ownershipDocument>
+            """;
+
+    /**
+     * Stubs the caller-window search with {@code n} Form-4 hits (each resolving to its own archive
+     * path under /Archives/edgar/data/1/), an empty late-filing pad, and one archive document
+     * serving every one of those paths.
+     */
+    private static void stubForm4Filings(int n) {
+        StringBuilder sb = new StringBuilder("{\"hits\":{\"total\":{\"value\":").append(n).append("},\"hits\":[");
+        for (int i = 0; i < n; i++) {
+            if (i > 0) sb.append(',');
+            sb.append("{\"_id\":\"0000000001-25-").append(String.format("%06d", i))
+              .append(":f.xml\",\"_source\":{\"ciks\":[\"1\"],\"display_names\":[\"Filer ").append(i)
+              .append("\"],\"file_date\":\"2025-05-01\",\"file_type\":\"4\"}}");
+        }
+        sb.append("]}}");
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-01")).willReturn(okJson(sb.toString())));
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-06-01"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":0},\"hits\":[]}}")));
+        wm.stubFor(get(urlMatching("/Archives/edgar/data/1/.*"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/xml").withBody(ONE_TX_FORM4)));
+    }
+
+    /**
+     * A fetch that consumes most of the throttle window must sleep only the REMAINDER, so two
+     * consecutive archive GETs start exactly THROTTLE_MS apart.
+     *
+     * <p>Schedule with an 80ms fetch: GET 1 starts at t=0 and ends at 80; the loop then owes only
+     * 30ms before GET 2 may start at t=110; the same again for GET 3 at t=220. So the sleeps are
+     * 30, 30 — and the STARTS are 110 apart, which is the number SEC's rate limit is about.
+     */
+    @Test void throttleSleepsOnlyTheRemainderOfTheWindowAfterASlowFetch() {
+        stubForm4Filings(3);
+        var clock = new FakeClock();
+        var sleeps = new java.util.ArrayList<Long>();
+        var r = pacedSvc(clock, 80L, sleeps)
+                .form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100);
+
+        assertThat(r.transactions()).hasSize(3);
+        assertThat(sleeps).containsExactly(30L, 30L);
+        // 3 GETs starting 110 apart: 0, 110, 220 — and the last one ends at 220 + 80.
+        assertThat(clock.getAsLong()).isEqualTo(300L);
+    }
+
+    /** A fetch that already overran the window owes nothing — it must not sleep at all. */
+    @Test void aFetchThatOverrunsTheThrottleWindowSleepsZero() {
+        stubForm4Filings(3);
+        var clock = new FakeClock();
+        var sleeps = new java.util.ArrayList<Long>();
+        var r = pacedSvc(clock, 150L, sleeps)
+                .form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100);
+
+        assertThat(r.transactions()).hasSize(3);
+        assertThat(sleeps).isEmpty();              // 150ms > 110ms window: nothing left to wait for
+        assertThat(clock.getAsLong()).isEqualTo(450L);   // fetch-bound, i.e. 3 x 150
+    }
+
+    /**
+     * What the throttle costs the caller: with the spacing fixed, the aggregate deadline admits
+     * one filing per THROTTLE_MS rather than one per (THROTTLE_MS + fetch).
+     *
+     * <p>Arithmetic, 80ms fetch against the 30s FORM4_DEADLINE_MS. Fetch n starts at n x 110ms,
+     * so the loop stops at n = 273 — 30 000 / 110 filings, the fetch cost having disappeared from
+     * the per-filing price. With the flat delay the price was 190ms and the same deadline bought
+     * 159. That 1.7x is the whole point of BUG-S1a: the insider hunter's cluster threshold
+     * (3 filers on one ticker) needs coverage of the window, and 159 of ~1,700 filings is 9%.
+     */
+    @Test void theDeadlineNowAdmitsOneFilingPerThrottleWindowNotPerThrottlePlusFetch() {
+        stubForm4Filings(400);
+        var clock = new FakeClock();
+        var sleeps = new java.util.ArrayList<Long>();
+        var r = pacedSvc(clock, 80L, sleeps)
+                .form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 1000);
+
+        // one transaction per filing, so the row count IS the filings-read count
+        assertThat(r.transactions()).hasSize(273);      // 30_000 / 110; the flat delay read 159
+        assertThat(r.truncated()).isTrue();             // 400 hits offered, 273 read
+        // Every gap is the remainder of the window, never the whole window.
+        assertThat(sleeps).isNotEmpty();
+        assertThat(sleeps).allMatch(ms -> ms == 30L);
     }
 }

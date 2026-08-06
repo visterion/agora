@@ -43,7 +43,22 @@ public class EdgarSearchService {
      * raising either MAX_LIMIT to 2000 would have compiled and then silently capped at 1000.
      */
     public static final int HARD_FETCH_CAP = 1000;
-    /** SEC EDGAR asks for <=10 req/s; ~110ms spacing keeps sequential archive GETs under that. */
+    /**
+     * Minimum spacing between the STARTS of two consecutive archive GETs, i.e. 9.09 req/s.
+     *
+     * <p>SEC publishes a hard ceiling of 10 requests/second — "Current max request rate: 10
+     * requests/second" (Accessing EDGAR Data), "our current maximum access rate is 10 requests per
+     * second" (webmaster FAQ), and the Internet Security Policy adds that the limit counts
+     * "regardless of the number of machines used to submit requests" and that exceeding it gets the
+     * IP rate-limited. Re-verified against all three sec.gov pages on 2026-08-06. 110ms leaves ~9%
+     * headroom under that ceiling.
+     *
+     * <p>This is enforced as a rate limit, not as a fixed delay: see the pacing comment in
+     * {@link #fetchForm4}. Until BUG-S1a it was slept flat before every fetch, which spaced the
+     * GETs THROTTLE_MS + fetch-duration apart (~190ms measured, ~5.3 req/s) and silently spent
+     * ~40% of the aggregate deadline on an over-sleep. Do not lower this constant to buy speed —
+     * the headroom above is the whole margin against a 403 IP block.
+     */
     private static final long THROTTLE_MS = 110;
     /** Aggregate deadline for a single form4Transactions() call's sequential archive GETs. */
     private static final long FORM4_DEADLINE_MS = 30_000;
@@ -605,11 +620,24 @@ public class EdgarSearchService {
      * OLDEST filings of the range, never a random subset — which is precisely why the caller's
      * window must be searched before the late-filing pad rather than as one padded range.
      *
-     * <p>Budget, measured live 2026-08-04: a market-wide 7-day window holds ~1,700 Form-4 filings,
-     * so {@link #HARD_FETCH_CAP} and then the {@value #FORM4_DEADLINE_MS}ms deadline both bind
-     * long before the window is exhausted (~140 filings read per call at ~190ms each). Such a
+     * <p>Budget: a market-wide 7-day window holds ~1,700 Form-4 filings (measured live 2026-08-04,
+     * see {@link #FORM4_ROOT_FORM}), so {@link #HARD_FETCH_CAP} and then the
+     * {@value #FORM4_DEADLINE_MS}ms deadline both bind long before the window is exhausted. Such a
      * result is reported {@code truncated=true} and is a SAMPLE of the newest filings in the
      * window, not the window.
+     *
+     * <p>How much of it is read: since BUG-S1a the per-filing cost is {@link #THROTTLE_MS} itself
+     * rather than THROTTLE_MS + the fetch, because the throttle spaces the request STARTS instead
+     * of delaying each one. So the deadline buys 30 000 / 110 = <b>~272 filings per call</b>, up
+     * from the ~159 the flat delay bought at the measured ~190ms per filing — roughly 16% of a
+     * market-wide week instead of 9%.
+     *
+     * <p><b>These two numbers are DERIVED, not measured.</b> They come from the deterministic
+     * fake-clock arithmetic in {@code EdgarSearchServiceTest} (an 80ms fetch yields exactly 273
+     * filings under the new pacing and 159 under the old), not from a production run. A live run
+     * will differ with the real archive latency: any fetch slower than 110ms paces itself and
+     * pushes the count below 272. Replace this paragraph with a measured figure once a prod run
+     * has reported one.
      *
      * <p>Price fail-soft (intentional change, 2026-07): an absent/empty/unparsable
      * {@code transactionPricePerShare} no longer discards the filing — the transaction is kept
@@ -696,26 +724,50 @@ public class EdgarSearchService {
         // `hits.size() >= limit` holds.
         boolean truncated = capped || hits.size() >= limit;
         long deadline = now.getAsLong() + FORM4_DEADLINE_MS;
-        boolean first = true;
+        // A RATE LIMITER, not a fixed delay (BUG-S1a). What SEC's limit constrains is the SPACING
+        // between two request STARTS, so the wait owed before a fetch is whatever remains of the
+        // THROTTLE_MS window since the previous fetch STARTED — not the whole window. The old code
+        // slept a flat THROTTLE_MS before each GET and therefore spaced them THROTTLE_MS + the
+        // fetch duration apart: at the measured ~80ms archive GET that was ~190ms, i.e. ~5.3 req/s
+        // where the constant declares ~9.1/s, and it cost ~40% of the filings the deadline can buy.
+        //
+        // This only removes an unintended OVER-sleep; it never goes faster than THROTTLE_MS
+        // already allows. SEC publishes a maximum of 10 requests/second ("Current max request
+        // rate: 10 requests/second", sec.gov Accessing EDGAR Data / Internet Security Policy /
+        // webmaster FAQ, re-checked 2026-08-06), so THROTTLE_MS=110 -> 9.09 req/s stays strictly
+        // under the published ceiling, with the headroom living in the constant rather than in an
+        // accident of how long a fetch happens to take. A fetch that already outran the window
+        // waits zero and is then paced by its own duration, which is slower still.
+        //
+        // The clock is read rather than projected: a real Thread.sleep can only overshoot, so
+        // taking the actual post-sleep instant keeps every gap >= THROTTLE_MS. Both
+        // form4Transactions() and form4TransactionsByCik() run this loop, so both are paced
+        // identically.
+        long previousFetchStartedAt = Long.MIN_VALUE;
         for (FilingHit hit : hits) {
             if (out.size() >= limit) {
                 truncated = true;   // hits remain unprocessed beyond the transaction limit
                 break;
             }
-            if (now.getAsLong() >= deadline) {
+            long nowMs = now.getAsLong();
+            if (nowMs >= deadline) {
                 truncated = true;
                 break;
             }
-            if (!first) {
-                try {
-                    sleeper.sleep(THROTTLE_MS);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    truncated = true;
-                    break;
+            if (previousFetchStartedAt != Long.MIN_VALUE) {
+                long waitMs = THROTTLE_MS - (nowMs - previousFetchStartedAt);
+                if (waitMs > 0) {
+                    try {
+                        sleeper.sleep(waitMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        truncated = true;
+                        break;
+                    }
+                    nowMs = now.getAsLong();
                 }
             }
-            first = false;
+            previousFetchStartedAt = nowMs;
             try {
                 parseForm4(hit, out, from, to);
             } catch (Exception e) {

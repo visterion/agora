@@ -157,8 +157,21 @@ must be less than or equal to: [10000] ..."}`) and no `hits` key at all. A naive
 that as an exhausted window; Agora treats a response carrying `errorType` as a cut and marks
 the result truncated. Separately, `get_form4_transactions` fetches one
 archive document per hit under a 110 ms throttle and a 30 s aggregate deadline, so a
-market-wide call in practice parses roughly 140 filings before reporting `truncated: true`
-— raising `limit` does not lift that second bound.
+market-wide call parses a few hundred filings before reporting `truncated: true` — raising
+`limit` does not lift that second bound.
+
+The throttle is a **rate limit, not a fixed delay**: it spaces consecutive archive requests
+110 ms apart measured from the previous request's *start*, so a fetch that took 80 ms waits
+only the remaining 30 ms, and one that already overran the window waits not at all. That keeps
+the service at 9.09 req/s, just under SEC's published maximum of **10 requests/second**
+("Current max request rate: 10 requests/second", *Accessing EDGAR Data*; the Internet Security
+Policy adds that the ceiling counts regardless of how many machines a user submits from).
+Until this was fixed the 110 ms was slept *before* every fetch, so the real spacing was
+110 ms + the fetch itself (~190 ms measured, ~5.3 req/s) and roughly 40 % of the deadline went
+on an unintended over-sleep. The deadline now buys about **272 filings per call** rather than
+~159 — *derived from the pacing arithmetic, not yet confirmed by a production run*; the live
+figure drops below it whenever the archive answers slower than 110 ms, since such a fetch
+paces itself.
 
 ### EFTS answers 500 intermittently — the page fetch retries
 
