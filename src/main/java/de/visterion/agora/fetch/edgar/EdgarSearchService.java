@@ -240,12 +240,22 @@ public class EdgarSearchService {
                 .build();
     }
 
+    /** Read timeout of the archive client the test constructor below builds — the default of
+     *  {@code agora.fetch.timeout-ms}, i.e. what the production constructor passes. */
+    private static final long TEST_ARCHIVE_TIMEOUT_MS = 15_000;
+
     // Test constructor: pre-built efts RestClient (User-Agent already set) + archive base.
     // Builds a UA-less archive client on archiveBase for the Form-4 XML fetch.
+    //
+    // Through DataHttp, never a bare RestClient.builder() (BUG-S20): a bare builder sets no
+    // request factory, so Spring auto-detects Apache HttpClient 5 from the classpath and its
+    // DefaultHttpRequestRetryStrategy silently repeats an idempotent GET on 429/503. Production
+    // pins the JDK factory, so a bare client here would make every test that fetches an archive
+    // document exercise a retry layer production does not have.
     EdgarSearchService(RestClient http, String archiveBase, long ttlSeconds, LongSupplier now,
                         TickerUniverse tickerUniverse) {
-        this(http, RestClient.builder().baseUrl(archiveBase).build(), archiveBase, ttlSeconds, now,
-                tickerUniverse);
+        this(http, DataHttp.clientBuilder(TEST_ARCHIVE_TIMEOUT_MS).baseUrl(archiveBase).build(),
+                archiveBase, ttlSeconds, now, tickerUniverse);
     }
 
     // Full constructor: explicit efts + archive RestClients, real sleeper + default size cap.

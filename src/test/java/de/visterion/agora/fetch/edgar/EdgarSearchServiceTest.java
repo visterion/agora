@@ -39,9 +39,30 @@ class EdgarSearchServiceTest {
     /** A universe that knows nothing — models both an unlisted filer and an unreachable SEC file. */
     static final TickerUniverse NO_TICKERS = cik -> List.of();
 
+    /**
+     * A RestClient pointed at WireMock and built through
+     * {@link de.visterion.agora.data.DataHttp#clientBuilder(long)} — the SAME factory the
+     * production constructor pins.
+     *
+     * <p><b>Never a bare {@code RestClient.builder()} here (BUG-S20).</b> A bare builder sets no
+     * request factory, so Spring auto-detects one from the classpath and finds Apache HttpClient 5,
+     * whose {@code DefaultHttpRequestRetryStrategy} silently repeats an idempotent GET on 429/503.
+     * Measured while building the EFTS retry: a single 429 stub was hit TWICE with no retry code in
+     * the service at all. Production is not affected — {@code DataHttp} pins
+     * {@code JdkClientHttpRequestFactory} — but a test on a bare builder measures a retry layer
+     * production does not have, i.e. it can pass on behaviour that does not exist while missing a
+     * regression in the behaviour that does.
+     *
+     * <p>The 15 s read timeout is the default of {@code agora.fetch.timeout-ms}, i.e. what the
+     * production constructor passes.
+     */
+    private static RestClient wmClient() {
+        return de.visterion.agora.data.DataHttp.clientBuilder(15_000).baseUrl(wm.baseUrl()).build();
+    }
+
     private EdgarSearchService svc() {
         // test ctor: efts RestClient + archive base + ttl + clock + ticker universe
-        return new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        return new EdgarSearchService(wmClient(),
                 "https://www.sec.gov", 3600L, System::currentTimeMillis, TICKERS);
     }
 
@@ -234,7 +255,7 @@ class EdgarSearchServiceTest {
                          "file_date":"2026-05-02","file_type":"S-4"}}
                     ]}}
                     """)));
-        var s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        var s = new EdgarSearchService(wmClient(),
                 "https://www.sec.gov", 3600L, System::currentTimeMillis, NO_TICKERS);
         FilingHit h = s.search(List.of("S-4"), null,
                 LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).get(0);
@@ -293,7 +314,7 @@ class EdgarSearchServiceTest {
                          "file_date":"2026-05-02","file_type":"S-4"}}
                     ]}}
                     """.formatted(cik, name, cik))));
-        var s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        var s = new EdgarSearchService(wmClient(),
                 "https://www.sec.gov", 3600L, System::currentTimeMillis, universe);
         FilingHit h = s.search(List.of("S-4"), null,
                 LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).get(0);
@@ -312,7 +333,7 @@ class EdgarSearchServiceTest {
                          "file_date":"2026-05-02","file_type":"S-4"}}
                     ]}}
                     """)));
-        var s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        var s = new EdgarSearchService(wmClient(),
                 "https://www.sec.gov", 3600L, System::currentTimeMillis, universe);
         assertThat(s.search(List.of("S-4"), null,
                 LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).get(0).ticker())
@@ -433,7 +454,7 @@ class EdgarSearchServiceTest {
                     </ownershipDocument>
                     """)));
         // archive base points at the same WireMock server for the test
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
@@ -479,7 +500,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
@@ -520,7 +541,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
@@ -561,7 +582,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         EdgarSearchService.Form4Result result =
                 s.form4TransactionsByCik("0000320193", LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
@@ -631,7 +652,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         EdgarSearchService.Form4Result result =
                 s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 3);
@@ -665,7 +686,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         EdgarSearchService.Form4Result result =
                 s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1);
@@ -695,7 +716,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         EdgarSearchService.Form4Result result =
                 s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
@@ -756,7 +777,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(3);
@@ -804,7 +825,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         // Filing was filed 2025-05-10 (inside the requested window) but the actual transaction
         // happened 2025-01-15 (well outside it) — must be filtered out.
@@ -840,7 +861,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         // Filed 2025-06-05, 5 days after the [from,to]=[..,2025-05-31] window closes — the search
         // window is widened by 10 days, so the filing is still found; its transaction (2025-05-28)
@@ -879,7 +900,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100).transactions();
         assertThat(tx).hasSize(1);
@@ -965,8 +986,8 @@ class EdgarSearchServiceTest {
         java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong(0L);
         java.util.function.LongSupplier now = () -> clock.getAndAdd(40_000L);
         EdgarSearchService s = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wmClient(),
+                wmClient(),
                 wm.baseUrl(), 3600L, now, (EdgarSearchService.Sleeper) ms -> {}, 5L * 1024 * 1024, TICKERS);
         EdgarSearchService.Form4Result result = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100);
         assertThat(result.truncated()).isTrue();
@@ -1023,7 +1044,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
@@ -1061,7 +1082,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2026-01-01"), LocalDate.parse("2026-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
@@ -1102,7 +1123,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """.formatted(wm.baseUrl()))));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         // Document still parses (DOCTYPE no longer fatal) but the entity content never resolved —
@@ -1144,7 +1165,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         List<Form4Transaction> tx = s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
         assertThat(tx).hasSize(1);
@@ -1158,7 +1179,7 @@ class EdgarSearchServiceTest {
                     "<html><body><p>cover</p><p>SUMMARY TERM SHEET</p>"
                   + "<p>The offer is $52.00 in cash per share.</p></body></html>")));
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+                wmClient(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
 
         var ft = svc.filingText(wm.baseUrl() + "/Archives/edgar/data/1/x.htm");
 
@@ -1170,7 +1191,7 @@ class EdgarSearchServiceTest {
 
     @Test void filingTextRejectsNonArchiveUrl() {
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+                wmClient(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         assertThatThrownBy(() -> svc.filingText("https://evil.example/secret"))
                 .isInstanceOf(MarketDataException.class);
     }
@@ -1179,7 +1200,7 @@ class EdgarSearchServiceTest {
         wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/2/empty.htm"))
                 .willReturn(aResponse().withBody("")));
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+                wmClient(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/2/empty.htm"))
                 .isInstanceOf(MarketDataException.class);
     }
@@ -1191,8 +1212,8 @@ class EdgarSearchServiceTest {
         wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/3/big.htm"))
                 .willReturn(aResponse().withHeader("Content-Type", "text/html").withBody(body)));
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wmClient(),
+                wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis,
                 (EdgarSearchService.Sleeper) ms -> {}, 100L, TICKERS); // 100-byte cap, body is 200 bytes
         assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/3/big.htm"))
@@ -1204,8 +1225,8 @@ class EdgarSearchServiceTest {
         wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/4/small.htm"))
                 .willReturn(aResponse().withHeader("Content-Type", "text/html").withBody(body)));
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wmClient(),
+                wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis,
                 (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
         var ft = svc.filingText(wm.baseUrl() + "/Archives/edgar/data/4/small.htm");
@@ -1235,7 +1256,7 @@ class EdgarSearchServiceTest {
             return req;
         }).build();
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(), advertising,
+                wmClient(), advertising,
                 wm.baseUrl(), 3600L, System::currentTimeMillis,
                 (EdgarSearchService.Sleeper) ms -> {}, 100L, TICKERS);
         assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/5/big.htm"))
@@ -1257,8 +1278,8 @@ class EdgarSearchServiceTest {
                 .willReturn(aResponse().withHeader("Content-Type", "text/html")
                         .withBody(body).withChunkedDribbleDelay(4, 10)));
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wmClient(),
+                wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis,
                 (EdgarSearchService.Sleeper) ms -> {}, 100L, TICKERS);
         assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/6/chunked.htm"))
@@ -1281,8 +1302,8 @@ class EdgarSearchServiceTest {
     /** {@code permits} concurrent large-document fetches, {@code queueMs} wait for a permit. */
     private EdgarSearchService boundedFetcher(int permits, long queueMs) {
         return new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wmClient(),
+                wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis,
                 (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS, permits, queueMs);
     }
@@ -1378,8 +1399,8 @@ class EdgarSearchServiceTest {
         wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/7/down.htm"))
                 .willReturn(aResponse().withStatus(503)));
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wmClient(),
+                wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis,
                 (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
         assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + "/Archives/edgar/data/7/down.htm"))
@@ -1416,8 +1437,8 @@ class EdgarSearchServiceTest {
     @Test void searchPaginatesUpToTheNewThousandRowBound() {
         stubPages(5000, 10, 100);
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wmClient(),
+                wmClient(),
                 "https://www.sec.gov", 3600L, System::currentTimeMillis,
                 (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
         List<FilingHit> hits = svc.search(List.of("4"), null,
@@ -1428,8 +1449,8 @@ class EdgarSearchServiceTest {
     @Test void form4TruncatedWhenSearchFillsTheThousandRowBound() {
         stubPages(5000, 10, 100);
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wmClient(),
+                wmClient(),
                 "https://www.sec.gov", 3600L, System::currentTimeMillis,
                 (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
         var r = svc.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
@@ -1441,8 +1462,8 @@ class EdgarSearchServiceTest {
         wm.stubFor(get(urlPathEqualTo("/LATEST/search-index")).withQueryParam("from", equalTo("900"))
                 .willReturn(okJson(page(999, 900, 99))));
         var svc = new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wmClient(),
+                wmClient(),
                 "https://www.sec.gov", 3600L, System::currentTimeMillis,
                 (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
         var r = svc.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 1000);
@@ -1458,8 +1479,8 @@ class EdgarSearchServiceTest {
     /** A no-op sleeper + frozen clock: isolates the cap flag from the Form-4 throttle/deadline. */
     private EdgarSearchService cappedProbe() {
         return new EdgarSearchService(
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
-                RestClient.builder().baseUrl(wm.baseUrl()).build(),
+                wmClient(),
+                wmClient(),
                 "https://www.sec.gov", 3600L, () -> 0L,
                 (EdgarSearchService.Sleeper) ms -> {}, 1024L, TICKERS);
     }
@@ -1649,7 +1670,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         var tx = s.form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100).transactions();
         assertThat(tx).hasSize(1);
@@ -1687,7 +1708,7 @@ class EdgarSearchServiceTest {
                       </nonDerivativeTransaction></nonDerivativeTable>
                     </ownershipDocument>
                     """)));
-        EdgarSearchService s = new EdgarSearchService(RestClient.builder().baseUrl(wm.baseUrl()).build(),
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
                 wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
         var tx = s.form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100).transactions();
         assertThat(tx).hasSize(1);
@@ -1757,18 +1778,13 @@ class EdgarSearchServiceTest {
     }
 
     /**
-     * Built through {@link de.visterion.agora.data.DataHttp#clientBuilder(long)} — the SAME
-     * factory the production constructor uses — not through a bare {@code RestClient.builder()}.
-     * That is load-bearing here: a bare builder lets Spring auto-detect Apache HttpClient 5 from
-     * the classpath, whose DefaultHttpRequestRetryStrategy silently repeats a GET on 429/503
-     * once. Measured while writing this test: a single 429 stub was hit twice. Production pins
-     * the JDK factory, so a test on the bare builder would be measuring a retry layer that does
-     * not exist in production.
+     * Both clients come from {@link #wmClient()}, i.e. the factory production pins — which is
+     * load-bearing for these tests in particular: on a bare builder the Apache client's own retry
+     * strategy would repeat the 429/503 stubs and the request counts asserted below would be
+     * measuring it rather than the service's retry.
      */
     private EdgarSearchService retryingSvc(java.util.function.LongSupplier now) {
-        return new EdgarSearchService(
-                de.visterion.agora.data.DataHttp.clientBuilder(15_000).baseUrl(wm.baseUrl()).build(),
-                de.visterion.agora.data.DataHttp.clientBuilder(15_000).baseUrl(wm.baseUrl()).build(),
+        return new EdgarSearchService(wmClient(), wmClient(),
                 wm.baseUrl(), 3600L, now, searchSleeps::add, 5L * 1024 * 1024, TICKERS);
     }
 
@@ -1914,6 +1930,37 @@ class EdgarSearchServiceTest {
     // delay survive: the old test asserted "n-1 sleeps of 110ms" and the bug satisfied it.
     // ---------------------------------------------------------------------------------------
 
+    /**
+     * BUG-S20 regression guard for the ARCHIVE client. A Form-4 archive GET that answers 503 must
+     * be made exactly ONCE — {@link EdgarSearchService#parseForm4} swallows the failure and moves
+     * on, and there is no retry anywhere in that path.
+     *
+     * <p>Before the migration this test failed with 2 requests: the archive client of the test
+     * constructor was a bare {@code RestClient.builder()}, and Apache HttpClient 5's
+     * {@code DefaultHttpRequestRetryStrategy} repeated the GET. Production pins the JDK factory
+     * and never did, so the whole Form-4 suite was measuring a client production does not use.
+     */
+    @Test void aFailedArchiveGetIsNotSilentlyRetriedByTheHttpClient() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4"))
+                .willReturn(okJson("""
+                    {"hits":{"total":{"value":1},"hits":[
+                      {"_id":"0000320193-25-000099:form4.xml","_source":{
+                         "ciks":["0000320193"],
+                         "display_names":["Cook Timothy (CIK 0000000001)"],
+                         "file_date":"2025-05-05","file_type":"4"}}
+                    ]}}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml"))
+                .willReturn(aResponse().withStatus(503)));
+
+        var s = new EdgarSearchService(wmClient(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+        var r = s.form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100);
+
+        assertThat(r.transactions()).isEmpty();   // the filing is skipped, never thrown
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml")));
+    }
+
     /** Fake millisecond clock, advanced explicitly — never by wall time. Single-threaded by use. */
     private static final class FakeClock implements java.util.function.LongSupplier {
         private long t;
@@ -1926,7 +1973,7 @@ class EdgarSearchServiceTest {
      * throttle sleeps advance the same fake clock, so the whole schedule is deterministic.
      *
      * <p>Both clients go through {@link de.visterion.agora.data.DataHttp} — the factory production
-     * pins — for the reason spelled out on {@link #retryingSvc(java.util.function.LongSupplier)}.
+     * pins — for the reason spelled out on {@link #wmClient()}.
      */
     private EdgarSearchService pacedSvc(FakeClock clock, long fetchMs, java.util.List<Long> sleeps) {
         org.springframework.http.client.ClientHttpRequestInterceptor costsFakeTime =
@@ -1935,7 +1982,7 @@ class EdgarSearchServiceTest {
                     return execution.execute(request, body);
                 };
         return new EdgarSearchService(
-                de.visterion.agora.data.DataHttp.clientBuilder(15_000).baseUrl(wm.baseUrl()).build(),
+                wmClient(),
                 de.visterion.agora.data.DataHttp.clientBuilder(15_000, costsFakeTime).baseUrl(wm.baseUrl()).build(),
                 wm.baseUrl(), 3600L, clock,
                 ms -> { sleeps.add(ms); clock.advance(ms); },
