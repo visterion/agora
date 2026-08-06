@@ -18,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.function.LongSupplier;
 import java.util.regex.Pattern;
 
@@ -999,10 +1000,11 @@ public class EdgarSearchService {
         builder.reset();
         var doc = builder.parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
         // The efts _source has no ticker; it lives in the fetched Form-4 XML. May be empty
-        // (e.g. some amendments) — emit the transaction anyway, filer/issuer are still known.
+        // (e.g. some amendments, and every issuer with no listed symbol) — emit the transaction
+        // anyway, filer/issuer are still known.
         String ticker = "";
         var symbols = doc.getElementsByTagName("issuerTradingSymbol");
-        if (symbols.getLength() > 0) ticker = symbols.item(0).getTextContent().trim();
+        if (symbols.getLength() > 0) ticker = sanitizeIssuerSymbol(symbols.item(0).getTextContent());
 
         // Read ALL reportingOwner elements: a Form 4 can list several co-filers (e.g. a trust plus
         // the individual trustee). Join their names; take the first non-empty officer title/role
@@ -1066,6 +1068,64 @@ public class EdgarSearchService {
                     price, sharesOwnedFollowing, aff10b5One, filerCik
             ));
         }
+    }
+
+    /**
+     * Spellings filers type into {@code <issuerTradingSymbol>} to mean "this issuer has no listed
+     * symbol", which nevertheless survive the {@link #TICKER} shape test — {@code NONE} is five
+     * letters, {@code NA} is two. The shape test alone is therefore not sufficient and this list
+     * is the second gate.
+     *
+     * <p>Sources: (1) the production payload that exposed the bug, which carried {@code "N/A"};
+     * (2) a sample of 594 Form-4 primary documents pulled from EDGAR full-text search on
+     * 2026-08-06, in which {@code NONE} appeared 11 times as the whole symbol (alongside junk
+     * such as {@code rofin*88}, which the shape test already rejects); (3) the remaining
+     * conventional English "no value" spellings of those same words that are short enough to pass
+     * the shape test. Deliberately over-inclusive: none of these is a listed US symbol, and an
+     * absent symbol is recoverable while a wrong one is not — a wrong one merges unrelated
+     * issuers into one ticker bucket for any consumer that groups by symbol.
+     */
+    private static final Set<String> SYMBOL_PLACEHOLDERS = Set.of(
+            "NA", "N.A", "N-A", "NON", "NONE", "NIL", "NULL", "NOSYM", "NOTAP",
+            "TBD", "TBA", "UNK", "UNKN", "PVT", "PRIV",
+            // No single letters here: "X" is United States Steel, a real NYSE symbol. Over-
+            // rejecting is preferred, but not to the point of discarding a listed issuer.
+            "XX", "XXX", "XXXX", "XXXXX", "ZZZZ", "ZZZZZ",
+            "0", "00", "000", "0000", "00000");
+
+    /**
+     * The Form-4 {@code <issuerTradingSymbol>} value as a trustworthy symbol, or {@code ""}.
+     *
+     * <p>The element is FREE TEXT supplied by the filer, not a validated SEC field, so it is a
+     * candidate and never an answer — same reasoning as {@link #extractTicker} for the EFTS path.
+     * Two gates, both required:
+     *
+     * <ol>
+     *   <li><b>Shape</b> — the existing {@link #TICKER} pattern, reused rather than redefined. It
+     *       is the right shape for this input too: the field carries the issuer's US exchange
+     *       symbol, share classes included ({@code BRK.B}), and the OTC suffixes seen in the
+     *       sample ({@code AUSI.PK}, {@code ENSL.OB}) fit its 1-2 character suffix group. It
+     *       rejects {@code N/A}, {@code --}, {@code NOT APPLICABLE}, multi-symbol cells like
+     *       {@code GOOG/GOOGL} and typos like {@code rofin*88}.</li>
+     *   <li><b>Placeholder list</b> — {@link #SYMBOL_PLACEHOLDERS}, because a shape test cannot
+     *       tell {@code NONE} from a ticker.</li>
+     * </ol>
+     *
+     * <p>Upper-cased before both gates and on the way out: filers write the symbol in either case
+     * (the sample held {@code pfns} and {@code bktk}) and downstream symbol matching is
+     * case-sensitive, so this matches the EFTS path, which likewise emits the upper-cased form.
+     *
+     * <p>Deliberately NOT logged. This runs once per filing, i.e. hundreds of times per
+     * market-wide call, and an unlisted issuer is a normal, expected outcome — not an anomaly
+     * worth a line each. (The Wikipedia constituent parser does warn, but there a rejected symbol
+     * means an unhandled markup variant and it fires ~500 times a day, not per row per call.)
+     */
+    private static String sanitizeIssuerSymbol(String raw) {
+        if (raw == null) return "";
+        String s = raw.trim().toUpperCase();
+        if (s.isEmpty() || !TICKER.matcher(s).matches()) return "";
+        if (SYMBOL_PLACEHOLDERS.contains(s)) return "";
+        return s;
     }
 
     /** SEC XML boolean ("1"/"true"/"0"/"false"); anything else, including absent/empty → null. */

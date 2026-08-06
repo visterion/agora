@@ -473,6 +473,94 @@ class EdgarSearchServiceTest {
         assertThat(t.filerCik()).isEqualTo("0001214156");
     }
 
+    /**
+     * Stubs one Form-4 hit whose XML carries {@code issuerBlock} verbatim inside {@code <issuer>}
+     * (pass {@code ""} to omit the symbol element entirely) and returns the parsed transactions.
+     * All values synthetic — an invented issuer, never a captured live filing.
+     */
+    private List<Form4Transaction> form4WithIssuerBlock(String issuerBlock) {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("forms", equalTo("4"))
+                .willReturn(okJson("""
+                    {"hits":{"hits":[
+                      {"_id":"0000320193-25-000099:form4.xml","_source":{
+                         "ciks":["0000320193"],
+                         "display_names":["Synthetic Filer One (CIK 0000000001)"],
+                         "file_date":"2025-05-05","file_type":"4"}}
+                    ]}}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml"))
+                .willReturn(aResponse().withStatus(200).withHeader("Content-Type", "application/xml").withBody("""
+                    <ownershipDocument>
+                      <issuer><issuerName>SYNTHETIC HOLDINGS INC</issuerName>%s</issuer>
+                      <reportingOwner><reportingOwnerId><rptOwnerCik>0000000777</rptOwnerCik>
+                        <rptOwnerName>Synthetic Filer One</rptOwnerName></reportingOwnerId></reportingOwner>
+                      <nonDerivativeTable><nonDerivativeTransaction>
+                        <transactionDate><value>2025-05-05</value></transactionDate>
+                        <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                        <transactionAmounts>
+                          <transactionShares><value>1000</value></transactionShares>
+                          <transactionPricePerShare><value>10.00</value></transactionPricePerShare>
+                          <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
+                        </transactionAmounts>
+                      </nonDerivativeTransaction></nonDerivativeTable>
+                    </ownershipDocument>
+                    """.formatted(issuerBlock))));
+        EdgarSearchService s = new EdgarSearchService(wmClient(),
+                wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+        return s.form4Transactions(LocalDate.parse("2025-01-01"), LocalDate.parse("2025-12-31"), 100).transactions();
+    }
+
+    /**
+     * {@code issuerTradingSymbol} is FREE TEXT written by the filer. When the issuer has no listed
+     * symbol, filers type a placeholder, and passing it through poisons any consumer that groups
+     * Form-4 rows BY TICKER STRING: every unlisted issuer in the window collapses into one bucket
+     * and filers of unrelated companies combine into an insider cluster that does not exist.
+     *
+     * <p>Two gates, both exercised here: the {@code TICKER} shape test (which "N/A", "--" and
+     * "NOT APPLICABLE" fail) and the explicit placeholder list (which "NONE" and "NA" need,
+     * since both are shape-valid). Rejected → empty symbol, and the transaction is still emitted:
+     * filer and issuer are known regardless.
+     */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "N/A", "n/a", "N.A.", "--", "-", "NOT APPLICABLE", "NO SYMBOL", "not listed",
+            "NONE", "None", "none", "NON", "NA", "na", "NIL", "NULL", "TBD", "TBA",
+            "UNK", "PVT", "PRIV", "XXXXX", "0", "000",
+            "GOOG/GOOGL", "synth*88",
+    })
+    void form4PlaceholderIssuerSymbolYieldsEmptyTickerAndStillEmitsTheTransaction(String placeholder) {
+        List<Form4Transaction> tx =
+                form4WithIssuerBlock("<issuerTradingSymbol>" + placeholder + "</issuerTradingSymbol>");
+        assertThat(tx).hasSize(1);
+        assertThat(tx.get(0).ticker()).isEmpty();
+        assertThat(tx.get(0).filerName()).isEqualTo("Synthetic Filer One");
+    }
+
+    /** A genuine symbol, a share class and a lower-case spelling all survive (upper-cased). */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            "SYNA|SYNA",
+            "SYNA.B|SYNA.B",
+            "SYNA-B|SYNA-B",
+            "syna|SYNA",
+            "SYN|SYN",
+    })
+    void form4RealIssuerSymbolComesThroughUnchanged(String raw, String expected) {
+        List<Form4Transaction> tx =
+                form4WithIssuerBlock("<issuerTradingSymbol>" + raw + "</issuerTradingSymbol>");
+        assertThat(tx).hasSize(1);
+        assertThat(tx.get(0).ticker()).isEqualTo(expected);
+    }
+
+    /** No symbol element at all: empty ticker, transaction still emitted (unchanged behaviour). */
+    @Test void form4MissingIssuerTradingSymbolElementYieldsEmptyTicker() {
+        List<Form4Transaction> tx = form4WithIssuerBlock("");
+        assertThat(tx).hasSize(1);
+        assertThat(tx.get(0).ticker()).isEmpty();
+        assertThat(tx.get(0).shares()).isEqualByComparingTo("1000");
+    }
+
     // Pre-2023 filing shape: no aff10b5One element, no postTransactionAmounts, no owner CIK, no
     // price — the new fields degrade to null/empty (aff10b5One null means UNKNOWN, never false).
     @Test void form4LegacyFilingWithoutNewFieldsYieldsNulls() {

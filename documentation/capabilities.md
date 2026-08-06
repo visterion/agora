@@ -130,6 +130,25 @@ unavailable. That last case is deliberate: a lookup failure must not degrade bac
 guessing. Consumers must treat an empty `ticker` as "no symbol", never as an error, and must
 not reconstruct one from `company`.
 
+### The `ticker` field on a Form-4 transaction
+
+A different source with the same rule. The EFTS `_source` carries no symbol for a Form 4, so it
+is read from `<issuerTradingSymbol>` in the fetched Form-4 XML — a **free-text field typed by the
+filer**, not a validated SEC field. When the issuer has no listed symbol, filers write a
+placeholder: the production payload that exposed this carried `"N/A"`, and a 594-document EDGAR
+sample (2026-08-06) also showed `NONE` and junk such as `rofin*88`.
+
+The value is therefore validated before it is emitted, and anything implausible becomes `""`:
+first the same ticker shape test used on the EFTS path (which rejects `N/A`, `--`,
+`NOT APPLICABLE`, `GOOG/GOOGL`), then an explicit placeholder list, because a shape test cannot
+tell `NONE` or `NA` from a symbol. The symbol is upper-cased; filers write it in either case.
+
+Only the symbol is emptied — **the transaction is still emitted**, since filer and issuer are
+known regardless. Consumers must read an empty `ticker` as "no symbol" and, in particular, must
+not group rows by symbol without excluding the empty one: a passed-through placeholder collapses
+every unlisted issuer in the window into a single bucket, which manufactures insider "clusters"
+out of filers at unrelated companies.
+
 ### Row limits on the market-wide EDGAR tools
 
 `search_filings` and `get_form4_transactions` cap at **1000** rows, aligned with
