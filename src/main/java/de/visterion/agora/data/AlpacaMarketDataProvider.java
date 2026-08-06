@@ -1,6 +1,8 @@
 package de.visterion.agora.data;
 
 import de.visterion.agora.fetch.alpaca.AlpacaDataClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
@@ -15,7 +17,10 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -35,27 +40,62 @@ import java.util.Set;
 @Order(5)
 public class AlpacaMarketDataProvider implements MarketDataProvider {
 
+    private static final Logger log = LoggerFactory.getLogger(AlpacaMarketDataProvider.class);
+
     /** Alpaca's market calendar (bar/session boundaries) is anchored to US Eastern time. */
     private static final ZoneId MARKET_ZONE = ZoneId.of("America/New_York");
 
+    /** Alpaca's maximum bars per response page — the same value the single-symbol path sends. */
+    private static final int PAGE_LIMIT = 10_000;
+
     private final AlpacaDataClient client;
     private final Set<String> nonUsSuffixes;
+    private final int batchSymbols;
+    private final int batchMaxPages;
 
     /**
      * Constructor bound by Spring via {@code @Value}. Reuses the same
      * {@code agora.fundamentals.non-us-suffixes} property fundamentals routing reads, so the
      * two never drift.
+     *
+     * @param batchSymbols  symbols per multi-symbol bars request
+     *                      ({@code agora.data.alpaca.batch-symbols}). 100 is the size that was
+     *                      measured working against the live API on 2026-08-06 (HTTP 200 in
+     *                      1.15 s, 100 symbols in one URL); it keeps the query string well
+     *                      inside any proxy's URL length limit while cutting an S&P-500 sweep
+     *                      to five requests' worth of chunks.
+     * @param batchMaxPages hard bound on the {@code next_page_token} follow loop per chunk
+     *                      ({@code agora.data.alpaca.batch-max-pages}). A malformed or looping
+     *                      token must not spin forever, but the cap must never truncate a
+     *                      legitimate request: one chunk carries at most
+     *                      {@code batchSymbols} × {@code MAX_FETCH_DAYS} (100 × 1825 ≈ 182 500)
+     *                      bars ≈ 19 pages of 10 000, so 50 leaves ~2.5× headroom. Hitting the
+     *                      cap is logged as a warning, never silent.
      */
     @Autowired
     public AlpacaMarketDataProvider(AlpacaDataClient client,
-            @Value("${agora.fundamentals.non-us-suffixes:" + NonUsSuffixes.DEFAULT_CSV + "}") String nonUsSuffixesCsv) {
+            @Value("${agora.fundamentals.non-us-suffixes:" + NonUsSuffixes.DEFAULT_CSV + "}") String nonUsSuffixesCsv,
+            @Value("${agora.data.alpaca.batch-symbols:100}") int batchSymbols,
+            @Value("${agora.data.alpaca.batch-max-pages:50}") int batchMaxPages) {
         this.client = client;
         this.nonUsSuffixes = NonUsSuffixes.parse(nonUsSuffixesCsv);
+        this.batchSymbols = Math.max(1, batchSymbols);
+        this.batchMaxPages = Math.max(1, batchMaxPages);
+    }
+
+    /** Test/back-compat constructor: default non-US suffix set. */
+    public AlpacaMarketDataProvider(AlpacaDataClient client, String nonUsSuffixesCsv) {
+        this(client, nonUsSuffixesCsv, 100, 50);
     }
 
     /** Test/back-compat constructor: default non-US suffix set. */
     public AlpacaMarketDataProvider(AlpacaDataClient client) {
         this(client, NonUsSuffixes.DEFAULT_CSV);
+    }
+
+    /** Test constructor: explicit chunk size / page cap, default non-US suffix set. */
+    AlpacaMarketDataProvider(AlpacaDataClient client, int batchSymbols, int batchMaxPages) {
+        this(client, NonUsSuffixes.DEFAULT_CSV, batchSymbols, batchMaxPages);
     }
 
     @Override
@@ -131,8 +171,7 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
         if (!client.configured()) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "alpaca: no api key", null);
         }
-        // Cover weekends/holidays so we get ~`days` trading bars, then trim to the most recent.
-        String start = LocalDate.now(MARKET_ZONE).minusDays((long) Math.ceil(days * 1.5) + 5).toString();
+        String start = startDate(days);
         JsonNode root;
         try {
             root = client.http().get()
@@ -140,7 +179,7 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
                             .queryParam("timeframe", "1Day")
                             .queryParam("feed", "iex")
                             .queryParam("start", start)
-                            .queryParam("limit", 10000)
+                            .queryParam("limit", PAGE_LIMIT)
                             // Split-adjusted closes so bars stay continuous across a symbol's
                             // split history and are comparable with the Yahoo/TwelveData
                             // fallback providers, which both return adjusted series.
@@ -161,18 +200,7 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
         }
 
         List<OhlcBar> out = new ArrayList<>();
-        JsonNode bars = root.path("bars");
-        if (bars.isArray()) {
-            for (JsonNode b : bars) {                       // Alpaca returns oldest-first
-                String t = b.path("t").asString("");
-                if (t.length() < 10) continue;
-                LocalDate date;
-                try { date = LocalDate.parse(t.substring(0, 10)); }
-                catch (Exception e) { continue; }
-                out.add(new OhlcBar(date, bd(b.path("o")), bd(b.path("h")),
-                        bd(b.path("l")), bd(b.path("c")), b.path("v").asLong(0)));
-            }
-        }
+        appendBars(root.path("bars"), out);
         // Alpaca returns HTTP 200 with {"bars":null} for symbols it doesn't know (all non-US
         // symbols on the free IEX feed). Treat that as "not served here" so MarketDataService
         // falls through to the next provider, instead of caching an empty success.
@@ -180,11 +208,131 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
             throw new MarketDataException(MarketDataException.Kind.NOT_FOUND,
                     "Symbol " + symbol + " has no bars at Alpaca", null);
         }
-        // Keep only the most recent `days` bars (still oldest-first).
-        if (out.size() > days) {
-            out = new ArrayList<>(out.subList(out.size() - days, out.size()));
+        return trimToLast(out, days);
+    }
+
+    @Override
+    public boolean supportsOhlcBatch() { return true; }
+
+    /**
+     * Multi-symbol daily bars via {@code GET /v2/stocks/bars?symbols=A,B,C} — one request per
+     * chunk of {@code batchSymbols} instead of one per symbol. Returns only the symbols Alpaca
+     * actually served; a symbol missing from the response map is not an error (that is Alpaca's
+     * per-symbol "not served here" signal, the multi-symbol equivalent of the single path's
+     * {@code {"bars":null}}), the caller decides what a gap means.
+     *
+     * <p>The series a symbol gets here is bar-for-bar the series {@link #ohlc(String, int)} would
+     * return: same {@code start}, {@code feed=iex}, {@code timeframe=1Day},
+     * {@code adjustment=split}, same parsing and the same trim to the last {@code days} bars —
+     * the parsing and trimming are literally the same two methods. If the two paths could
+     * disagree, a 52-week low would depend on which path happened to fetch it.
+     *
+     * <p><strong>The page loop is load-bearing.</strong> Measured against the live API on
+     * 2026-08-06: {@code limit} is a <em>global</em> bar budget across all requested symbols,
+     * not a per-symbol one — with {@code limit=6} and three symbols only the first symbol came
+     * back, plus a {@code next_page_token}. A version without this loop returns a response that
+     * looks fine and silently omits most of the universe.
+     *
+     * <p>A chunk whose page N fails (HTTP error, 429, timeout) keeps the bars read from pages
+     * 1..N-1 — they are already in the accumulator and are returned. The rest of that chunk's
+     * symbols simply count as not delivered; the remaining chunks are still fetched. Throwing
+     * the whole chunk away would turn one 429 into ~100 blind symbols.
+     */
+    @Override
+    public Map<String, List<OhlcBar>> ohlcBatch(List<String> symbols, int days) {
+        if (!client.configured()) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "alpaca: no api key", null);
+        }
+        List<String> wanted = new ArrayList<>(new LinkedHashSet<>(
+                symbols.stream().filter(s -> s != null && !s.isBlank()).map(String::trim).toList()));
+        Map<String, List<OhlcBar>> acc = new LinkedHashMap<>();
+        if (wanted.isEmpty()) return acc;
+
+        String start = startDate(days);
+        for (int i = 0; i < wanted.size(); i += batchSymbols) {
+            fetchChunk(wanted.subList(i, Math.min(i + batchSymbols, wanted.size())), start, acc);
+        }
+
+        Map<String, List<OhlcBar>> out = new LinkedHashMap<>();
+        for (Map.Entry<String, List<OhlcBar>> e : acc.entrySet()) {
+            if (!e.getValue().isEmpty()) out.put(e.getKey(), trimToLast(e.getValue(), days));
         }
         return out;
+    }
+
+    /** Fetches one chunk, following {@code next_page_token} into {@code acc}. Never throws:
+     *  a failed page ends the chunk and keeps whatever was already accumulated. */
+    private void fetchChunk(List<String> chunk, String start, Map<String, List<OhlcBar>> acc) {
+        String csv = String.join(",", chunk);
+        String pageToken = null;
+        for (int page = 1; page <= batchMaxPages; page++) {
+            String token = pageToken;
+            JsonNode root;
+            try {
+                root = client.http().get()
+                        .uri(uri -> {
+                            uri.path("/v2/stocks/bars")
+                               .queryParam("symbols", csv)
+                               .queryParam("timeframe", "1Day")
+                               .queryParam("feed", "iex")
+                               .queryParam("start", start)
+                               .queryParam("limit", PAGE_LIMIT)
+                               .queryParam("adjustment", "split");
+                            if (token != null) uri.queryParam("page_token", token);
+                            return uri.build();
+                        })
+                        .retrieve()
+                        .body(JsonNode.class);
+            } catch (RestClientResponseException e) {
+                log.warn("alpaca batch bars page {} of {} symbols returned HTTP {} — keeping {} symbols read so far",
+                        page, chunk.size(), e.getStatusCode(), acc.size());
+                return;
+            } catch (Exception e) {
+                log.warn("alpaca batch bars page {} of {} symbols failed: {} — keeping {} symbols read so far",
+                        page, chunk.size(), ProviderErrors.categorize("alpaca", e), acc.size());
+                return;
+            }
+            if (root == null) return;
+
+            // Multi-symbol shape: bars is an object {SYM: [bar,...]}, not the single path's array.
+            JsonNode bars = root.path("bars");
+            if (bars.isObject()) {
+                for (Map.Entry<String, JsonNode> e : bars.properties()) {
+                    appendBars(e.getValue(), acc.computeIfAbsent(e.getKey(), k -> new ArrayList<>()));
+                }
+            }
+            JsonNode next = root.path("next_page_token");
+            if (!next.isString() || next.asString("").isEmpty()) return;   // JSON null ends the walk
+            pageToken = next.asString("");
+        }
+        log.warn("alpaca batch bars hit the {}-page cap for a {}-symbol chunk — result may be incomplete",
+                batchMaxPages, chunk.size());
+    }
+
+    /** Cover weekends/holidays so we get ~{@code days} trading bars, then trim to the most recent. */
+    private static String startDate(int days) {
+        return LocalDate.now(MARKET_ZONE).minusDays((long) Math.ceil(days * 1.5) + 5).toString();
+    }
+
+    /** Parses one symbol's bar array (Alpaca returns oldest-first) and appends to {@code out}.
+     *  Shared by the single- and multi-symbol paths so neither can drift from the other. */
+    private static void appendBars(JsonNode barsArray, List<OhlcBar> out) {
+        if (!barsArray.isArray()) return;
+        for (JsonNode b : barsArray) {
+            String t = b.path("t").asString("");
+            if (t.length() < 10) continue;
+            LocalDate date;
+            try { date = LocalDate.parse(t.substring(0, 10)); }
+            catch (Exception e) { continue; }
+            out.add(new OhlcBar(date, bd(b.path("o")), bd(b.path("h")),
+                    bd(b.path("l")), bd(b.path("c")), b.path("v").asLong(0)));
+        }
+    }
+
+    /** Keep only the most recent {@code days} bars (still oldest-first). */
+    private static List<OhlcBar> trimToLast(List<OhlcBar> bars, int days) {
+        if (bars.size() <= days) return bars;
+        return new ArrayList<>(bars.subList(bars.size() - days, bars.size()));
     }
 
     private static BigDecimal bd(JsonNode node) {

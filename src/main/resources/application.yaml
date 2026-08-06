@@ -141,6 +141,11 @@ agora:
       base-url: ${AGORA_DATA_ALPACA_BASE_URL:https://data.alpaca.markets}
       key-id: ${AGORA_DATA_ALPACA_KEY_ID:}
       secret: ${AGORA_DATA_ALPACA_SECRET:}
+      # Multi-symbol daily bars: symbols per request, and the bound on the next_page_token
+      # follow loop per chunk. `limit` is a GLOBAL bar budget across all symbols in a request,
+      # so paging is mandatory, not an optimisation. See documentation/hunting-grounds.md.
+      batch-symbols: ${AGORA_DATA_ALPACA_BATCH_SYMBOLS:100}
+      batch-max-pages: ${AGORA_DATA_ALPACA_BATCH_MAX_PAGES:50}
     saxo:
       # trading-connection slot whose session feeds market data ("falls vorhanden")
       connection: ${AGORA_DATA_SAXO_CONNECTION:saxo-live}

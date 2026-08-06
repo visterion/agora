@@ -112,7 +112,7 @@ design spec:
 
 ## Tool catalog
 
-38 tools today. One-page inventory: [`documentation/capabilities.md`](documentation/capabilities.md).
+39 tools today. One-page inventory: [`documentation/capabilities.md`](documentation/capabilities.md).
 `general` tools are on MCP, webhook, and catalog; `trading` tools are webhook-only and
 require a trading token.
 
@@ -154,7 +154,8 @@ require a trading token.
 | Tool | Description |
 |---|---|
 | `list_indicators` | Machine-readable indicator catalog: names, params with defaults, outputs |
-| `get_indicators` | Computes any set of catalog indicators in one call — composable specs (`{name, params, of, label}`), optional `series=N` for the last N values |
+| `get_indicators` | Computes any set of catalog indicators for one symbol in one call — composable specs (`{name, params, of, label}`), optional `series=N` for the last N values |
+| `get_indicators_batch` | The same indicators for many symbols (max 600) in one call, from a single batched history fetch instead of one per symbol. Every requested symbol appears in `results`; one without history carries `available:false` and a reason, plus `requested`/`returned` counts |
 | `get_r_framework` | Risk unit and R-multiple price levels |
 | `ping` | Liveness probe that returns `pong` plus any echoed message |
 
@@ -409,7 +410,7 @@ The `ToolRegistry` picks it up automatically and it appears on `/mcp`, `/tools`,
 
 | Doc | Contents |
 |---|---|
-| [`documentation/capabilities.md`](documentation/capabilities.md) | Full tool inventory (38 tools) + internal capabilities |
+| [`documentation/capabilities.md`](documentation/capabilities.md) | Full tool inventory (39 tools) + internal capabilities |
 | [`documentation/hunting-grounds.md`](documentation/hunting-grounds.md) | Provider chains, coverage, cache TTLs |
 | [`documentation/api.md`](documentation/api.md) | Fundamentals tool contracts |
 | [`documentation/exit-tools.md`](documentation/exit-tools.md) | Trading exit contracts (bracket / flatten / protective stop) |

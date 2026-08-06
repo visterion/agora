@@ -10,6 +10,30 @@ Agora's data tools resolve through provider plugins, so consumers never pick a p
 | OHLC, intraday | Alpaca (broker feed, IEX), then Saxo (non-US via `saxo-live` session, Yahoo-suffix symbols), then TwelveData, Finnhub, then Yahoo (keyless fallback) | Equities globally, with 15-min delay on Saxo non-US | 120s (`agora.data.cache.ttl-seconds`, `AGORA_DATA_CACHE_TTL_SECONDS`) — kept short so GUI charts never show a stale "today" partial bar |
 | FX rates | Yahoo FX pairs (optional scheduled warmer) | Major pairs and crosses | 120s |
 
+### Batched daily bars (Alpaca only)
+
+Screening a whole index one symbol at a time exhausts a provider's per-minute quota — measured on
+2026-08-05, 49 of 645 Alpaca calls and 41 of 55 TwelveData calls came back 429. For daily bars
+Agora therefore has a second, batched path: `get_indicators_batch` asks for many symbols in one
+request instead of one request per symbol.
+
+- **Alpaca is the only provider with a batch path.** It is first in the chain and covers the US
+  universe; Saxo, TwelveData, Finnhub and Yahoo remain the per-symbol fallback. Symbols Alpaca
+  does not serve (non-US suffixes, unknown tickers) are simply absent from the batch answer — they
+  are deliberately *not* retried one by one, because that would restore exactly the call storm the
+  batch path removes. The caller sees the gap and decides.
+- **Chunking and paging.** Symbols go out in chunks of `agora.data.alpaca.batch-symbols`
+  (default 100 — the size measured working against the live API). Alpaca's `limit` is a *global*
+  bar budget across all symbols in a request, not a per-symbol one, so a response can contain only
+  the first few symbols plus a `next_page_token`; Agora follows that token to the end, bounded by
+  `agora.data.alpaca.batch-max-pages` (default 50, which cannot truncate a legitimate request).
+  A chunk whose page N fails keeps the bars read from pages 1..N-1.
+- **Same series, same cache.** A symbol's batched series is bar-for-bar what `get_ohlc` /
+  `get_indicators` would have fetched (same start window, `feed=iex`, `adjustment=split`, same
+  trim to the last `days` bars), and it is written into the same OHLC cache under the same key —
+  a subsequent single-symbol call for the same symbol and window is a cache hit, not a second
+  fetch.
+
 ## Company data
 
 | Domain | Provider | Coverage | Semantics |

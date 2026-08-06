@@ -24,6 +24,26 @@ public interface MarketDataProvider {
      */
     default boolean canServe(Instrument inst) { return true; }
 
+    /**
+     * Whether this provider can serve daily bars for many symbols in one round-trip
+     * ({@link #ohlcBatch}). Default {@code false} — {@link MarketDataService#ohlcBatch} picks the
+     * first provider in the chain that says yes and leaves the rest as the per-symbol fallback.
+     */
+    default boolean supportsOhlcBatch() { return false; }
+
+    /**
+     * Daily bars for many symbols in one round-trip. Only the symbols the provider actually
+     * served appear in the result — a missing symbol is <strong>not</strong> an error, it is the
+     * provider's "not served here" signal and the caller decides what to do with the gap. The
+     * series per symbol must be identical to what {@link #ohlc(String, int)} would return for the
+     * same symbol and {@code days}.
+     *
+     * @throws UnsupportedOperationException if {@link #supportsOhlcBatch()} is {@code false}
+     */
+    default Map<String, List<OhlcBar>> ohlcBatch(List<String> symbols, int days) {
+        throw new UnsupportedOperationException(name() + " has no batch ohlc path");
+    }
+
     /** Batch quotes; default resolves per-symbol and omits symbols that fail. */
     default Map<String, Quote> quotes(Collection<String> symbols) {
         Map<String, Quote> out = new LinkedHashMap<>();

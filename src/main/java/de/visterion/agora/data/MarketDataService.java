@@ -7,10 +7,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 
@@ -137,8 +139,15 @@ public class MarketDataService {
         }
     }
 
+    /** The one and only {@code ohlcCache}/{@code ohlcNotFoundCache} key shape: uppercased caller
+     *  symbol + ":" + days. {@link #ohlcBatch} writes under exactly this key so a later
+     *  {@link #ohlc} for the same symbol/days is a cache hit rather than a fresh fetch. */
+    private static String ohlcKey(String symbol, int days) {
+        return symbol.toUpperCase(Locale.ROOT) + ":" + days;
+    }
+
     public List<OhlcBar> ohlc(String symbol, int days) {
-        String key = symbol.toUpperCase(Locale.ROOT) + ":" + days;
+        String key = ohlcKey(symbol, days);
         if (ohlcNotFoundCache.isFresh(key)) {
             throw notFoundCached("ohlc " + symbol);
         }
@@ -152,6 +161,75 @@ public class MarketDataService {
             cacheNegativeIfApplicable(ohlcNotFoundCache, key, allNotFound[0], e);
             throw e;
         }
+    }
+
+    /**
+     * Daily bars for many symbols with as few provider round-trips as possible: the warm
+     * {@link #ohlcCache} is consulted first and only the misses go to the first batch-capable
+     * provider in the chain (today: Alpaca) in one multi-symbol request per chunk.
+     *
+     * <p>Everything the provider returns is written back into the <em>same</em> {@code ohlcCache}
+     * under the same key {@link #ohlc} uses, so a following {@code ohlc(symbol, days)} is served
+     * from the cache without a fetch. That write-back is the reason this method lives in the
+     * service and not in the calling tool.
+     *
+     * <p>Symbols the batch provider does not serve are simply absent from the result — they are
+     * <strong>not</strong> retried one by one. A silent per-symbol fallback would restore exactly
+     * the ~490-single-call storm this method exists to remove; the caller sees who is missing and
+     * decides. Symbols the batch provider cannot serve at all ({@code canServe} false, e.g. non-US
+     * suffixes) are never even requested, and a fresh negative cache entry short-circuits a symbol
+     * the same way it does in {@code ohlc}.
+     *
+     * @return bars per requested symbol, in request order, containing only the symbols served
+     */
+    public Map<String, List<OhlcBar>> ohlcBatch(List<String> symbols, int days) {
+        MarketDataProvider batchProvider = providers.stream()
+                .filter(MarketDataProvider::supportsOhlcBatch)
+                .findFirst().orElse(null);
+
+        Map<String, List<OhlcBar>> byCallerSymbol = new LinkedHashMap<>();
+        Map<String, String> requestToCaller = new LinkedHashMap<>();
+        Set<String> seen = new HashSet<>();
+        for (String symbol : symbols) {
+            if (symbol == null || symbol.isBlank() || !seen.add(symbol)) continue;
+            String key = ohlcKey(symbol, days);
+            if (ohlcNotFoundCache.isFresh(key)) continue;
+            var cached = ohlcCache.peek(key);
+            if (cached.isPresent()) {
+                byCallerSymbol.put(symbol, cached.get());
+                continue;
+            }
+            if (batchProvider == null) continue;
+            Instrument inst = resolver.resolve(symbol);
+            if (!batchProvider.canServe(inst)) continue;
+            requestToCaller.putIfAbsent(inst.displaySymbol(), symbol);
+        }
+
+        if (batchProvider != null && !requestToCaller.isEmpty()) {
+            Map<String, List<OhlcBar>> fetched;
+            try {
+                fetched = batchProvider.ohlcBatch(List.copyOf(requestToCaller.keySet()), days);
+            } catch (RuntimeException e) {
+                // Same fail-soft contract as the single path: a down provider degrades the answer,
+                // it does not blow up the caller. The misses stay missing.
+                log.warn("batch ohlc via {} failed: {}", batchProvider.name(), e.toString());
+                fetched = Map.of();
+            }
+            for (Map.Entry<String, List<OhlcBar>> e : fetched.entrySet()) {
+                String caller = requestToCaller.get(e.getKey());
+                if (caller == null || e.getValue().isEmpty()) continue;
+                ohlcCache.put(ohlcKey(caller, days), e.getValue());
+                byCallerSymbol.put(caller, e.getValue());
+            }
+        }
+
+        // Re-emit in request order — cache hits and fresh fetches interleave otherwise.
+        Map<String, List<OhlcBar>> out = new LinkedHashMap<>();
+        for (String symbol : symbols) {
+            List<OhlcBar> bars = byCallerSymbol.get(symbol);
+            if (bars != null) out.putIfAbsent(symbol, bars);
+        }
+        return out;
     }
 
     /** Batch quotes; per-symbol cached via quote() (which also consults the negative cache
