@@ -108,7 +108,13 @@ class AlpacaMarketDataProviderBatchTest {
         assertThat(batch.getFirst().date().toString()).isEqualTo("2025-01-03");
     }
 
-    @Test void httpFailureOnPageTwoKeepsPageOneBars() {
+    /**
+     * A chunk whose page walk did not reach its end delivers NOTHING. The bars on the last
+     * successful page can be a symbol cut in half by the global bar budget, and a half series is
+     * indistinguishable downstream from a genuinely short history — it reads as "young listing",
+     * which is a silent classification, whereas an absent symbol is a loud one.
+     */
+    @Test void httpFailureOnPageTwoDropsThatChunksPartialBars() {
         wm.stubFor(get(urlPathEqualTo("/v2/stocks/bars"))
                 .withQueryParam("page_token", absent())
                 .willReturn(okJson("""
@@ -122,9 +128,86 @@ class AlpacaMarketDataProviderBatchTest {
 
         Map<String, List<OhlcBar>> out = provider(true).ohlcBatch(List.of("SYNA", "SYNB"), 30);
 
-        assertThat(out).containsOnlyKeys("SYNA");
-        assertThat(out.get("SYNA")).hasSize(1);
-        assertThat(out.get("SYNA").getFirst().close()).isEqualByComparingTo("10.5");
+        assertThat(out).isEmpty();
+    }
+
+    /**
+     * The boundary symbol: page 1 ends in the middle of SYNA's series (the global bar budget ran
+     * out), page 2 answers 429. Keeping page 1 would hand out a 2-bar SYNA that looks like a
+     * complete short history. Both symbols of the failed chunk must be absent.
+     */
+    @Test void boundarySymbolCutByThePageBreakIsDroppedWhenPageTwoFails() {
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/bars"))
+                .withQueryParam("page_token", absent())
+                .willReturn(okJson("""
+                    {"bars":{
+                       "SYNA":[{"t":"2025-01-02T05:00:00Z","o":10.0,"h":11.0,"l":9.5,"c":10.5,"v":1000},
+                               {"t":"2025-01-03T05:00:00Z","o":10.5,"h":11.5,"l":10.2,"c":11.0,"v":1100}]
+                     },"next_page_token":"SYNTHETIC-PAGE-2"}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/bars"))
+                .withQueryParam("page_token", equalTo("SYNTHETIC-PAGE-2"))
+                .willReturn(aResponse().withStatus(429)));
+
+        Map<String, List<OhlcBar>> out = provider(true).ohlcBatch(List.of("SYNA", "SYNB"), 260);
+
+        assertThat(out).doesNotContainKey("SYNA");
+        assertThat(out).doesNotContainKey("SYNB");
+    }
+
+    /** The truncated series must never reach the shared OHLC cache: a later single-symbol call
+     *  has to go to the wire, not be served a half series for the whole TTL. */
+    @Test void aTruncatedChunkDoesNotPoisonTheOhlcCache() {
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/bars"))
+                .withQueryParam("page_token", absent())
+                .willReturn(okJson("""
+                    {"bars":{
+                       "SYNA":[{"t":"2025-01-02T05:00:00Z","o":10.0,"h":11.0,"l":9.5,"c":10.5,"v":1000},
+                               {"t":"2025-01-03T05:00:00Z","o":10.5,"h":11.5,"l":10.2,"c":11.0,"v":1100}]
+                     },"next_page_token":"SYNTHETIC-PAGE-2"}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/bars"))
+                .withQueryParam("page_token", equalTo("SYNTHETIC-PAGE-2"))
+                .willReturn(aResponse().withStatus(429)));
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/SYNA/bars"))
+                .willReturn(okJson("""
+                    {"bars":[{"t":"2025-01-02T05:00:00Z","o":10.0,"h":11.0,"l":9.5,"c":10.5,"v":1000},
+                             {"t":"2025-01-03T05:00:00Z","o":10.5,"h":11.5,"l":10.2,"c":11.0,"v":1100},
+                             {"t":"2025-01-06T05:00:00Z","o":11.0,"h":12.0,"l":10.9,"c":11.8,"v":1200}],
+                     "symbol":"SYNA","next_page_token":null}
+                    """)));
+        MarketDataService svc = new MarketDataService(List.of(provider(true)), 120L);
+
+        assertThat(svc.ohlcBatch(List.of("SYNA"), 260)).isEmpty();
+        // must reach the wire, and must get the full series — not the 2-bar remnant
+        assertThat(svc.ohlc("SYNA", 260)).hasSize(3);
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/v2/stocks/SYNA/bars")));
+    }
+
+    /** One failed chunk must not blind the chunks that completed. */
+    @Test void anIncompleteChunkDoesNotDropTheChunksThatFinished() {
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/bars"))
+                .withQueryParam("symbols", equalTo("SYNA,SYNB"))
+                .willReturn(okJson("""
+                    {"bars":{
+                       "SYNA":[{"t":"2025-01-02T05:00:00Z","o":10.0,"h":11.0,"l":9.5,"c":10.5,"v":1000}]
+                     },"next_page_token":"SYNTHETIC-PAGE-2"}
+                    """)));
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/bars"))
+                .withQueryParam("page_token", equalTo("SYNTHETIC-PAGE-2"))
+                .willReturn(aResponse().withStatus(429)));
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/bars"))
+                .withQueryParam("symbols", equalTo("SYNC,SYND"))
+                .willReturn(okJson("""
+                    {"bars":{
+                       "SYNC":[{"t":"2025-01-02T05:00:00Z","o":30.0,"h":31.0,"l":29.5,"c":30.5,"v":3000}]
+                     },"next_page_token":null}
+                    """)));
+
+        Map<String, List<OhlcBar>> out =
+                provider(2, 50).ohlcBatch(List.of("SYNA", "SYNB", "SYNC", "SYND"), 30);
+
+        assertThat(out).containsOnlyKeys("SYNC");
     }
 
     @Test void symbolsAreSplitIntoChunksOfTheConfiguredSize() {
@@ -144,7 +227,8 @@ class AlpacaMarketDataProviderBatchTest {
                 .withQueryParam("symbols", equalTo("SYNC")));
     }
 
-    @Test void pageCapStopsAnEndlessTokenChain() {
+    /** Reaching the page cap is an unfinished walk, exactly like an HTTP error — same outcome. */
+    @Test void pageCapStopsAnEndlessTokenChainAndDropsThatChunk() {
         wm.stubFor(get(urlPathEqualTo("/v2/stocks/bars"))
                 .willReturn(okJson("""
                     {"bars":{
@@ -155,7 +239,7 @@ class AlpacaMarketDataProviderBatchTest {
         Map<String, List<OhlcBar>> out = provider(100, 3).ohlcBatch(List.of("SYNA"), 30);
 
         wm.verify(3, getRequestedFor(urlPathEqualTo("/v2/stocks/bars")));
-        assertThat(out.get("SYNA")).hasSize(3);
+        assertThat(out).isEmpty();
     }
 
     @Test void batchRequestsSplitAdjustedIexDailyBars() {
@@ -169,6 +253,22 @@ class AlpacaMarketDataProviderBatchTest {
                 .withQueryParam("feed", equalTo("iex"))
                 .withQueryParam("adjustment", equalTo("split"))
                 .withQueryParam("limit", equalTo("10000")));
+    }
+
+    /** Alpaca echoes symbols upper-cased whatever casing was sent; the result must still be keyed
+     *  by the string the caller asked with, or a lowercase request silently returns nothing. */
+    @Test void lowercaseRequestIsKeyedBackByTheCallersSpelling() {
+        wm.stubFor(get(urlPathEqualTo("/v2/stocks/bars"))
+                .willReturn(okJson("""
+                    {"bars":{
+                       "SYNA":[{"t":"2025-01-02T05:00:00Z","o":10.0,"h":11.0,"l":9.5,"c":10.5,"v":1000}]
+                     },"next_page_token":null}
+                    """)));
+
+        Map<String, List<OhlcBar>> out = provider(true).ohlcBatch(List.of("syna"), 30);
+
+        assertThat(out).containsOnlyKeys("syna");
+        assertThat(out.get("syna")).hasSize(1);
     }
 
     @Test void blankKeyOhlcBatchThrowsUnavailable() {

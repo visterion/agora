@@ -27,7 +27,15 @@ request instead of one request per symbol.
   bar budget across all symbols in a request, not a per-symbol one, so a response can contain only
   the first few symbols plus a `next_page_token`; Agora follows that token to the end, bounded by
   `agora.data.alpaca.batch-max-pages` (default 50, which cannot truncate a legitimate request).
-  A chunk whose page N fails keeps the bars read from pages 1..N-1.
+- **An unfinished walk delivers nothing for that chunk.** If a page fails (HTTP error, 429,
+  timeout, empty body) or the page cap is reached, the symbols already read from that chunk's
+  earlier pages are discarded too, and the chunk's symbols are reported as not delivered. Because
+  `limit` is a global budget the page break falls *inside* one symbol's series, and a half series
+  is indistinguishable from a genuinely short history — it would drop out as a "young listing",
+  silently, instead of surfacing as a degradation the operator can see. Alpaca's response carries
+  no per-symbol completeness marker, so the cut symbol cannot be identified from it and the whole
+  chunk goes. Chunks that finished are unaffected. A truncated series therefore also never reaches
+  the OHLC cache.
 - **Same series, same cache.** A symbol's batched series is bar-for-bar what `get_ohlc` /
   `get_indicators` would have fetched (same start window, `feed=iex`, `adjustment=split`, same
   trim to the last `days` bars), and it is written into the same OHLC cache under the same key —

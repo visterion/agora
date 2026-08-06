@@ -211,6 +211,21 @@ class GetIndicatorsBatchToolTest {
         assertThat(r.output().get("results")).hasSize(1);
     }
 
+    /** Tickers are case-insensitive upstream: ["SYNA","syna"] is one symbol, not one plus a
+     *  phantom "no data" entry. */
+    @Test void duplicatesThatDifferOnlyInCaseAreCountedOnce() {
+        Map<String, List<OhlcBar>> served = new LinkedHashMap<>();
+        served.put("SYNA", rising(300));
+        ObjectNode a = args("SYNA", "syna");
+        a.putArray("indicators").add("rsi");
+
+        var r = tool(served).call(a);
+
+        assertThat(r.output().get("requested").asInt()).isEqualTo(1);
+        assertThat(r.output().get("returned").asInt()).isEqualTo(1);
+        assertThat(r.output().get("results")).hasSize(1);
+    }
+
     @Test void indicatorArgumentValidationMatchesTheSingleTool() {
         ObjectNode a = args("SYNA").put("series", -1);
         assertThat(tool(Map.of()).call(a).error()).isEqualTo("series must be 0..250");

@@ -16,8 +16,9 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -146,22 +147,25 @@ public class GetIndicatorsBatchTool implements AgoraTool {
     }
 
     /** Accepts symbols as an array or, like get_quote, as a comma-separated string. Blanks and
-     *  duplicates are dropped so 'requested' counts what was really asked for. */
+     *  duplicates are dropped so 'requested' counts what was really asked for. Dedup is
+     *  case-insensitive, first spelling wins: tickers are case-insensitive upstream, so
+     *  ["aapl","AAPL"] is one symbol — deduping case-sensitively would send both and report one
+     *  of them back as "no data". */
     private static List<String> symbolsOf(JsonNode args) {
-        LinkedHashSet<String> out = new LinkedHashSet<>();
+        Map<String, String> byUpper = new LinkedHashMap<>();
         if (args != null && args.has("symbols")) {
             JsonNode node = args.get("symbols");
             if (node.isArray()) {
-                for (JsonNode n : node) addIfPresent(out, n.asString(""));
+                for (JsonNode n : node) addIfPresent(byUpper, n.asString(""));
             } else if (node.isString()) {
-                for (String part : node.asString("").split(",")) addIfPresent(out, part);
+                for (String part : node.asString("").split(",")) addIfPresent(byUpper, part);
             }
         }
-        return new ArrayList<>(out);
+        return new ArrayList<>(byUpper.values());
     }
 
-    private static void addIfPresent(LinkedHashSet<String> out, String raw) {
+    private static void addIfPresent(Map<String, String> byUpper, String raw) {
         String s = raw == null ? "" : raw.trim();
-        if (!s.isEmpty()) out.add(s);
+        if (!s.isEmpty()) byUpper.putIfAbsent(s.toUpperCase(Locale.ROOT), s);
     }
 }

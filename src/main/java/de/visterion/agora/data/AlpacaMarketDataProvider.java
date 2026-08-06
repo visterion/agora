@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -233,10 +234,17 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
      * back, plus a {@code next_page_token}. A version without this loop returns a response that
      * looks fine and silently omits most of the universe.
      *
-     * <p>A chunk whose page N fails (HTTP error, 429, timeout) keeps the bars read from pages
-     * 1..N-1 — they are already in the accumulator and are returned. The rest of that chunk's
-     * symbols simply count as not delivered; the remaining chunks are still fetched. Throwing
-     * the whole chunk away would turn one 429 into ~100 blind symbols.
+     * <p><strong>An unfinished page walk delivers nothing for that chunk.</strong> If page N fails
+     * (HTTP error, 429, timeout, empty body) or the page cap is reached, every symbol read from
+     * that chunk's earlier pages is discarded and the chunk's symbols are reported as not
+     * delivered. That is deliberately harsher than "keep what was read": because {@code limit} is
+     * a global bar budget, the page break falls <em>inside</em> one symbol's series, and a half
+     * series is indistinguishable downstream from a genuinely short history — it reads as a young
+     * listing and is filtered out quietly, instead of as a degradation the operator can see. Only
+     * the symbol at the page boundary is actually suspect, but Alpaca's response carries no
+     * per-symbol completeness marker, so the boundary symbol cannot be identified from the
+     * response shape; dropping the chunk is the only version that is right without an
+     * unverifiable assumption about fill order. Chunks that finished are unaffected.
      */
     @Override
     public Map<String, List<OhlcBar>> ohlcBatch(List<String> symbols, int days) {
@@ -250,7 +258,16 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
 
         String start = startDate(days);
         for (int i = 0; i < wanted.size(); i += batchSymbols) {
-            fetchChunk(wanted.subList(i, Math.min(i + batchSymbols, wanted.size())), start, acc);
+            List<String> chunk = wanted.subList(i, Math.min(i + batchSymbols, wanted.size()));
+            Map<String, List<OhlcBar>> chunkBars = new LinkedHashMap<>();
+            if (fetchChunk(chunk, start, chunkBars)) {
+                acc.putAll(chunkBars);                  // chunks are disjoint: no key collisions
+            } else if (!chunkBars.isEmpty()) {
+                log.warn("alpaca batch bars: discarding {} partially read symbol(s) of an unfinished "
+                        + "{}-symbol chunk — a page break can cut a symbol's series in half, and a half "
+                        + "series reads as a short history downstream; they count as not delivered",
+                        chunkBars.size(), chunk.size());
+            }
         }
 
         Map<String, List<OhlcBar>> out = new LinkedHashMap<>();
@@ -260,10 +277,19 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
         return out;
     }
 
-    /** Fetches one chunk, following {@code next_page_token} into {@code acc}. Never throws:
-     *  a failed page ends the chunk and keeps whatever was already accumulated. */
-    private void fetchChunk(List<String> chunk, String start, Map<String, List<OhlcBar>> acc) {
+    /**
+     * Fetches one chunk, following {@code next_page_token} into {@code acc}. Never throws.
+     *
+     * @return {@code true} iff the walk reached the end of the chunk's pages. {@code false} means
+     *         the result in {@code acc} is an unfinished read and the caller must discard it —
+     *         see {@link #ohlcBatch}.
+     */
+    private boolean fetchChunk(List<String> chunk, String start, Map<String, List<OhlcBar>> acc) {
         String csv = String.join(",", chunk);
+        // Alpaca echoes symbols upper-cased regardless of how they were sent; map back to the
+        // caller's spelling so the result keys are exactly the strings that were requested.
+        Map<String, String> byUpper = new LinkedHashMap<>();
+        for (String s : chunk) byUpper.putIfAbsent(s.toUpperCase(Locale.ROOT), s);
         String pageToken = null;
         for (int page = 1; page <= batchMaxPages; page++) {
             String token = pageToken;
@@ -284,29 +310,36 @@ public class AlpacaMarketDataProvider implements MarketDataProvider {
                         .retrieve()
                         .body(JsonNode.class);
             } catch (RestClientResponseException e) {
-                log.warn("alpaca batch bars page {} of {} symbols returned HTTP {} — keeping {} symbols read so far",
-                        page, chunk.size(), e.getStatusCode(), acc.size());
-                return;
+                log.warn("alpaca batch bars page {} of {} symbols returned HTTP {} — chunk incomplete",
+                        page, chunk.size(), e.getStatusCode());
+                return false;
             } catch (Exception e) {
-                log.warn("alpaca batch bars page {} of {} symbols failed: {} — keeping {} symbols read so far",
-                        page, chunk.size(), ProviderErrors.categorize("alpaca", e), acc.size());
-                return;
+                log.warn("alpaca batch bars page {} of {} symbols failed: {} — chunk incomplete",
+                        page, chunk.size(), ProviderErrors.categorize("alpaca", e));
+                return false;
             }
-            if (root == null) return;
+            if (root == null) {
+                log.warn("alpaca batch bars page {} of {} symbols returned an empty body — chunk incomplete",
+                        page, chunk.size());
+                return false;
+            }
 
             // Multi-symbol shape: bars is an object {SYM: [bar,...]}, not the single path's array.
             JsonNode bars = root.path("bars");
             if (bars.isObject()) {
                 for (Map.Entry<String, JsonNode> e : bars.properties()) {
-                    appendBars(e.getValue(), acc.computeIfAbsent(e.getKey(), k -> new ArrayList<>()));
+                    String symbol = byUpper.getOrDefault(e.getKey().toUpperCase(Locale.ROOT), e.getKey());
+                    appendBars(e.getValue(), acc.computeIfAbsent(symbol, k -> new ArrayList<>()));
                 }
             }
             JsonNode next = root.path("next_page_token");
-            if (!next.isString() || next.asString("").isEmpty()) return;   // JSON null ends the walk
+            if (!next.isString() || next.asString("").isEmpty()) return true;  // JSON null ends the walk
             pageToken = next.asString("");
         }
-        log.warn("alpaca batch bars hit the {}-page cap for a {}-symbol chunk — result may be incomplete",
+        // Same situation as a failed page, not a success: the walk did not reach the end.
+        log.warn("alpaca batch bars hit the {}-page cap for a {}-symbol chunk — chunk incomplete",
                 batchMaxPages, chunk.size());
+        return false;
     }
 
     /** Cover weekends/holidays so we get ~{@code days} trading bars, then trim to the most recent. */
