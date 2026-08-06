@@ -1961,6 +1961,139 @@ class EdgarSearchServiceTest {
         wm.verify(1, getRequestedFor(urlPathEqualTo("/Archives/edgar/data/320193/000032019325000099/form4.xml")));
     }
 
+    // ---------------------------------------------------------------------------------------
+    // BUG-S1a fix round 2, finding 1 — a day-sized window must read the NEAR end of the pad.
+    //
+    // SEC gives a filer two business days ("Form 4 must be filed before the end of the second
+    // business day following the day on which the subject transaction has been executed",
+    // 17 CFR 240.16a-3(g)(1)), so a transaction dated D is mostly reported by filings filed D+1
+    // or D+2 — not on D. EFTS sorts file_date DESCENDING, so a single pad search over D+1..D+10
+    // hands back the D+10 filings first, whose transactions post-date the window and are all
+    // discarded. A day slice could therefore only ever see its same-day-filed minority.
+    // ---------------------------------------------------------------------------------------
+
+    /** A Form-4 XML whose single transaction is dated 2025-05-15, i.e. inside a D=15 day slice. */
+    private static final String ONE_TX_FORM4_ON_15TH = """
+            <ownershipDocument>
+              <issuer><issuerTradingSymbol>AAPL</issuerTradingSymbol></issuer>
+              <reportingOwner><reportingOwnerId><rptOwnerName>X</rptOwnerName></reportingOwnerId></reportingOwner>
+              <nonDerivativeTable><nonDerivativeTransaction>
+                <transactionDate><value>2025-05-15</value></transactionDate>
+                <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+                <transactionAmounts><transactionShares><value>1</value></transactionShares>
+                  <transactionPricePerShare><value>1</value></transactionPricePerShare></transactionAmounts>
+              </nonDerivativeTransaction></nonDerivativeTable>
+            </ownershipDocument>
+            """;
+
+    /** One filing hit whose accession encodes the day it was filed, so a fetch can be identified. */
+    private static String padHit(String accession, String filedDate) {
+        return """
+            {"_id":"%s:f.xml","_source":{"ciks":["1"],"display_names":["Filer"],
+             "file_date":"%s","file_type":"4"}}""".formatted(accession, filedDate);
+    }
+
+    /**
+     * A market-wide day slice must spend its leftover budget on the filings filed the day AFTER
+     * the window (where D's trades are reported), not on the far end of the pad.
+     *
+     * <p>Asserts WHICH accession was fetched, not how many: a count-based assertion passes on
+     * either ordering, which is exactly what let this through. Against the old single descending
+     * pad search the D+10 filing was fetched and the D+1 one was not.
+     */
+    @Test void aDaySlicePadReadsTheFilingsFiledTheNextDayNotTheFarEndOfThePad() {
+        // the day slice itself: one filing filed on D
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-15"))
+                .withQueryParam("enddt", equalTo("2025-05-15"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":1},\"hits\":["
+                        + padHit("0000000001-25-000000", "2025-05-15") + "]}}")));
+        // D+1: the filing that actually carries a trade dated D (the two-business-day norm)
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-16"))
+                .withQueryParam("enddt", equalTo("2025-05-16"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":1},\"hits\":["
+                        + padHit("0000000001-25-000001", "2025-05-16") + "]}}")));
+        // the OLD single descending pad search (D+1..D+10 in one go) hands back D+10 FIRST
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-16"))
+                .withQueryParam("enddt", equalTo("2025-05-25"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":2},\"hits\":["
+                        + padHit("0000000001-25-000010", "2025-05-25") + ","
+                        + padHit("0000000001-25-000001", "2025-05-16") + "]}}")));
+        wm.stubFor(get(urlMatching("/Archives/edgar/data/1/.*"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/xml").withBody(ONE_TX_FORM4_ON_15TH)));
+
+        // limit=2 makes the pad's collection target 2, i.e. the walk stops once D+1 has answered —
+        // the production shape, where a pad day's ~243 hits saturate the deadline's budget at once.
+        var s = new EdgarSearchService(wmClient(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+        s.form4Transactions(LocalDate.parse("2025-05-15"), LocalDate.parse("2025-05-15"), 2);
+
+        // The D+1 filing MUST have been fetched — it is where a trade dated D is reported.
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/Archives/edgar/data/1/000000000125000001/f.xml")));
+        // The far end of the pad must NOT have been fetched: it cannot carry an in-window trade.
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/Archives/edgar/data/1/000000000125000010/f.xml")));
+    }
+
+    /** The pad walk is ASCENDING and stops as soon as it holds what the deadline could fetch — for
+     *  a day slice that is a single extra EFTS request, not one per pad day. */
+    @Test void theNarrowWindowPadWalkIsAscendingAndStopsEarly() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-15"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":1},\"hits\":["
+                        + padHit("0000000001-25-000000", "2025-05-15") + "]}}")));
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-16"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":1},\"hits\":["
+                        + padHit("0000000001-25-000001", "2025-05-16") + "]}}")));
+        wm.stubFor(get(urlMatching("/Archives/edgar/data/1/.*"))
+                .willReturn(aResponse().withHeader("Content-Type", "application/xml").withBody(ONE_TX_FORM4_ON_15TH)));
+
+        var s = new EdgarSearchService(wmClient(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+        s.form4Transactions(LocalDate.parse("2025-05-15"), LocalDate.parse("2025-05-15"), 2);
+
+        // the pad is asked for day by day, nearest first — never as one D+1..D+10 range
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-16")).withQueryParam("enddt", equalTo("2025-05-16")));
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-16")).withQueryParam("enddt", equalTo("2025-05-25")));
+        // and it STOPS at D+1: D+2 is never asked for, because the budget is already accounted for
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-17")));
+    }
+
+    /**
+     * The wide-window path must not regress: it is backed by the live replay of 2026-08-04
+     * (caller window 2026-07-20..2026-07-27, 8 days) and still issues ONE descending pad search
+     * over the whole D+1..D+10 range.
+     */
+    @Test void aWideWindowKeepsTheSingleDescendingPadSearch() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":0},\"hits\":[]}}")));
+        svc().form4Transactions(LocalDate.parse("2025-05-01"), LocalDate.parse("2025-05-31"), 100);
+
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-06-01")).withQueryParam("enddt", equalTo("2025-06-10")));
+        // exactly two searches total, as before: the window and the one pad range
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/LATEST/search-index")));
+    }
+
+    /** The threshold itself: 4 calendar days is still narrow, 5 is already wide. */
+    @Test void theNarrowWindowThresholdIsFourCalendarDays() {
+        wm.stubFor(get(urlPathEqualTo("/LATEST/search-index"))
+                .willReturn(okJson("{\"hits\":{\"total\":{\"value\":0},\"hits\":[]}}")));
+        // 2025-05-12..2025-05-15 inclusive = 4 days -> narrow -> per-day pad search
+        svc().form4Transactions(LocalDate.parse("2025-05-12"), LocalDate.parse("2025-05-15"), 100);
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-16")).withQueryParam("enddt", equalTo("2025-05-16")));
+
+        wm.resetRequests();
+        // 2025-05-11..2025-05-15 inclusive = 5 days -> wide -> one ranged pad search
+        svc().form4Transactions(LocalDate.parse("2025-05-11"), LocalDate.parse("2025-05-15"), 100);
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/LATEST/search-index"))
+                .withQueryParam("startdt", equalTo("2025-05-16")).withQueryParam("enddt", equalTo("2025-05-25")));
+    }
+
     /** Fake millisecond clock, advanced explicitly — never by wall time. Single-threaded by use. */
     private static final class FakeClock implements java.util.function.LongSupplier {
         private long t;

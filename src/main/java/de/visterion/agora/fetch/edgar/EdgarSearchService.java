@@ -691,6 +691,65 @@ public class EdgarSearchService {
      */
     private static final List<String> FORM4_ROOT_FORM = List.of("4");
 
+    /**
+     * A caller window this wide or narrower (in calendar days, inclusive) has its late-filing pad
+     * walked OLDEST-first; a wider one keeps the single descending pad search.
+     *
+     * <p><b>Why the order cannot be fixed.</b> SEC gives a filer two business days: "Form 4 must be
+     * filed before the end of the second business day following the day on which the subject
+     * transaction has been executed" (17 CFR 240.16a-3(g)(1), read from eCFR 2026-08-06; the same
+     * rule's (g)(2)-(g)(4) can defer the deemed execution date by up to three further business
+     * days, which is what the {@value #FORM4_LATE_FILING_PAD_DAYS}-day pad width covers). So a
+     * transaction dated D is reported by filings filed D, D+1 or D+2 — mostly NOT on D.
+     *
+     * <p>For a WIDE window, that lag is a rounding error: nearly every day in [from,to] has its
+     * filings inside [from,to] too, so the window search holds the bulk of the answer and must be
+     * read first. That is measured — see the replay in {@link #fetchForm4}.
+     *
+     * <p>For a NARROW window it inverts. At from=to=D the window search returns only the filings
+     * filed ON D — the same-day-filed minority — and at ~243 filings for a market-wide day it eats
+     * almost the whole {@link #MAX_FILINGS_PER_DEADLINE} budget. The sliver left over then goes to
+     * the pad, and because EFTS sorts file_date DESCENDING that sliver is spent on filings filed
+     * D+{@value #FORM4_LATE_FILING_PAD_DAYS}, whose transactions post-date the window and are ALL
+     * discarded by the transaction-date filter in {@link #parseForm4}. The filings that actually
+     * carry D's trades — those filed D+1 and D+2 — sit at the far end of that descending list and
+     * are never reached. A day slice could therefore only ever return the same-day-filed subset of
+     * its day, and no number of slices recovered the rest.
+     *
+     * <p><b>Why this was not caught earlier:</b> the live replay that established window-first
+     * ordering used an EIGHT-day window, where filings filed in-window mostly report in-window
+     * trades. That result does not generalise to a one-day window, and the one-day configuration
+     * was never measured before it shipped. A width-dependent rule is the smallest change that
+     * keeps the measured wide-window behaviour and fixes the narrow one.
+     *
+     * <p><b>Why 4.</b> The threshold is the widest calendar span the two-business-day deadline can
+     * occupy: a Thursday or Friday trade reports on the following Monday or Tuesday, i.e. D+4
+     * calendar days (a holiday can stretch it further, which only makes a window at the threshold
+     * more pad-dominated, never less). A window at or below that width has essentially no day whose
+     * filings are guaranteed to fall inside it. It also sits comfortably below the 8-day replay
+     * window, so that measured case keeps its measured behaviour.
+     */
+    private static final long FORM4_NARROW_WINDOW_MAX_DAYS = 4;
+
+    /**
+     * How many filings one call's aggregate deadline can fetch, at one request per
+     * {@link #THROTTLE_MS}: {@value #FORM4_DEADLINE_MS}/110 = 272.
+     *
+     * <p>DERIVED, not measured — it assumes every archive GET returns inside the spacing window.
+     * Used only to stop the narrow-window pad walk once collecting more hits could not lead to
+     * more fetches, so an over-estimate costs at most one extra EFTS request and never drops a
+     * filing.
+     */
+    private static final long MAX_FILINGS_PER_DEADLINE = FORM4_DEADLINE_MS / THROTTLE_MS;
+
+    /** True when [from,to] spans at most {@value #FORM4_NARROW_WINDOW_MAX_DAYS} calendar days, i.e.
+     *  when the late-filing pad rather than the window itself holds most of the answer. An open
+     *  {@code from} is unbounded and therefore never narrow. */
+    private static boolean isNarrowWindow(LocalDate from, LocalDate to) {
+        if (from == null || to == null) return false;
+        return java.time.temporal.ChronoUnit.DAYS.between(from, to) + 1 <= FORM4_NARROW_WINDOW_MAX_DAYS;
+    }
+
     private Form4Result fetchForm4(String cik, LocalDate from, LocalDate to, int limit) {
         // Two searches over DISJOINT filing-date ranges, in strict priority order.
         //
@@ -717,11 +776,31 @@ public class EdgarSearchService {
         // 2) only then the late-filing pad: trades inside the window, filed after it closed. Its
         // share of the limit is what the window search left over, so the two searches together
         // still honour exactly one `limit` and one HARD_FETCH_CAP-bounded pass each.
+        //
+        // The pad is walked in one of two ORDERS, decided by the window's width — see
+        // FORM4_NARROW_WINDOW_MAX_DAYS for why a fixed order cannot be right for both.
         if (to != null && hits.size() < limit) {
-            SearchResult late = searchResult(FORM4_ROOT_FORM, null, cik,
-                    to.plusDays(1), to.plusDays(FORM4_LATE_FILING_PAD_DAYS), limit - hits.size());
-            capped |= late.capped();
-            addNew(hits, seen, late.hits(), limit);
+            if (isNarrowWindow(from, to)) {
+                // Narrow window: walk the pad OLDEST-first, one day per search. EFTS sorts
+                // file_date DESCENDING and offers no usable sort parameter, so the only way to
+                // reach the near end of the pad first is to ask for it as its own day. The walk
+                // stops as soon as enough hits are in hand to saturate what the deadline can
+                // actually fetch, so the common case costs exactly ONE extra EFTS request.
+                long padTarget = Math.min(limit, MAX_FILINGS_PER_DEADLINE);
+                for (long d = 1; d <= FORM4_LATE_FILING_PAD_DAYS && hits.size() < limit; d++) {
+                    LocalDate day = to.plusDays(d);
+                    SearchResult late = searchResult(FORM4_ROOT_FORM, null, cik, day, day,
+                            limit - hits.size());
+                    capped |= late.capped();
+                    addNew(hits, seen, late.hits(), limit);
+                    if (hits.size() >= padTarget) break;
+                }
+            } else {
+                SearchResult late = searchResult(FORM4_ROOT_FORM, null, cik,
+                        to.plusDays(1), to.plusDays(FORM4_LATE_FILING_PAD_DAYS), limit - hits.size());
+                capped |= late.capped();
+                addNew(hits, seen, late.hits(), limit);
+            }
         }
 
         List<Form4Transaction> out = new ArrayList<>();
