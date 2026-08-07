@@ -325,15 +325,32 @@ SEC's per-second budget. **Combined worst case with both in place: at most one s
 start per 110 ms across the whole process — 9.09 req/s, every EDGAR client included — with at most
 8 filing bodies resident.**
 
-**Known cost — contention.** The pacer is `synchronized` and sleeps inside the monitor, and the
-monitor is not fair. A market-wide `get_form4_transactions` sweep holds it in back-to-back 110 ms
-slices for up to its full 30 s deadline, so a `get_filing_text` or `get_filings` call issued
-concurrently can be delayed past a 25 s consumer timeout and, pathologically, starved for the
-sweep's duration. That is the price of a genuinely shared 10 req/s: a concurrent caller has to
-wait somewhere, and waiting here is better than a 403 IP block that costs every consumer for
-hours. If it starts to bite, the fix is a fair queue with a bounded wait that fails with a "busy"
-error (the shape `filing_fetch_busy` already uses), not a second limiter. A busy process also
-fetches fewer than the derived 272 filings per Form-4 call, since the 30 s deadline is wall-clock.
+**Contention cost — bounded, because the queue is fair.** The pacer serialises every EDGAR path,
+so a concurrent caller waits; that is the unavoidable price of a genuinely shared 10 req/s, and
+waiting is better than a 403 IP block that costs every consumer for hours. The question is *how
+long*. Earlier the pacer was `synchronized` and slept inside the monitor, and an intrinsic monitor
+is not fair: a market-wide `get_form4_transactions` sweep re-enters immediately after each 110 ms
+slice and could barge past a `get_filing_text` or `get_filings` caller that had been waiting since
+before it — repeatedly, so that caller could be delayed past a 25 s consumer timeout and,
+pathologically, starved for the sweep's whole 30 s deadline (measured in a harness: **8-15**
+overtakes of a single waiter per run).
+
+The pacer now uses a **fair lock** — the turn is granted in arrival order, so the sweep's re-entry
+queues *behind* whoever is already waiting and a waiter is overtaken **at most once** (1 overtake
+in 5 of 5 measured runs). A caller's wait is therefore bounded by the queue in front of it, not by
+the sweep: at most `(callers ahead + 1) × 110 ms`. Concurrency here is small and bounded elsewhere
+(`get_filing_text` admits at most 8 at a time, other paths one request per in-flight tool call),
+so a realistic ~10 waiters is **~1.1 s worst case**, and a wildly pessimistic 50 waiters ~5.5 s —
+both far under the 25 s consumer timeout. The 30 s sweep deadline no longer enters the arithmetic,
+because nobody queues behind more than one 110 ms slice of it.
+
+There is deliberately **no bounded wait and no "busy" error** on the pacer: a caller is never
+refused here, it waits its turn and gets a real answer. A refusal would bound a wait that is
+already ~1 s while inventing a failure every EDGAR caller would have to report honestly — and a
+degradation arriving at a consumer disguised as an empty result is this system's most persistent
+bug shape. (`filing_fetch_busy` remains what it was: the *memory* bound refusing a 9th concurrent
+filing body, an unrelated resource.) A busy process still fetches fewer than the derived 272
+filings per Form-4 call, since the 30 s deadline is wall-clock.
 
 ### EFTS answers 500 intermittently — the page fetch retries
 
