@@ -2199,6 +2199,21 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * rather than defaulting to BUY: a zero position that claims to be long is a guess, and
      * the consumer cannot tell the guess from a real long. Same reasoning as
      * {@link #perUnitPrice}, which returns null on a zero quantity instead of dividing.
+     *
+     * <p><b>How far this is verified against real data (BUG-S2, settled 2026-08-07).</b> The
+     * positive branch is measured: a live {@code netpositions} payload from the paper account
+     * returned five positions, every one with a positive {@code Amount} and a quantity matching
+     * the consumer's book exactly. When the finding was filed, all 49 sampled calls had returned
+     * {@code {"__count":0,"Data":[]}}, so neither branch had ever seen a real payload.
+     *
+     * <p>The negative branch stays unmeasured, and deliberately so: it is <b>unreachable on the
+     * account we have</b>. A Saxo cash account cannot hold a short equity position at all — only
+     * CFDs can — so no legitimate call against this connection can produce a negative
+     * {@code Amount}. Measuring it would mean acquiring a CFD account, which a 2026-07-20
+     * feasibility review decided against. The branch is therefore argued, not tested: it rests on
+     * the sign convention {@link #flatten} already depends on in production. Do not read the
+     * absence of a test as evidence that it works — if a CFD or margin connection is ever added,
+     * this is the first thing to measure.
      */
     static String sideFromAmount(BigDecimal amount) {
         if (amount == null || amount.signum() == 0) return null;
