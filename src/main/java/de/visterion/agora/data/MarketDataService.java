@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -268,26 +269,54 @@ public class MarketDataService {
      * @param inst         the resolved instrument; providers that declare themselves unable to
      *                     serve it ({@link MarketDataProvider#canServe(Instrument)} false) are
      *                     skipped entirely — a skip does not touch {@code allNotFound}.
+     *
+     * <h4>Why the chain trace is DEBUG and not WARN</h4>
+     * A silent fallback used to leave nothing behind: a typed {@link MarketDataException} from a
+     * provider was swallowed without a word, so "Alpaca failed, Yahoo answered" was invisible.
+     * The HTTP-visible half of that is in fact already recorded at INFO by
+     * {@link de.visterion.agora.observability.ProviderCallLogger} — one
+     * {@code provider_call provider=… status=…} line per outbound call, failures included. What
+     * it structurally cannot see is added here: a read/connect timeout throws inside
+     * {@code execution.execute} before its emit is reached, a keyless self-skip makes no HTTP call
+     * at all, and a 200 carrying an unusable payload logs as {@code status=200}. Nor does it know
+     * anything about the chain — which provider ultimately served.
+     *
+     * <p>DEBUG rather than WARN because a keyless provider self-skips with {@code UNAVAILABLE} on
+     * <em>every single call</em> (TwelveData/Finnhub without a key — see {@code ProviderFallbackTest}),
+     * so at WARN a normal, healthy deployment would emit several warnings per quote and a
+     * market-wide lazarus pass thousands. Same demotion, same reason as
+     * {@code NewsAggregatorCooldownLoggingTest} pins for the news chain. Turn it on per hunt with
+     * {@code logging.level.de.visterion.agora.data.MarketDataService=DEBUG}.
      */
     private <T> T firstSuccess(Function<MarketDataProvider, T> call, String what, boolean[] allNotFound,
                                  Instrument inst) {
         MarketDataException last = null;
+        List<String> failures = new ArrayList<>();
         for (MarketDataProvider p : providers) {
             if (!p.canServe(inst)) {
                 continue;
             }
             try {
-                return call.apply(p);
+                T result = call.apply(p);
+                if (!failures.isEmpty()) {
+                    log.debug("{} served by {} after {}", what, p.name(), failures);
+                }
+                return result;
             } catch (MarketDataException e) {
                 last = e;
                 if (e.kind() != MarketDataException.Kind.NOT_FOUND) {
                     allNotFound[0] = false;
                 }
+                failures.add(p.name() + "(" + e.kind() + ")");
+                log.debug("provider {} failed for {}: {} {}", p.name(), what, e.kind(), e.getMessage());
             } catch (RuntimeException e) {
+                // Stays WARN: an unexpected non-MarketDataException (NPE on a malformed response)
+                // is a bug signal, not the routine chain traffic the DEBUG lines above cover.
                 log.warn("provider {} failed for {}: {}", p.name(), what, e.toString());
                 last = new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
                         p.name() + " failed: " + e.getMessage(), e);
                 allNotFound[0] = false;
+                failures.add(p.name() + "(" + MarketDataException.Kind.UNAVAILABLE + ")");
             }
         }
         if (last != null) {

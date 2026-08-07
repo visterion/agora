@@ -52,7 +52,15 @@ public class GlobalMetricsService {
                     .min(BigDecimal::compareTo).ifPresent(v -> m.put("52WeekLow", v));
                 bars.stream().map(OhlcBar::close).filter(Objects::nonNull)
                     .max(BigDecimal::compareTo).ifPresent(v -> m.put("52WeekHigh", v));
-            } catch (MarketDataException ignore) { /* omit 52w metrics */ }
+            } catch (MarketDataException e) {
+                // NOT_FOUND is a statement about THIS instrument ("no bars exist here") — the very
+                // distinction ToolResult.noData draws at the tool boundary. Absent 52w keys with no
+                // marker already carry that meaning, so nothing is added.
+                // Everything else (UNAVAILABLE / RATE_LIMITED) is a statement about the SOURCE, and
+                // omitting the keys silently makes a provider outage read as "this company has no
+                // 52-week low". Mark that case instead.
+                if (e.kind() != MarketDataException.Kind.NOT_FOUND) markRangeUnavailable(m, e.getMessage());
+            }
         }
 
         String quoteCcy = null;
@@ -101,6 +109,29 @@ public class GlobalMetricsService {
             }
         }
         return new Fundamentals(inst.displaySymbol(), m);
+    }
+
+    /**
+     * The metrics-payload marker for "we asked for the 52-week window and the SOURCE failed", as
+     * opposed to "this instrument genuinely has no such value". Without it both cases look
+     * identical to a consumer: {@code 52WeekLow} simply absent.
+     *
+     * <p>Shape follows the {@code ToolResult.noData} convention (payload-level {@code available}
+     * false plus an {@code error} reason), but scoped to the affected metric group rather than the
+     * whole result: the other fundamentals in this payload are fine, so degrading the entire tool
+     * result would throw away good data. Hence a nested sibling object:
+     *
+     * <pre>"52WeekRange": { "available": false, "error": "&lt;provider reason&gt;" }</pre>
+     *
+     * <p>Purely additive — {@code 52WeekLow} / {@code 52WeekHigh} keep their meaning and existing
+     * consumers that only read those two keys are unaffected. A consumer that wants to tell the
+     * two cases apart reads {@code 52WeekRange.available}: present-and-false means the source
+     * failed, absent means the value is genuinely not there.
+     */
+    private static void markRangeUnavailable(ObjectNode m, String reason) {
+        ObjectNode range = m.putObject("52WeekRange");
+        range.put("available", false);
+        range.put("error", reason == null ? "52-week range source unavailable" : reason);
     }
 
     /** {current, prior} values for the two most recent distinct periodEnds (desc). Empty if fewer than 2. */

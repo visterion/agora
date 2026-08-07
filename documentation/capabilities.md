@@ -71,6 +71,53 @@ Neither negative cache is affected: `MarketDataService`'s `ohlcNotFoundCache` /
 `quoteNotFoundCache` and `IntradayService`'s "never cache an empty result as success" both live
 *below* the tool boundary and still see the exception unchanged.
 
+### The third case: a degraded metric *group* inside a healthy payload
+
+The two flags above are whole-result verdicts. `get_fundamentals` has a case neither covers: the
+fundamentals are fine but the 52-week window — fetched separately via `MarketDataService.ohlc` —
+failed. Degrading the whole result would throw away good data; omitting the two keys silently
+makes a provider outage read as "this company has no 52-week low", which is the same conflation
+`NOT_FOUND` vs `UNAVAILABLE` exists to prevent.
+
+So the payload-level convention is applied **scoped to the affected group**, as a nested sibling:
+
+```json
+{
+  "symbol": "SYNA",
+  "metrics": {
+    "roaTTM": 10.0,
+    "52WeekRange": { "available": false, "error": "alpaca failed: read timeout" }
+  }
+}
+```
+
+Read it exactly like the payload flag: `52WeekRange.available === false` means **the source
+failed**, and the absence of `52WeekRange` altogether means the value is **genuinely not there**
+(empty series, or an instrument-scoped `NOT_FOUND` from the bar fetch — a statement about the
+item, so no degradation marker). `52WeekLow` / `52WeekHigh` are unchanged and still absent in
+both cases; the marker is purely additive, so a consumer reading only those two keys is
+unaffected — but a consumer that counts missing lows as a data fact should read the marker to
+avoid counting an outage as one.
+
+### Provider-chain failures are traced, at DEBUG
+
+`MarketDataService.firstSuccess` walks the provider chain and returns the first success. A
+provider that fails on the way to a successful fallback logs one line per failure plus one
+`served by <provider> after [...]` line naming the chain outcome — both at **DEBUG** on
+`de.visterion.agora.data.MarketDataService`. The happy path (first provider serves) logs nothing.
+
+DEBUG, not WARN, because a provider with no API key self-skips with `UNAVAILABLE` on *every*
+call, so a warning would fire several times per quote in a perfectly healthy deployment and
+thousands of times in a market-wide screening pass. Enable it for a diagnosis with
+`logging.level.de.visterion.agora.data.MarketDataService=DEBUG`.
+
+This does not replace `ProviderCallLogger`, which already records every outbound HTTP call at
+INFO (`provider_call provider=… status=… symbol=…`), failures included. The chain lines add what
+that interceptor structurally cannot see: read/connect timeouts (which throw before it logs),
+self-skips (no HTTP call at all), a `200` carrying an unusable payload, and the chain decision
+itself. Unexpected non-`MarketDataException` runtime errors keep their own WARN — they signal a
+bug, not routine chain traffic.
+
 ---
 
 ## Market data
