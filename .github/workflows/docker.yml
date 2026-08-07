@@ -3,6 +3,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual trigger. Added 2026-08-06 after GitHub stopped creating run records for pushes to
+  # main: two consecutive pushes produced no run at all while both workflows reported `active`,
+  # and without this trigger there was no way to build an image. Dracul's equivalent workflow
+  # has carried it from the start.
+  workflow_dispatch:
 
 jobs:
   build:
