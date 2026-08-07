@@ -1130,6 +1130,14 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * accepted result's status carries a visible warning so the caller knows the legs were
      * not verified/canceled and may need manual cleanup.
      *
+     * <p><b>BUG-S10 — an OCO pair is refused, not restored:</b> before the first cancel, a
+     * partial close whose protective legs are OCO-bound (or simply a stop plus an
+     * opposite-side limit) is rejected with {@code LEG_RESTORE_UNSUPPORTED_OCO} and the broker
+     * is left completely untouched — {@link #placeLeg} can only produce independent orders, so
+     * a "restored" pair would be two orders over the same shares, i.e. H6 itself. See {@link
+     * #legRestoreUnsupportedOco} for the full reasoning and for why this is NOT one of the
+     * {@code LEG_RESTORE_FAILED*} codes.
+     *
      * <p><b>S7a — partial close restores the legs:</b> when {@code remainingQty > 0}, the
      * cancelled protective legs are not simply dropped — they are re-placed sized to the
      * remainder ({@link LegAllocation#allocate}) BEFORE the closing Market order goes out, so a
@@ -1238,6 +1246,15 @@ public class SaxoBrokerProvider implements BrokerProvider {
         // unrelated (e.g. a resting add-to-position limit, or a stop-entry for a new position
         // on the same instrument) and must be left alone.
         BigDecimal remainingQty = available.subtract(closeQty);
+
+        // BUG-S10 / H6: refuse a partial close whose protective set is an OCO pair, BEFORE
+        // cancelling anything. See legRestoreUnsupportedOco below for why this cannot be
+        // restored faithfully and why refusing is the only safe answer.
+        if (remainingQty.signum() > 0) {
+            OrderResult ocoRefusal = legRestoreUnsupportedOco(symbol, related.orders(), opposite);
+            if (ocoRefusal != null) return ocoRefusal;
+        }
+
         List<ProtectiveLeg> cancelled = new ArrayList<>();
         // T5 rollback finding: a leg whose CANCEL call itself failed is left LIVE at the broker
         // under its original id — that id never entered `cancelled` (only successfully cancelled
@@ -1247,10 +1264,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
         List<RestoredLeg> uncancelledLive = new ArrayList<>();
         boolean cancelIncomplete = false;
         for (JsonNode n : related.orders()) {
-            String type = n.path("OpenOrderType").asString("");
-            boolean protectiveType = type.contains("Stop") || "Limit".equalsIgnoreCase(type);
-            boolean oppositeSide = opposite.equalsIgnoreCase(n.path("BuySell").asString(""));
-            if (!protectiveType || !oppositeSide) continue;
+            if (!isProtectiveOppositeSideLeg(n, opposite)) continue;
             String legOrderId = n.path("OrderId").asString(null);
             if (legOrderId == null) continue;
 
@@ -1747,6 +1761,99 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * one code rather than switching on a case that cannot occur.
      */
     private static final String LEG_RESTORE_FAILURE_CODE = "LEG_RESTORE_FAILED_UNPROTECTED";
+
+    /**
+     * The one leg set a partial close must NOT touch: an OCO pair. Sibling of the
+     * {@code LEG_RESTORE_*} codes above, deliberately NOT one of them — those three all mean
+     * "broker state already changed and may be short of protection", and their remediation is
+     * to reconcile a possibly-naked position. This one means the exact opposite: nothing was
+     * cancelled, nothing was placed, the position still carries every order it had. Folding it
+     * into {@code LEG_RESTORE_FAILED_UNPROTECTED} would send a caller hunting for missing
+     * protection that is fully intact — on the money path that mis-signal is its own hazard.
+     */
+    private static final String LEG_RESTORE_UNSUPPORTED_OCO_CODE = "LEG_RESTORE_UNSUPPORTED_OCO";
+
+    /** The single eligibility rule for H6's cancel set — shared so the pre-scan cannot drift from it. */
+    private static boolean isProtectiveOppositeSideLeg(JsonNode n, String opposite) {
+        String type = n.path("OpenOrderType").asString("");
+        boolean protectiveType = type.contains("Stop") || "Limit".equalsIgnoreCase(type);
+        return protectiveType && opposite.equalsIgnoreCase(n.path("BuySell").asString(""));
+    }
+
+    /**
+     * BUG-S10 — refuses a partial close whose protective legs are OCO-bound, or {@code null}
+     * when the set is safe to cancel-and-restore. Called BEFORE the first cancel, so a refusal
+     * leaves the broker byte-for-byte untouched.
+     *
+     * <p><b>Why refuse instead of restoring faithfully.</b> {@link #submitBracket} is the only
+     * place in this provider that ever creates an OCO relationship, and it does not create one
+     * directly: it POSTs an ENTRY order to {@code /trade/v2/orders} with the two protective legs
+     * as its {@code Orders[]} children, which Saxo materialises as an {@code IfDoneMaster}
+     * parent whose children are OCO-bound to each other (documented at {@link #ordersOpen} and
+     * in exit-tools.md, SIM-verified). The binding is a property of that parent. Every other
+     * POST this provider makes — {@link #placeLeg}, the standalone stop, the flatten close — is
+     * a single flat order body, and the codebase has established no Saxo POST shape that binds
+     * two already-detached orders into an OCO pair. Nor could the bracket shape be reused here:
+     * its top-level fields ARE the entry order, so replaying it during a flatten would open more
+     * position — categorically wrong when the whole point is to reduce one. So {@link #placeLeg}
+     * can only ever produce two INDEPENDENT orders over the same shares. Whichever filled would
+     * leave the other working against a book that no longer covers it: H6's unintended reverse
+     * position, arriving through the very code that exists to prevent it. Refusing is therefore
+     * not a limitation we settled for, it is the correct behaviour — and it is loud (a
+     * {@code log.warn} naming every leg, plus an explicit reject) rather than a silent skip.
+     *
+     * <p><b>Why this also settles "restore the stop, drop the take-profit".</b> That variant is
+     * never reached: the refusal covers the whole leg set. It would have been a silent
+     * rewrite of the position's exit plan — the target the caller chose simply gone, discovered
+     * only on the next {@code get_orders}. A rejected flatten the caller must answer is strictly
+     * better than an accepted one that quietly changed the plan.
+     *
+     * <p><b>Two independent signals, either sufficient.</b> (1) Saxo marks a detached pair
+     * explicitly: {@code OrderRelation:"Oco"}, and each leg lists its sibling in
+     * {@code RelatedOpenOrders} (mutual listing, live-verified — it is what
+     * {@link #mergeDuplicateIds} exists to collapse). (2) Shape alone: a stop AND an
+     * opposite-side limit resting on the same Uic is the bracket-pair signature, and nothing in
+     * the payload distinguishes an unmarked pair from a coincidence — so the pair shape is
+     * refused too. A LONE opposite-side limit with no stop beside it is left restorable: it
+     * never had a binding to lose, and that is the limit-leg restore exit-tools.md documents.
+     *
+     * <p><b>Invariants held.</b> No intermediate state exists at all (the broker is untouched),
+     * so opposite-side interest never exceeds the holding and protection never drops to zero —
+     * this is the strongest point in the method at which to fail. Monotonicity is untouched: no
+     * leg is placed.
+     */
+    private OrderResult legRestoreUnsupportedOco(String symbol, List<JsonNode> orders, String opposite) {
+        List<JsonNode> eligible = orders.stream()
+                .filter(n -> isProtectiveOppositeSideLeg(n, opposite))
+                .filter(n -> n.path("OrderId").asString(null) != null)
+                .toList();
+
+        boolean markedOco = eligible.stream().anyMatch(n ->
+                n.path("OrderRelation").asString("").toLowerCase(java.util.Locale.ROOT).startsWith("oco")
+                        || (n.path("RelatedOpenOrders").isArray() && !n.path("RelatedOpenOrders").isEmpty()));
+        boolean hasStop = eligible.stream().anyMatch(n -> n.path("OpenOrderType").asString("").contains("Stop"));
+        boolean hasLimit = eligible.stream().anyMatch(n -> "Limit".equalsIgnoreCase(n.path("OpenOrderType").asString("")));
+        if (!markedOco && !(hasStop && hasLimit)) return null;
+
+        List<RestoredLeg> live = eligible.stream().map(n -> {
+            String id = n.path("OrderId").asString(null);
+            // Report the parsed qty/price when readable, null when not — the same honesty rule
+            // `uncancelledLive` follows. replaces == orderId: nothing was re-placed, so the
+            // caller's book already points at the right ids and needs no repointing.
+            return ProtectiveLeg.from(n)
+                    .map(l -> new RestoredLeg(id, id, l.amount(), l.price()))
+                    .orElseGet(() -> new RestoredLeg(id, id, null, null));
+        }).toList();
+
+        String ids = live.stream().map(RestoredLeg::orderId).collect(java.util.stream.Collectors.joining(", "));
+        String reason = "partial close refused: the protective legs on this position are an OCO pair ("
+                + ids + ") and Saxo offers no way to re-create that binding for the remainder — "
+                + "restoring them would leave two independent orders over the same shares. "
+                + "Nothing was cancelled and no close was placed. Close the position in full, or "
+                + "cancel the take-profit and use place_protective_stop for the remainder.";
+        log.warn("saxo flatten {}: {}", symbol, reason);
+        return OrderResult.rejectedWithLegs(reason, LEG_RESTORE_UNSUPPORTED_OCO_CODE, live, false);
+    }
 
     /** Places the sized legs in order; stops at the first placement failure so the caller can roll back. */
     private List<RestoredLeg> placeSizedLegs(AccountContext ctx, SaxoInstrumentResolver.ResolvedInstrument ri,

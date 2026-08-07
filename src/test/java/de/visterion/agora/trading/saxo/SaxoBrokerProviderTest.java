@@ -1751,6 +1751,143 @@ class SaxoBrokerProviderTest {
         assertThat(restore.path("OrderPrice").decimalValue()).isNotEqualByComparingTo("0");
     }
 
+    /**
+     * BUG-S10. All ids/prices below are invented; SYNTH is not a real instrument.
+     *
+     * <p>The two legs are the post-fill OCO pair shape Saxo actually serves: each leg is its
+     * own top-level order AND carries its sibling in {@code RelatedOpenOrders}, with
+     * {@code OrderRelation:"Oco"}. Restoring them as two bare POSTs would unbind the pair —
+     * whichever filled would leave the other standing against an empty book (H6). There is no
+     * POST shape that re-creates the binding, so flatten must refuse before touching anything.
+     */
+    @Test
+    void partialFlattenWithAnOcoBoundTakeProfitRefusesWithoutTouchingTheBroker() {
+        stubSynthInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"SYNTH:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"2000000001","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":46.0,"Price":45.00,"AssetType":"Stock","OrderRelation":"Oco",
+               "Duration":{"DurationType":"GoodTillCancel"},
+               "RelatedOpenOrders":[{"OrderId":"2000000002","OpenOrderType":"Limit",
+                 "BuySell":"Sell","Amount":46.0,"OrderPrice":60.00,"AssetType":"Stock"}]},
+              {"OrderId":"2000000002","Uic":211,"OpenOrderType":"Limit","BuySell":"Sell",
+               "Amount":46.0,"Price":60.00,"AssetType":"Stock","OrderRelation":"Oco",
+               "Duration":{"DurationType":"GoodTillCancel"},
+               "RelatedOpenOrders":[{"OrderId":"2000000001","OpenOrderType":"StopIfTraded",
+                 "BuySell":"Sell","Amount":46.0,"OrderPrice":45.00,"AssetType":"Stock"}]}]}
+            """)));
+        // Deliberately stubbed so a cancel or a restore WOULD succeed if attempted — the
+        // assertions below prove flatten never attempted either.
+        wm.stubFor(delete(urlPathMatching("/trade/v2/orders/.*")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"2000000009\"}")));
+
+        var r = provider.flatten("SYNTH", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_UNSUPPORTED_OCO");
+        assertThat(r.rejectReason())
+                .contains("OCO")
+                .contains("2000000001")
+                .contains("2000000002")
+                .contains("place_protective_stop");
+
+        // Nothing was cancelled and nothing was placed: the position keeps the exact
+        // protection it had, and no second order over the same shares was created.
+        wm.verify(0, deleteRequestedFor(urlPathMatching("/trade/v2/orders/.*")));
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+
+        // The caller learns which orders are still live, under their ORIGINAL ids
+        // (replaces == orderId — nothing was re-placed), so the book needs no repointing.
+        assertThat(r.protectiveLegs()).extracting("replaces", "orderId", "qty", "price")
+                .containsExactlyInAnyOrder(
+                        tuple("2000000001", "2000000001",
+                                new java.math.BigDecimal("46.0"), new java.math.BigDecimal("45.0")),
+                        tuple("2000000002", "2000000002",
+                                new java.math.BigDecimal("46.0"), new java.math.BigDecimal("60.0")));
+        assertThat(r.legsCollapsed()).isFalse();
+    }
+
+    /**
+     * BUG-S10 guard: an OCO pair whose legs carry neither {@code OrderRelation:"Oco"} nor a
+     * mutual {@code RelatedOpenOrders} listing must still be refused — the stop + opposite-side
+     * limit shape alone is enough, see {@code flatten}'s ocoBound/pair reasoning.
+     */
+    @Test
+    void partialFlattenWithAnUnmarkedStopPlusLimitPairIsAlsoRefused() {
+        stubSynthInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"SYNTH:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"2000000011","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":46.0,"Price":45.00,"AssetType":"Stock",
+               "Duration":{"DurationType":"GoodTillCancel"}},
+              {"OrderId":"2000000012","Uic":211,"OpenOrderType":"Limit","BuySell":"Sell",
+               "Amount":46.0,"Price":60.00,"AssetType":"Stock",
+               "Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathMatching("/trade/v2/orders/.*")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"2000000019\"}")));
+
+        var r = provider.flatten("SYNTH", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_UNSUPPORTED_OCO");
+        wm.verify(0, deleteRequestedFor(urlPathMatching("/trade/v2/orders/.*")));
+        wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        assertThat(r.protectiveLegs()).extracting("replaces")
+                .containsExactlyInAnyOrder("2000000011", "2000000012");
+    }
+
+    /**
+     * BUG-S10 counter-case: a lone opposite-side limit with no stop beside it never had an OCO
+     * binding to lose, so it is still restored (shrunk) exactly as before — the refusal must
+     * not swallow the documented limit-leg restore.
+     */
+    @Test
+    void partialFlattenWithAStandaloneLimitLegStillRestoresIt() {
+        stubSynthInstrument();
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
+            {"Data":[{"NetPositionBase":{"Amount":10.0,"Uic":211,"AssetType":"Stock"},
+                      "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
+                      "DisplayAndFormat":{"Symbol":"SYNTH:xnas"}}]}
+            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
+            {"Data":[
+              {"OrderId":"2000000021","Uic":211,"OpenOrderType":"Limit","BuySell":"Sell",
+               "Amount":10.0,"Price":60.00,"AssetType":"Stock","OrderRelation":"StandAlone",
+               "Duration":{"DurationType":"GoodTillCancel"}}]}
+            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/2000000021")).willReturn(aResponse().withStatus(200)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("standalone-limit")
+                .whenScenarioStateIs(Scenario.STARTED)
+                .willReturn(okJson("{\"OrderId\":\"2000000022\"}"))
+                .willSetStateTo("restored"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("standalone-limit")
+                .whenScenarioStateIs("restored")
+                .willReturn(okJson("{\"OrderId\":\"2000000029\"}")));
+
+        var r = provider.flatten("SYNTH", new java.math.BigDecimal("0.5"), null);
+
+        assertThat(r.accepted()).isTrue();
+        assertThat(r.protectiveLegs()).extracting("replaces", "orderId")
+                .containsExactly(tuple("2000000021", "2000000022"));
+    }
+
+    private void stubSynthInstrument() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("""
+            {"Data":[{"Identifier":211,"AssetType":"Stock","Symbol":"SYNTH:xnas"}]}
+            """)));
+    }
+
     @Test
     void fullFlattenRestoresNothingAndKeepsTodaysBehaviour() {
         stubInstrument();
@@ -2188,48 +2325,43 @@ class SaxoBrokerProviderTest {
 
     @Test
     void aCancelledLegThatRoundsToZeroSharesIsFlaggedInTheStatusNotSilentlyDropped() {
-        // Regression for fix-round-1 finding 3: a cancelled Sell Limit (take-profit) leg sized
+        // Regression for fix-round-1 finding 3: a cancelled Sell Limit leg sized
         // amount*remaining/available can round DOWN to 0 shares and LegAllocation drops it —
-        // restored.size() == alloc.sized().size() stays true (both are "1"), so the existing
-        // rollback check never fires. Protection must not vanish without a signal.
+        // restored.size() == alloc.sized().size() stays true, so the existing rollback check
+        // never fires. Protection must not vanish without a signal.
+        //
+        // BUG-S10 reshaped this fixture: it used to pair the limit with a Sell stop, which is
+        // now refused up front as an OCO pair (see legRestoreUnsupportedOco). A LONE
+        // opposite-side limit never had an OCO binding, so it is still restored — and still
+        // capable of rounding to 0, which is what this test pins.
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
             {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
                       "NetPositionView":{"AverageOpenPrice":40.0,"ExposureCurrency":"USD"},
                       "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
             """)));
-        // One Sell stop (protects fully down to 1 remaining share) and one Sell Limit
-        // take-profit at amount 10 — 10*1/46 truncates to 0, so the take-profit is dropped.
+        // A single Sell Limit leg at amount 10 — 10*1/46 truncates to 0, so it is dropped.
         wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("""
             {"Data":[
-              {"OrderId":"leg-stop","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
-               "Amount":24.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
               {"OrderId":"leg-tp","Uic":211,"OpenOrderType":"Limit","BuySell":"Sell",
-               "Amount":10.0,"Price":55.0,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+               "Amount":10.0,"Price":55.0,"AssetType":"Stock","OrderRelation":"StandAlone",
+               "Duration":{"DurationType":"GoodTillCancel"}}]}
             """)));
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-stop")).willReturn(aResponse().withStatus(200)));
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/leg-tp")).willReturn(aResponse().withStatus(200)));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("dropped-limit")
-                .whenScenarioStateIs(Scenario.STARTED)
-                .willReturn(okJson("{\"OrderId\":\"R1\"}"))
-                .willSetStateTo("stop-restored"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("dropped-limit")
-                .whenScenarioStateIs("stop-restored")
-                .willReturn(okJson("{\"OrderId\":\"9100\"}")));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("{\"OrderId\":\"9100\"}")));
 
         // qty=45 of 46 -> only 1 share remains.
         var r = provider.flatten("AAPL", null, new java.math.BigDecimal("45"));
 
         assertThat(r.accepted()).isTrue();
         assertThat(r.remainingQty()).isEqualByComparingTo("1");
-        // Only the stop leg came back — the take-profit is gone and must be visible in status.
-        assertThat(r.protectiveLegs()).hasSize(1);
-        assertThat(r.protectiveLegs().get(0).replaces()).isEqualTo("leg-stop");
+        // The leg is gone and that must be visible in status, never silently swallowed.
+        assertThat(r.protectiveLegs()).isEmpty();
         assertThat(r.status()).containsIgnoringCase("rounded to 0");
 
         var posts = requestJournalInOrder().stream()
                 .filter(req -> "POST".equals(req.getMethod().value())).toList();
-        assertThat(posts).hasSize(2);   // one restore (stop only) + the closing Market order
+        assertThat(posts).hasSize(1);   // nothing restored + the closing Market order
     }
 
     // ---- T5: rollback only on a determinate close failure ----
@@ -2607,17 +2739,19 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
-    void aBracketsStopAndTakeProfitAreClassifiedPerLegNotByCrossLegSum() {
-        // Fix round 2 finding 2: submitBracket places the stop-loss AND the take-profit EACH at
-        // the full position qty — both opposite-side, both matched by flatten's own protective-
-        // leg filter — so a HEALTHY bracketed position always carries 2x the holding in
-        // protective interest by design (46+46=92 against 46 held is normal, not a defect). A
-        // cross-leg SUM comparison against `available` would therefore call almost any bracket
-        // rollback OVERCOMMITTED. Measured (the exact probe that found this): 46 held, sl-46 +
-        // tp-46, sized 23+23, close rejected (400), the take-profit's sized replacement (S23b)
-        // fails to cancel. Actual live state: back-sl(46, matches its own original exactly) +
-        // S23b(23, HALF of its own original 46) — the take-profit is under-restored, not
-        // anything over-committed. Per-leg classification must call this UNPROTECTED.
+    void multipleLegsAreClassifiedPerLegNotByCrossLegSum() {
+        // Fix round 2 finding 2: a rollback must compare each leg against ITS OWN original
+        // amount, never a cross-leg sum against `available`. Measured on the probe that found
+        // this: 46 held, sl-46 + tp-46, sized 23+23, close rejected (400), the take-profit's
+        // sized replacement fails to cancel — live state back-sl(46, exactly its own original)
+        // + orphan(23, HALF of its own original 46). The take-profit was UNDER-restored, yet a
+        // sum-based classifier said OVERCOMMITTED because 46+23=69 > 46 held, and its
+        // documented remedy ("cancel the excess") would have killed the one fully-protecting leg.
+        //
+        // BUG-S10 reshaped the fixture: that stop+take-profit pair is now refused before the
+        // first cancel (see legRestoreUnsupportedOco), so the rule is pinned here with two
+        // STOP legs of different original sizes — the sum still overshoots (46+9=55 > 46 held)
+        // while per-leg says the smaller stop is under its own 30. Same rule, reachable shape.
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
             {"Data":[{"NetPositionBase":{"Amount":46.0,"Uic":211,"AssetType":"Stock"},
@@ -2628,20 +2762,20 @@ class SaxoBrokerProviderTest {
             {"Data":[
               {"OrderId":"sl-46","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
                "Amount":46.0,"Price":45.49,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}},
-              {"OrderId":"tp-46","Uic":211,"OpenOrderType":"Limit","BuySell":"Sell",
-               "Amount":46.0,"Price":55.0,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
+              {"OrderId":"sl-30","Uic":211,"OpenOrderType":"StopIfTraded","BuySell":"Sell",
+               "Amount":30.0,"Price":44.0,"AssetType":"Stock","Duration":{"DurationType":"GoodTillCancel"}}]}
             """)));
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/sl-46")).willReturn(aResponse().withStatus(200)));
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/tp-46")).willReturn(aResponse().withStatus(200)));
-        // Both sized restores (23 each) place cleanly — discriminated by OrderType, since both
-        // share the same Amount (23) as the close order below.
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/sl-30")).willReturn(aResponse().withStatus(200)));
+        // 23 remaining over stops summing 76: sl-46 -> 14, sl-30 -> 9 (proportional, remainder
+        // to the tightest). Discriminated by Amount, since both are StopIfTraded.
         wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
                 .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded")))
-                .withRequestBody(matchingJsonPath("$.Amount", equalTo("23")))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("14.0")))
                 .willReturn(okJson("{\"OrderId\":\"S23a\"}")));
         wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
-                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Limit")))
-                .withRequestBody(matchingJsonPath("$.Amount", equalTo("23")))
+                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded")))
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("9")))
                 .willReturn(okJson("{\"OrderId\":\"S23b\"}")));
         // The close (Market, Amount 23) is rejected.
         wm.stubFor(post(urlEqualTo("/trade/v2/orders"))
@@ -2656,25 +2790,24 @@ class SaxoBrokerProviderTest {
                 .withRequestBody(matchingJsonPath("$.Amount", equalTo("46.0")))
                 .willReturn(okJson("{\"OrderId\":\"back-sl\"}")));
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/S23a")).willReturn(aResponse().withStatus(200)));
-        // S23b's (the take-profit's sized replacement) cancel fails outright — it stays live.
+        // S23b's (sl-30's sized replacement) cancel fails outright — it stays live.
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/S23b")).willReturn(aResponse().withStatus(500)));
 
         var r = provider.flatten("AAPL", new java.math.BigDecimal("0.5"), null);
 
         assertThat(r.accepted()).isFalse();
-        // NOT overcommitted, despite 46+23=69 > 46 held — see the test comment above.
+        // NOT overcommitted, despite 46+9=55 > 46 held — see the test comment above.
         assertThat(r.rejectCode()).isEqualTo("LEG_RESTORE_FAILED_UNPROTECTED");
         assertThat(r.protectiveLegs()).hasSize(2);
         assertThat(r.protectiveLegs()).extracting("replaces", "orderId")
                 .containsExactlyInAnyOrder(
                         tuple("sl-46", "back-sl"),
-                        tuple("tp-46", "S23b"));
+                        tuple("sl-30", "S23b"));
 
-        // The take-profit's full-size restore (46) must never have been attempted — the loop
-        // stopped at S23b's failed cancel.
+        // sl-30's full-size restore (30) must never have been attempted — the loop stopped at
+        // S23b's failed cancel.
         wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders"))
-                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Limit")))
-                .withRequestBody(matchingJsonPath("$.Amount", equalTo("46.0"))));
+                .withRequestBody(matchingJsonPath("$.Amount", equalTo("30.0"))));
     }
 
     @Test

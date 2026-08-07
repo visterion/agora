@@ -33,6 +33,39 @@ called out explicitly rather than guessed.
 `closedQty`/`remainingQty`/`avgFillPrice` are omitted entirely when the broker didn't
 supply them (they are never fabricated) — treat their absence as "unknown", not "zero".
 
+### Partial close is refused when the legs are an OCO pair (Saxo)
+
+A partial close whose protective legs form an **OCO pair** — a bracket's stop-loss and
+take-profit, which cancel each other when either fills — is **rejected up front** with
+`rejectCode = LEG_RESTORE_UNSUPPORTED_OCO`. **Nothing is cancelled and no closing order is
+placed**: the position keeps exactly the protection it had.
+
+The reason is that Agora has no way to put the pair back. The only Saxo POST shape that
+creates an OCO binding is `place_bracket`'s entry order with its two legs as `Orders[]`
+children (`IfDoneMaster`); every restore POST is a single flat order body, and replaying
+the bracket shape during a flatten would open more position rather than reduce it. Two
+bare re-placed legs would be two *independent* orders over the same shares — whichever
+filled would leave the other working against a book that no longer covers it, which is the
+exact hazard the flatten cancel-loop exists to prevent. Refusing is the faithful answer;
+silently restoring only the stop and dropping the take-profit would rewrite the position's
+exit plan without telling anyone.
+
+Detection uses two independent signals, either sufficient: Saxo's own markers
+(`OrderRelation:"Oco"`, or the leg listing its sibling in `RelatedOpenOrders`), **or** the
+shape alone — a stop plus an opposite-side limit resting on the same instrument. A **lone**
+opposite-side limit with no stop beside it never had a binding to lose and is still
+restored normally (see below).
+
+The rejected result still carries `protective_legs`, listing every leg that is still live
+under its **original** id (`replaces == order_id`), so no caller book needs repointing.
+This code is deliberately **not** one of the `LEG_RESTORE_FAILED*` codes: those mean broker
+state already changed and the position may be short of protection; this one means nothing
+changed at all.
+
+**What to do instead**: close the position in full (a full flatten cancels both legs and
+restores nothing, unchanged), or cancel the take-profit and use `place_protective_stop` for
+the remainder.
+
 ### Partial close restores protective legs (Saxo)
 
 A partial close on Saxo (`remainingQty > 0`) restores the cancelled protective orders
@@ -50,7 +83,9 @@ ids on every branch — the stop ratchet addresses legs by id, and a caller that
 `protective_legs` on `accepted:true` ends up pointing at cancelled orders after any
 rejected partial close, failing every later stop modification with `LEG_NOT_FOUND`. Both
 fields are omitted on a full close (nothing was restored) and on any flatten call that
-never touched a protective leg.
+never touched a protective leg. The one rejected branch where the ids are *not* new is the
+`LEG_RESTORE_UNSUPPORTED_OCO` refusal above — there nothing was re-placed, so
+`replaces == order_id` and the caller's book is already correct.
 
 `legs_collapsed:true` means the remainder was too small to give every cancelled stop leg
 at least one share (e.g. three stop legs but only two shares left after the close). The
