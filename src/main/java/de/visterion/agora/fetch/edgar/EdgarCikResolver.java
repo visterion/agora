@@ -51,14 +51,16 @@ public class EdgarCikResolver implements TickerUniverse {
                             boolean negative) {}
 
     private final RestClient http;
+    private final EdgarRequestPacer pacer;
     private final LongSupplier nowMillis;
 
     private volatile Snapshot snapshot;
 
     @Autowired
     public EdgarCikResolver(@Value("${agora.data.edgar.user-agent}") String userAgent,
-                            @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
-        this(buildHttpClient(EdgarUserAgent.checked(userAgent), timeoutMs), System::currentTimeMillis);
+                            @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs,
+                            EdgarRequestPacer pacer) {
+        this(buildHttpClient(EdgarUserAgent.checked(userAgent), timeoutMs), System::currentTimeMillis, pacer);
     }
 
     private static RestClient buildHttpClient(String userAgent, long timeoutMs) {
@@ -73,10 +75,27 @@ public class EdgarCikResolver implements TickerUniverse {
         this(http, System::currentTimeMillis);
     }
 
-    // Test constructor: injectable clock for TTL/expiry tests.
+    // Test constructor: injectable clock for TTL/expiry tests. Unpaced — a TTL test must not pay
+    // 110ms of real sleep per fetch; the rate contract is asserted through the constructor below.
     EdgarCikResolver(RestClient http, LongSupplier nowMillis) {
-        this.http = http;
+        this(http, nowMillis, EdgarRequestPacer.unpaced());
+    }
+
+    // Master constructor. company_tickers.json is a www.sec.gov request like any other, so it
+    // draws on the process-wide sec.gov spacing budget (one @Component bean in production) rather
+    // than running beside it — SEC's ceiling is per user, not per class. See EdgarRequestPacer.
+    // Note the fetch still runs OUTSIDE this class's own lock (M-F8); the pacer's wait is paid on
+    // the fetching thread, so a slow refresh continues to serve readers from the stale snapshot.
+    EdgarCikResolver(RestClient http, LongSupplier nowMillis, EdgarRequestPacer pacer) {
+        this.pacer = pacer;
+        this.http = pacer.install(http);
         this.nowMillis = nowMillis;
+    }
+
+    /** The sec.gov spacing budget this resolver's client draws on — exposed so a wiring test can
+     *  assert it is the SAME instance every other EDGAR client got. */
+    EdgarRequestPacer pacer() {
+        return pacer;
     }
 
     public Optional<String> cik(String ticker) {

@@ -69,9 +69,13 @@ class EdgarUserAgentTest {
 
     // ---- the same guard, exercised through each of the three real @Autowired constructors ----
 
+    /** The shared sec.gov spacing budget the three @Autowired constructors now take. Unpaced:
+     *  this test is about the User-Agent warning and never issues a request. */
+    private static final EdgarRequestPacer PACER = EdgarRequestPacer.unpaced();
+
     @Test void edgarSearchServiceConstructorWarnsOnBlankUserAgent() {
         new EdgarSearchService(" ", "https://efts.sec.gov", "https://www.sec.gov", 3600L, 15000L,
-                32L * 1024 * 1024, 8, new EdgarCikResolver("SyntheticApp contact@example.com", 15000L));
+                32L * 1024 * 1024, 8, new EdgarCikResolver("SyntheticApp contact@example.com", 15000L, PACER), PACER);
 
         assertThat(warnEvents()).hasSize(1);
     }
@@ -79,19 +83,19 @@ class EdgarUserAgentTest {
     @Test void edgarSearchServiceConstructorIsQuietOnConfiguredUserAgent() {
         new EdgarSearchService("SyntheticApp contact@example.com", "https://efts.sec.gov",
                 "https://www.sec.gov", 3600L, 15000L, 32L * 1024 * 1024, 8,
-                new EdgarCikResolver("SyntheticApp contact@example.com", 15000L));
+                new EdgarCikResolver("SyntheticApp contact@example.com", 15000L, PACER), PACER);
 
         assertThat(warnEvents()).isEmpty();
     }
 
     @Test void edgarCikResolverConstructorWarnsOnBlankUserAgent() {
-        new EdgarCikResolver(" ", 15000L);
+        new EdgarCikResolver(" ", 15000L, PACER);
 
         assertThat(warnEvents()).hasSize(1);
     }
 
     @Test void edgarCikResolverConstructorIsQuietOnConfiguredUserAgent() {
-        new EdgarCikResolver("SyntheticApp contact@example.com", 15000L);
+        new EdgarCikResolver("SyntheticApp contact@example.com", 15000L, PACER);
 
         assertThat(warnEvents()).isEmpty();
     }
@@ -99,7 +103,7 @@ class EdgarUserAgentTest {
     @Test void edgarServiceConstructorWarnsOnBlankUserAgent() {
         EdgarCikResolver cikResolver = new EdgarCikResolver(RestClient.builder().baseUrl("https://www.sec.gov").build());
 
-        new EdgarService(" ", cikResolver, 3600L, 15000L);
+        new EdgarService(" ", cikResolver, 3600L, 15000L, PACER);
 
         assertThat(warnEvents()).hasSize(1);
     }
@@ -107,7 +111,7 @@ class EdgarUserAgentTest {
     @Test void edgarServiceConstructorIsQuietOnConfiguredUserAgent() {
         EdgarCikResolver cikResolver = new EdgarCikResolver(RestClient.builder().baseUrl("https://www.sec.gov").build());
 
-        new EdgarService("SyntheticApp contact@example.com", cikResolver, 3600L, 15000L);
+        new EdgarService("SyntheticApp contact@example.com", cikResolver, 3600L, 15000L, PACER);
 
         assertThat(warnEvents()).isEmpty();
     }

@@ -34,6 +34,7 @@ public class EdgarService {
             .build();
 
     private final RestClient http;
+    private final EdgarRequestPacer pacer;
     private final EdgarCikResolver cikResolver;
     private final TtlCache<String, List<FilingRef>> filingsCache;
     private final TtlCache<String, List<EpsPoint>> epsCache;
@@ -58,8 +59,10 @@ public class EdgarService {
     public EdgarService(@Value("${agora.data.edgar.user-agent}") String userAgent,
                         EdgarCikResolver cikResolver,
                         @Value("${agora.data.cache.ttl.filings-seconds:3600}") long ttlSeconds,
-                        @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs) {
-        this(buildHttp(EdgarUserAgent.checked(userAgent), timeoutMs), cikResolver, ttlSeconds, System::currentTimeMillis);
+                        @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs,
+                        EdgarRequestPacer pacer) {
+        this(buildHttp(EdgarUserAgent.checked(userAgent), timeoutMs), cikResolver, ttlSeconds,
+                System::currentTimeMillis, pacer);
     }
 
     private static RestClient buildHttp(String userAgent, long timeoutMs) {
@@ -71,14 +74,35 @@ public class EdgarService {
 
     // protected (not package-private) so a cross-package @Primary stub subclass in an
     // integration test can invoke it via super(...); still not part of the public API.
+    //
+    // Unpaced: a stub subclass never reaches sec.gov, and a unit test must not pay 110ms of real
+    // sleep per request to assert JSON parsing. The rate contract itself is asserted through the
+    // pacer-taking constructor below (EdgarSharedPacerTest) and the production wiring through
+    // EdgarPacerWiringIT — never here.
     protected EdgarService(RestClient http, EdgarCikResolver cikResolver, long ttlSeconds, LongSupplier now) {
-        this.http = http;
+        this(http, cikResolver, ttlSeconds, now, EdgarRequestPacer.unpaced());
+    }
+
+    // Master constructor. The pacer is the process-wide sec.gov spacing budget (one @Component
+    // bean in production) and is installed on the client here, so every data.sec.gov request this
+    // service makes — present and future — draws on the same budget as the EFTS/archive clients.
+    // SEC's ceiling is per user, not per class; see EdgarRequestPacer.
+    EdgarService(RestClient http, EdgarCikResolver cikResolver, long ttlSeconds, LongSupplier now,
+                 EdgarRequestPacer pacer) {
+        this.pacer = pacer;
+        this.http = pacer.install(http);
         this.cikResolver = cikResolver;
         this.filingsCache = new TtlCache<>(ttlSeconds * 1000L, 1024, now);
         this.epsCache = new TtlCache<>(ttlSeconds * 1000L, 1024, now);
         this.conceptCache = new TtlCache<>(ttlSeconds * 1000L, 512, now);
         // Company-facts bodies are full XBRL dumps per CIK — multi-MB each — keep this cache small.
         this.factsCache = new TtlCache<>(ttlSeconds * 1000L, 64, now);
+    }
+
+    /** The sec.gov spacing budget this service's client draws on — exposed so a wiring test can
+     *  assert it is the SAME instance every other EDGAR client got. */
+    EdgarRequestPacer pacer() {
+        return pacer;
     }
 
     /** cikOrSymbol: 10-digit CIK if all-digits, else resolved via ticker. */

@@ -251,17 +251,42 @@ over-sleep. The deadline now buys about **272 filings per call** rather than ~15
 from the pacing arithmetic, not yet confirmed by a production run*; the live figure drops below
 it whenever the archive answers slower than 110 ms, since such a fetch paces itself.
 
-The budget is **one shared limiter per `EdgarSearchService` instance**, not one per loop: the
-EFTS page walk and the Form-4 archive GETs both draw on it, so the first archive GET after a
-search waits out the remainder of that search's window rather than starting immediately. This
-matters because SEC's ceiling is per *user*, not per code path — a paced archive stream running
-alongside an unpaced EFTS burst exceeds the limit while each half looks compliant on its own.
+The budget is **one shared limiter per process** — a single `EdgarRequestPacer` bean, installed
+as the first request interceptor on *every* EDGAR client: the EFTS page walk, the Form-4 archive
+GETs, `get_filing_text`'s archive fetches, `EdgarService`'s data.sec.gov calls and
+`EdgarCikResolver`'s ticker-file fetch. So the first archive GET after a search waits out the
+remainder of that search's window, and a `get_filings` call arriving mid-sweep waits out the
+sweep's. This matters because SEC's ceiling is per *user*, not per code path — a paced archive
+stream running alongside an unpaced EFTS burst exceeds the limit while each half looks compliant
+on its own. Pacing sits at the HTTP layer rather than at each call site so a request added later
+cannot forget it, and the interceptor is registered *ahead of* the provider-call logger, so a
+spacing wait is never billed to the logged EDGAR latency.
 
-**Still outside the limiter** (a separate, cross-class change): `get_filing_text`'s archive
-fetches, which run on their own 8-permit concurrency bound, and the `EdgarCikResolver` /
-`EdgarService` clients. Worst case a single process can therefore still exceed 10 req/s if
-those paths run concurrently with a Form-4 call; today they do not, because the only consumer
-serialises its tool calls.
+Earlier rounds scoped the budget to one loop, then to one `EdgarSearchService` instance, and left
+the other three clients outside it on the grounds that "the only consumer serialises its tool
+calls" — a property of the caller, not a guarantee. It has since weakened: one consumer now issues
+four Form-4 tool calls per run, and a single market-wide run was measured at **1,095 archive GETs
+plus 40 EFTS calls in ~150 s** (1,143 requests, all HTTP 200), i.e. ~7.6 req/s spent by one code
+path alone.
+
+`get_filing_text`'s **8-permit concurrency bound stays** alongside the pacer. The two bound
+different resources: the semaphore caps how much filing body is *in memory* at once (~1.25 GiB
+peak), the pacer caps how often a request may *start*. A 32 MiB proxy takes seconds to read, so 8
+of them still overlap inside one 110 ms window — the pacer staggers their starts and does nothing
+about their peak; conversely 8 permits alone would allow 8 request starts in one instant, 80 % of
+SEC's per-second budget. **Combined worst case with both in place: at most one sec.gov request
+start per 110 ms across the whole process — 9.09 req/s, every EDGAR client included — with at most
+8 filing bodies resident.**
+
+**Known cost — contention.** The pacer is `synchronized` and sleeps inside the monitor, and the
+monitor is not fair. A market-wide `get_form4_transactions` sweep holds it in back-to-back 110 ms
+slices for up to its full 30 s deadline, so a `get_filing_text` or `get_filings` call issued
+concurrently can be delayed past a 25 s consumer timeout and, pathologically, starved for the
+sweep's duration. That is the price of a genuinely shared 10 req/s: a concurrent caller has to
+wait somewhere, and waiting here is better than a 403 IP block that costs every consumer for
+hours. If it starts to bite, the fix is a fair queue with a bounded wait that fails with a "busy"
+error (the shape `filing_fetch_busy` already uses), not a second limiter. A busy process also
+fetches fewer than the derived 272 filings per Form-4 call, since the 30 s deadline is wall-clock.
 
 ### EFTS answers 500 intermittently — the page fetch retries
 
@@ -293,9 +318,10 @@ Every retried failure is logged at WARN with its attempt number and status, so a
 upstream is visible before it fails outright. Exhausted retries throw the unchanged
 `unavailable` error — the downstream "the source is DOWN" reporting is correct and stays.
 
-Both bounds are compiled constants next to `THROTTLE_MS` and `FORM4_DEADLINE_MS` in
-`EdgarSearchService`, not configuration: they are derived from the caller's timeout and SEC's
-rate contract, and neither is an operator dial.
+Both bounds are compiled constants next to `FORM4_DEADLINE_MS` in `EdgarSearchService`, not
+configuration: they are derived from the caller's timeout and SEC's rate contract, and neither is
+an operator dial. The spacing itself lives one level up as `EdgarRequestPacer.MIN_SPACING_MS`,
+because a budget shared by every EDGAR client cannot be a constant owned by one of them.
 
 ### How EFTS reads `forms`: root forms, and why `4,4/A` is a trap
 

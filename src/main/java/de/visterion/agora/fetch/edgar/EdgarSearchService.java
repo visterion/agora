@@ -44,23 +44,6 @@ public class EdgarSearchService {
      * raising either MAX_LIMIT to 2000 would have compiled and then silently capped at 1000.
      */
     public static final int HARD_FETCH_CAP = 1000;
-    /**
-     * Minimum spacing between the STARTS of two consecutive archive GETs, i.e. 9.09 req/s.
-     *
-     * <p>SEC publishes a hard ceiling of 10 requests/second — "Current max request rate: 10
-     * requests/second" (Accessing EDGAR Data), "our current maximum access rate is 10 requests per
-     * second" (webmaster FAQ), and the Internet Security Policy adds that the limit counts
-     * "regardless of the number of machines used to submit requests" and that exceeding it gets the
-     * IP rate-limited. Re-verified against all three sec.gov pages on 2026-08-06. 110ms leaves ~9%
-     * headroom under that ceiling.
-     *
-     * <p>This is enforced as a rate limit, not as a fixed delay: see the pacing comment in
-     * {@link #fetchForm4}. Until BUG-S1a it was slept flat before every fetch, which spaced the
-     * GETs THROTTLE_MS + fetch-duration apart (~190ms measured, ~5.3 req/s) and silently spent
-     * ~40% of the aggregate deadline on an over-sleep. Do not lower this constant to buy speed —
-     * the headroom above is the whole margin against a 403 IP block.
-     */
-    private static final long THROTTLE_MS = 110;
     /** Aggregate deadline for a single form4Transactions() call's sequential archive GETs. */
     private static final long FORM4_DEADLINE_MS = 30_000;
     /**
@@ -74,7 +57,7 @@ public class EdgarSearchService {
      * {@code status=unavailable}, correctly, but the night's data is gone) when a second attempt
      * a moment later would very likely have answered.
      *
-     * <p>Why these numbers: 250ms then 750ms, both comfortably above {@link #THROTTLE_MS}=110, so
+     * <p>Why these numbers: 250ms then 750ms, both comfortably above {@link EdgarRequestPacer#MIN_SPACING_MS}=110, so
      * a retry can never push this service faster against SEC than the rate contract allows.
      * Three attempts is where the marginal value collapses — at a per-call failure rate of ~15%
      * (2/13 measured) three independent attempts leave ~0.3% residual, and a fourth would buy
@@ -90,7 +73,7 @@ public class EdgarSearchService {
      * It does not mean "the server hiccuped", it means this client is already over SEC's
      * published ~10 req/s, and SEC escalates sustained excess to a 403 IP ban that costs every
      * hunter for hours. The correct response to a rate refusal is to slow down, and this service
-     * already has exactly one mechanism for that ({@link #THROTTLE_MS}); a 250ms in-request
+     * already has exactly one mechanism for that ({@link EdgarRequestPacer#MIN_SPACING_MS}); a 250ms in-request
      * backoff is not a rate correction, it is the same excess with a pause in it. So 429 fails
      * fast and loudly, and a recurring one is a signal to raise the throttle, not to retry harder.
      */
@@ -228,11 +211,13 @@ public class EdgarSearchService {
             @Value("${agora.fetch.timeout-ms:15000}") long timeoutMs,
             @Value("${agora.data.edgar.max-filing-bytes:33554432}") long maxFilingBytes,
             @Value("${agora.data.edgar.max-concurrent-filing-fetches:8}") int maxConcurrentFilingFetches,
-            EdgarCikResolver tickerUniverse) {
+            EdgarCikResolver tickerUniverse,
+            EdgarRequestPacer pacer) {
         this(buildHttp(eftsBase, EdgarUserAgent.checked(userAgent), timeoutMs),
                 buildHttp(archiveBase, userAgent, timeoutMs),
                 archiveBase, ttlSeconds, System::currentTimeMillis, REAL_SLEEPER, maxFilingBytes,
-                tickerUniverse, maxConcurrentFilingFetches, DEFAULT_FILING_FETCH_QUEUE_TIMEOUT_MS);
+                tickerUniverse, maxConcurrentFilingFetches, DEFAULT_FILING_FETCH_QUEUE_TIMEOUT_MS,
+                pacer);
     }
 
     private static RestClient buildHttp(String baseUrl, String userAgent, long timeoutMs) {
@@ -281,25 +266,46 @@ public class EdgarSearchService {
     EdgarSearchService(RestClient http, RestClient archiveHttp, String archiveBase, long ttlSeconds, LongSupplier now,
                         Sleeper sleeper, long maxFilingBytes, TickerUniverse tickerUniverse,
                         int maxConcurrentFilingFetches, long filingFetchQueueTimeoutMs) {
+        // The seam that several tests depend on: the injected clock and Sleeper are what the pacer
+        // runs on, so a spacing assertion stays deterministic and costs no real wall-clock. The
+        // pacer is built here rather than shared because a unit test IS a one-instance process;
+        // that the production wiring shares ONE bean across all EDGAR clients is pinned separately
+        // by EdgarPacerWiringIT, which is the assertion a refactor could otherwise break silently.
+        this(http, archiveHttp, archiveBase, ttlSeconds, now, sleeper, maxFilingBytes, tickerUniverse,
+                maxConcurrentFilingFetches, filingFetchQueueTimeoutMs,
+                new EdgarRequestPacer(EdgarRequestPacer.MIN_SPACING_MS, now, sleeper));
+    }
+
+    // Master constructor. `pacer` is the process-wide sec.gov spacing budget (one @Component bean
+    // in production) and is INSTALLED on both clients here rather than at each call site: pacing at
+    // the HTTP layer covers a request the moment the client is built, so a request added later
+    // cannot forget it. See EdgarRequestPacer for why the budget spans classes at all.
+    EdgarSearchService(RestClient http, RestClient archiveHttp, String archiveBase, long ttlSeconds, LongSupplier now,
+                        Sleeper sleeper, long maxFilingBytes, TickerUniverse tickerUniverse,
+                        int maxConcurrentFilingFetches, long filingFetchQueueTimeoutMs,
+                        EdgarRequestPacer pacer) {
         this.maxConcurrentFilingFetches = Math.max(1, maxConcurrentFilingFetches);
         this.filingFetchQueueTimeoutMs = filingFetchQueueTimeoutMs;
         // Fair, so a queued caller cannot be starved into a spurious "busy" by later arrivals.
         this.filingFetchPermits = new java.util.concurrent.Semaphore(this.maxConcurrentFilingFetches, true);
-        this.http = http;
-        this.archiveHttp = archiveHttp;
+        this.pacer = pacer;
+        this.http = pacer.install(http);
+        this.archiveHttp = pacer.install(archiveHttp);
         this.archiveBase = archiveBase;
         this.now = now;
         this.sleeper = sleeper;
-        // ONE spacing budget for every sec.gov request this instance makes — the EFTS page walk
-        // and the Form-4 archive GETs both draw on it. See EdgarRequestPacer for why the budget
-        // must be instance-level rather than local to fetchForm4's loop.
-        this.pacer = new EdgarRequestPacer(THROTTLE_MS, now, sleeper);
         this.maxFilingBytes = maxFilingBytes;
         this.tickerUniverse = tickerUniverse;
         this.searchCache = new TtlCache<>(ttlSeconds * 1000L, 512, now);
         this.form4Cache = new TtlCache<>(ttlSeconds * 1000L, 512, now);
         // Filing text bodies run up to ~24KB each — keep this cache small to bound heap.
         this.filingTextCache = new TtlCache<>(ttlSeconds * 1000L, 32, now);
+    }
+
+    /** The sec.gov spacing budget this service's clients draw on — exposed so a wiring test can
+     *  assert it is the SAME instance every other EDGAR client got. */
+    EdgarRequestPacer pacer() {
+        return pacer;
     }
 
     /**
@@ -479,14 +485,15 @@ public class EdgarSearchService {
 
     /** One EFTS request, no retry, no exception translation — the unit {@link #fetchPage} retries.
      *
-     *  <p>Paced on the SAME budget as the archive GETs (see {@link EdgarRequestPacer}): efts.sec.gov
-     *  and www.sec.gov are one host family for the purposes of SEC's per-user rate ceiling, and a
-     *  page walk is up to {@link #HARD_FETCH_CAP}/{@link #PAGE_SIZE} requests in a row. Note the
-     *  pacing sits INSIDE the unit that {@link #fetchPage} retries, so a retried attempt is spaced
-     *  from its predecessor too — the retry backoff (250/750ms) already exceeds the spacing, so in
-     *  practice this only ever costs a retry zero extra wait. */
+     *  <p>Paced on the SAME budget as the archive GETs and as every other EDGAR client in the
+     *  process (see {@link EdgarRequestPacer}): efts.sec.gov, www.sec.gov and data.sec.gov are one
+     *  host family for the purposes of SEC's per-user rate ceiling, and a page walk is up to
+     *  {@link #HARD_FETCH_CAP}/{@link #PAGE_SIZE} requests in a row. The spacing is paid by the
+     *  pacer interceptor on {@code http}, i.e. per HTTP request and therefore INSIDE the unit that
+     *  {@link #fetchPage} retries, so a retried attempt is spaced from its predecessor too — the
+     *  retry backoff (250/750ms) already exceeds the spacing, so in practice this only ever costs
+     *  a retry zero extra wait. */
     private JsonNode requestPage(String formsCsv, String query, String cik, LocalDate from, LocalDate to, int offset) {
-        pacer.acquireUninterruptibly();
         return http.get()
                 .uri(uri -> {
                     uri.path("/LATEST/search-index")
@@ -650,8 +657,8 @@ public class EdgarSearchService {
      * result is reported {@code truncated=true} and is a SAMPLE of the newest filings in the
      * window, not the window.
      *
-     * <p>How much of it is read: since BUG-S1a the per-filing cost is {@link #THROTTLE_MS} itself
-     * rather than THROTTLE_MS + the fetch, because the throttle spaces the request STARTS instead
+     * <p>How much of it is read: since BUG-S1a the per-filing cost is {@link EdgarRequestPacer#MIN_SPACING_MS} itself
+     * rather than the spacing + the fetch, because the throttle spaces the request STARTS instead
      * of delaying each one. So the deadline buys 30 000 / 110 = <b>~272 filings per call</b>, up
      * from the ~159 the flat delay bought at the measured ~190ms per filing — roughly 16% of a
      * market-wide week instead of 9%.
@@ -747,14 +754,14 @@ public class EdgarSearchService {
 
     /**
      * How many filings one call's aggregate deadline can fetch, at one request per
-     * {@link #THROTTLE_MS}: {@value #FORM4_DEADLINE_MS}/110 = 272.
+     * {@link EdgarRequestPacer#MIN_SPACING_MS}: {@value #FORM4_DEADLINE_MS}/110 = 272.
      *
      * <p>DERIVED, not measured — it assumes every archive GET returns inside the spacing window.
      * Used only to stop the narrow-window pad walk once collecting more hits could not lead to
      * more fetches, so an over-estimate costs at most one extra EFTS request and never drops a
      * filing.
      */
-    private static final long MAX_FILINGS_PER_DEADLINE = FORM4_DEADLINE_MS / THROTTLE_MS;
+    private static final long MAX_FILINGS_PER_DEADLINE = FORM4_DEADLINE_MS / EdgarRequestPacer.MIN_SPACING_MS;
 
     /** True when [from,to] spans at most {@value #FORM4_NARROW_WINDOW_MAX_DAYS} calendar days, i.e.
      *  when the late-filing pad rather than the window itself holds most of the answer. An open
@@ -827,10 +834,14 @@ public class EdgarSearchService {
         // `hits.size() >= limit` holds.
         boolean truncated = capped || hits.size() >= limit;
         long deadline = now.getAsLong() + FORM4_DEADLINE_MS;
-        // The archive GETs are spaced by the instance-wide pacer, applied inside parseForm4 right
-        // before each request (see EdgarRequestPacer, and requestPage for the EFTS half of the same
+        // The archive GETs are spaced by the process-wide pacer, applied as an interceptor on
+        // archiveHttp (see EdgarRequestPacer, and requestPage for the EFTS half of the same
         // budget). This loop therefore only owns the DEADLINE; it must not do its own spacing, or
         // the process would have two independent limiters that each believe they own the headroom.
+        // Note the deadline is now shared wall-clock too: a concurrent EDGAR caller queued on the
+        // same pacer eats into these 30s, so a busy process fetches fewer than the derived 272
+        // filings per call and reports truncated=true earlier. That is the intended trade —
+        // fetching fewer filings is recoverable, a 403 IP block is not.
         for (FilingHit hit : hits) {
             if (out.size() >= limit) {
                 truncated = true;   // hits remain unprocessed beyond the transaction limit
@@ -909,6 +920,24 @@ public class EdgarSearchService {
      * <p>Over the bound the call is REFUSED after a bounded wait rather than queued forever: a
      * parked request thread is itself a resource, and a caller that is told "busy" can retry,
      * while one that is silently OOM-killed cannot.
+     *
+     * <p><b>Why this survives the shared {@link EdgarRequestPacer}, which now also covers these
+     * fetches.</b> The two controls bound different resources and neither implies the other: the
+     * semaphore bounds how much filing body is IN MEMORY at once, the pacer bounds how often a
+     * request may START. They only look alike when every fetch is short. A 32 MiB DEFM14A takes
+     * seconds to read and decode, so 8 of them still overlap comfortably inside one 110 ms
+     * spacing window — the pacer staggers their starts and does nothing at all about their peak,
+     * which is the ~1.25 GiB this bound exists to cap. Conversely the semaphore permits 8
+     * simultaneous request starts, i.e. 80 % of SEC's per-second budget in one instant, which is
+     * exactly the burst shape the pacer exists to prevent. Removing either one reopens a bug the
+     * other never covered.
+     *
+     * <p>Combined worst case with both in place: at most one sec.gov request start per
+     * {@link EdgarRequestPacer#MIN_SPACING_MS} across the WHOLE process — 9.09 req/s, every EDGAR
+     * client included — with at most {@code maxConcurrentFilingFetches} filing bodies resident.
+     * The permits are no longer the binding constraint on request rate (they never were a rate
+     * control), and they are not harmful either: they cost nothing until 8 large fetches genuinely
+     * overlap, which the pacer makes rarer but does not prevent.
      */
     private FilingText fetchFilingTextBounded(String url) {
         boolean acquired;
@@ -986,9 +1015,8 @@ public class EdgarSearchService {
 
         String xml;
         try {
-            // Paced on the shared budget, immediately before the request rather than in the caller's
-            // loop: a hit with no url returns above without spending a slot it never used.
-            pacer.acquireUninterruptibly();
+            // Paced on the shared budget by archiveHttp's pacer interceptor. A hit with no url
+            // returns above and never reaches an interceptor, so it spends no slot it did not use.
             // hit.url() is absolute (archiveBase + /Archives/...); archiveHttp's baseUrl == archiveBase resolves it correctly.
             xml = archiveHttp.get().uri(hit.url()).retrieve().body(String.class);
         } catch (Exception e) {
