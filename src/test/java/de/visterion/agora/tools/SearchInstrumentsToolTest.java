@@ -65,6 +65,32 @@ class SearchInstrumentsToolTest {
         assertThat(seenLimit).hasValue(1);
     }
 
+    @Test void limitAsNumericStringIsHonouredNotSilentlyDefaulted() {
+        ObjectNode n = args("nokia", null);
+        n.put("limit", "5");
+
+        ToolResult r = toolReturning(List.of()).call(n);
+
+        assertThat(r.available()).isTrue();
+        assertThat(seenLimit).hasValue(5);
+    }
+
+    @Test void unparsableLimitIsUnavailableNotSilentlyDefaulted() {
+        ObjectNode boolArgs = args("nokia", null);
+        boolArgs.put("limit", true);
+        ToolResult asBoolean = toolReturning(List.of()).call(boolArgs);
+        assertThat(asBoolean.available()).isFalse();
+        assertThat(asBoolean.error()).contains("invalid integer argument: limit");
+        assertThat(seenLimit).hasValue(-1); // the service must never have been called
+
+        ObjectNode objectArgs = args("nokia", null);
+        objectArgs.putObject("limit");
+        ToolResult asObject = toolReturning(List.of()).call(objectArgs);
+        assertThat(asObject.available()).isFalse();
+        assertThat(asObject.error()).contains("invalid integer argument: limit");
+        assertThat(seenLimit).hasValue(-1);
+    }
+
     @Test void zeroHitsIsAnAvailableEmptyResultNotAnError() {
         ToolResult r = toolReturning(List.of()).call(args("nothingmatchesthis", 10));
 

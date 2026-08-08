@@ -4,6 +4,8 @@ import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.fetch.search.InstrumentSearchService;
 import de.visterion.agora.fetch.search.SearchHit;
 import de.visterion.agora.tool.AgoraTool;
+import de.visterion.agora.tool.ToolParams;
+import de.visterion.agora.tool.ToolParams.InvalidArgumentException;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -64,10 +66,14 @@ public class SearchInstrumentsTool implements AgoraTool {
         String query = args == null ? "" : args.path("query").asString("").trim();
         if (query.isEmpty()) return ToolResult.unavailable("no query provided");
 
-        int limit = DEFAULT_LIMIT;
-        if (args.hasNonNull("limit") && args.path("limit").isNumber()) {
-            limit = Math.clamp(args.path("limit").asInt(DEFAULT_LIMIT), 1, MAX_LIMIT);
+        int limit;
+        try {
+            Integer limitArg = ToolParams.optionalInt(args, "limit");
+            limit = limitArg == null ? DEFAULT_LIMIT : limitArg;
+        } catch (InvalidArgumentException e) {
+            return ToolResult.unavailable(e.getMessage());
         }
+        limit = Math.clamp(limit, 1, MAX_LIMIT);
 
         try {
             List<SearchHit> hits = search.search(query, limit);
