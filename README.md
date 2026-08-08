@@ -112,7 +112,7 @@ design spec:
 
 ## Tool catalog
 
-39 tools today. One-page inventory: [`documentation/capabilities.md`](documentation/capabilities.md).
+40 tools today. One-page inventory: [`documentation/capabilities.md`](documentation/capabilities.md).
 `general` tools are on MCP, webhook, and catalog; `trading` tools are webhook-only and
 require a trading token.
 
@@ -124,6 +124,7 @@ require a trading token.
 | `get_ohlc` | Daily OHLCV history (oldest-first) |
 | `get_intraday` | Intraday OHLCV candles at a given interval/range |
 | `get_fx_rate` | Current FX conversion rate (1 unit of `from` in `to` currency) |
+| `search_instruments` | Find instruments by ticker fragment or company name. Args: `query` (required), `limit` (optional, default 10, clamped 1..25). Output `{"results":[{"symbol","name","exchange","type"}]}` — no currency field, best match first, spans all venues (one company may appear as, e.g., a US ADR and a home-market listing) |
 | `get_company_profile` | Company profile: name, industry, exchange, market cap |
 | `get_company_news` | Company news headlines merged from multiple sources (Finnhub + configured RSS/Atom feeds); per-item `sourceType` (`news`|`social`) and `domain` (lowercase url host, `www.`-stripped, JSON null when unparsable), partial-failure `warnings`, optional `sourceTypes` filter |
 | `get_fundamentals` | Fundamental metrics for a symbol (US: Finnhub; non-US: computed when global metrics enabled — see [`documentation/api.md`](documentation/api.md)) |
@@ -246,6 +247,7 @@ provider.
 |---|---|
 | Quotes / OHLC | Alpaca (broker feed, IEX) first, then Saxo (non-US via `saxo-live`, Yahoo-suffix symbols like `SAP.DE`, 15-min delayed), then TwelveData, Finnhub, then keyless Yahoo Finance as last-resort fallback |
 | Intraday / FX | Yahoo (FX pairs; optional scheduled warmer) |
+| Instrument search (`search_instruments`) | Yahoo search only — no fallback provider, TTL cache + reactive cooldown on repeated upstream failure |
 | Company profile / news / analyst estimates | Finnhub |
 | Fundamentals metrics (`get_fundamentals`) | US: Finnhub; non-US: computed from concepts + OHLC + quote when `agora.fundamentals.global-metrics-enabled` is on |
 | Fundamentals raw concepts / scores | US: SEC EDGAR XBRL; non-US: Yahoo `fundamentals-timeseries` (`get_fundamental_concepts`, `get_fundamental_score`) |
@@ -410,7 +412,7 @@ The `ToolRegistry` picks it up automatically and it appears on `/mcp`, `/tools`,
 
 | Doc | Contents |
 |---|---|
-| [`documentation/capabilities.md`](documentation/capabilities.md) | Full tool inventory (39 tools) + internal capabilities |
+| [`documentation/capabilities.md`](documentation/capabilities.md) | Full tool inventory (40 tools) + internal capabilities |
 | [`documentation/hunting-grounds.md`](documentation/hunting-grounds.md) | Provider chains, coverage, cache TTLs |
 | [`documentation/api.md`](documentation/api.md) | Fundamentals tool contracts |
 | [`documentation/exit-tools.md`](documentation/exit-tools.md) | Trading exit contracts (bracket / flatten / protective stop) |
