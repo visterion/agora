@@ -116,6 +116,11 @@ agora:
       # for every Yahoo client — a second one drifted for months and is pinned against by
       # YahooUserAgentPinTest.
       user-agent: ${AGORA_DATA_YAHOO_USER_AGENT:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36}
+    search:
+      # Reactive only. A min-interval would abort the LAST query of a typing burst and let the
+      # first ones through — see SearchCooldown's javadoc.
+      cooldown-threshold: ${AGORA_DATA_SEARCH_COOLDOWN_THRESHOLD:3}
+      cooldown-ms: ${AGORA_DATA_SEARCH_COOLDOWN_MS:60000}
     twelvedata:
       base-url: ${AGORA_DATA_TWELVEDATA_BASE_URL:https://api.twelvedata.com}
       key: ${AGORA_DATA_TWELVEDATA_KEY:}
@@ -226,6 +231,9 @@ agora:
         sp-press-detail-seconds: ${AGORA_DATA_CACHE_TTL_SP_PRESS_DETAIL:604800}  # release bodies (immutable)
         russell-pdf-seconds: ${AGORA_DATA_CACHE_TTL_RUSSELL_PDF:604800}         # reconstitution PDFs (immutable per date)
         russell-ishares-seconds: ${AGORA_DATA_CACHE_TTL_RUSSELL_ISHARES:86400}  # iShares holdings (drift daily)
+        # Instrument name/symbol search. Short TTL: a typing burst produces one key per prefix,
+        # so the cache absorbs repeats rather than the whole session.
+        instrument-search-seconds: ${AGORA_DATA_CACHE_TTL_INSTRUMENT_SEARCH_SECONDS:600}
   research:
     atr-period: ${AGORA_RESEARCH_ATR_PERIOD:22}
     atr-multiple: ${AGORA_RESEARCH_ATR_MULTIPLE:3.0}
