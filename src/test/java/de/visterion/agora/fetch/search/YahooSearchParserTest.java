@@ -60,6 +60,20 @@ class YahooSearchParserTest {
                 .satisfies(h -> assertThat(h.symbol()).isEqualTo("AT0000A324Q2.VI"));
     }
 
+    @Test void keepsRowsWithMissingOrBlankQuoteType_withEmptyType() {
+        List<SearchHit> hits = YahooSearchParser.parse(MAPPER.readTree("""
+            {"quotes":[
+              {"symbol":"SYNNOTYPE","shortname":"Synthetic Typeless Corp","exchDisp":"NYSE"},
+              {"symbol":"SYNBLANK","shortname":"Synthetic Blank Corp","exchDisp":"HEL","quoteType":""}
+            ]}
+            """));
+
+        assertThat(hits).extracting(SearchHit::symbol)
+                .containsExactly("SYNNOTYPE", "SYNBLANK");
+        assertThat(hits).extracting(SearchHit::type)
+                .containsExactly("", "");
+    }
+
     @Test void dropsCurrencyFutureAndCrypto() {
         List<SearchHit> hits = YahooSearchParser.parse(MAPPER.readTree("""
             {"quotes":[

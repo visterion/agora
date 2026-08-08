@@ -5,6 +5,7 @@ import tools.jackson.databind.JsonNode;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 /**
@@ -29,8 +30,8 @@ public final class YahooSearchParser {
             String symbol = q.path("symbol").asString("").trim();
             if (symbol.isEmpty()) continue;
 
-            String type = q.path("quoteType").asString("").trim().toUpperCase();
-            if (type.isEmpty() || EXCLUDED_TYPES.contains(type)) continue;
+            String type = q.path("quoteType").asString("").trim().toUpperCase(Locale.ROOT);
+            if (EXCLUDED_TYPES.contains(type)) continue;
 
             if (!seen.add(symbol)) continue;
 
