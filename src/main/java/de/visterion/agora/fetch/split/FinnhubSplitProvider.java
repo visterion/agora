@@ -37,11 +37,6 @@ public class FinnhubSplitProvider implements SplitProvider {
         this.splitsEnabled = splitsEnabled;
     }
 
-    // Test/legacy constructor: defaults to enabled so callers that construct this directly (e.g.
-    // existing provider-level tests written before the switch existed) keep exercising the HTTP
-    // path unless they opt out explicitly via the two-arg constructor.
-    public FinnhubSplitProvider(FinnhubClient client) { this(client, true); }
-
     @Override public String name() { return "finnhub"; }
 
     @Override

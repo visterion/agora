@@ -18,8 +18,11 @@ class FinnhubSplitProviderTest {
     @AfterAll static void stop() { wm.stop(); }
     @BeforeEach void reset() { wm.resetAll(); }
 
+    // These pre-existing tests exercise the HTTP path directly, so they pass splitsEnabled=true
+    // explicitly — the one-arg constructor was removed because it silently defaulted to true,
+    // the opposite of the production default (agora.data.finnhub.splits-enabled defaults false).
     private FinnhubSplitProvider provider(String key) {
-        return new FinnhubSplitProvider(new FinnhubClient(RestClient.builder().baseUrl(wm.baseUrl()).build(), key));
+        return new FinnhubSplitProvider(new FinnhubClient(RestClient.builder().baseUrl(wm.baseUrl()).build(), key), true);
     }
 
     @Test void parsesSplits() {

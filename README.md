@@ -253,7 +253,7 @@ provider.
 | Fundamentals raw concepts / scores | US: SEC EDGAR XBRL; non-US: Yahoo `fundamentals-timeseries` (`get_fundamental_concepts`, `get_fundamental_score`) |
 | Filings / XBRL concepts / EPS / Form-4 | SEC EDGAR |
 | Earnings calendar | Finnhub, Yahoo |
-| Corporate-action splits (internal) | Alpaca, Finnhub — used for share-count adjustment in scoring, no dedicated tool |
+| Corporate-action splits (internal) | Alpaca; Finnhub merged in but disabled by default via `AGORA_DATA_FINNHUB_SPLITS_ENABLED` (the account's Finnhub plan lacks `/stock/split`, see "Configuration" above) — used for share-count adjustment in scoring, no dedicated tool |
 | Index constituents | Wikipedia (S&P 500) |
 | Index constituent changes | S&P Dow Jones Indices press-release RSS (S&P 500 add/remove); FTSE Russell reconstitution PDFs + iShares IWB/IWM holdings for the Russell 1000/2000 bucket split |
 | Execution | Alpaca and Saxo, selected per named connection (`alpaca-paper`, `alpaca-live`, `depot-1`, `saxo-live`) |
