@@ -137,4 +137,35 @@ class InstrumentSearchServiceTest {
 
         assertThat(svc.search("d", 10)).hasSize(1);                                             // not cooled down
     }
+
+    @Test void cooldownOpensAgainOnceTheWindowPasses() {
+        // Complements recordSuccessResetsAFailureStreakBelowThreshold: that one proves a
+        // sub-threshold streak resets and never arms. This one proves the other half of why
+        // the cooldown is time-bounded rather than permanent — once armed, it must stop
+        // blocking after cooldownMillis elapses, and the call that reopens it must actually
+        // reach upstream again (not just stay permanently refused).
+        AtomicInteger calls = new AtomicInteger();
+        InstrumentSearchService svc = new InstrumentSearchService(
+                (q, count) -> {
+                    if (calls.incrementAndGet() <= 2) {
+                        throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "boom", null);
+                    }
+                    return List.of(hit("SYNA"));
+                },
+                600_000L, 2, 60_000L, clock::get);
+
+        assertThatThrownBy(() -> svc.search("a", 10)).isInstanceOf(MarketDataException.class); // failure, streak=1
+        assertThatThrownBy(() -> svc.search("b", 10)).isInstanceOf(MarketDataException.class); // failure, streak=2 -> arms
+
+        int callsWhileArmed = calls.get();
+        assertThatThrownBy(() -> svc.search("c", 10))
+                .isInstanceOf(MarketDataException.class)
+                .hasMessageContaining("cooling down");
+        assertThat(calls).hasValue(callsWhileArmed);                                           // upstream not reached
+
+        clock.addAndGet(60_001L);                                                               // window passes
+
+        assertThat(svc.search("d", 10)).hasSize(1);                                             // upstream reached again
+        assertThat(calls).hasValue(callsWhileArmed + 1);
+    }
 }
