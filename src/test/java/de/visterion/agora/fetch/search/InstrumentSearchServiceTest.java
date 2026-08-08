@@ -35,12 +35,23 @@ class InstrumentSearchServiceTest {
     }
 
     @Test void aDifferentLimitMustNotBeServedTheTruncatedEntry() {
-        List<SearchHit> many = List.of(hit("A"), hit("B"), hit("C"), hit("D"), hit("E"),
-                                       hit("F"), hit("G"));
-        InstrumentSearchService svc = serviceReturning(many);
+        // Real endpoint, measured: quotesCount=6 and quotesCount=10 return different result
+        // sets for the same query. The stub mirrors that by sizing its answer off quotesCount,
+        // so a cache key that drops quotesCount (query alone) would serve call 2 the 6-item
+        // answer cached by call 1 and truncate it to 6, not 7 — failing the size assertion —
+        // while also never reaching upstream a second time, failing the call-count assertion.
+        InstrumentSearchService svc = new InstrumentSearchService(
+                (q, quotesCount) -> {
+                    upstreamCalls.incrementAndGet();
+                    return java.util.stream.IntStream.range(0, quotesCount)
+                            .mapToObj(i -> hit("S" + i))
+                            .toList();
+                },
+                600_000L, 2, 60_000L, clock::get);
 
         assertThat(svc.search("nokia", 2)).hasSize(2);
         assertThat(svc.search("nokia", 7)).hasSize(7);
+        assertThat(upstreamCalls).hasValue(2);
     }
 
     @Test void truncatesToLimit() {
@@ -103,21 +114,27 @@ class InstrumentSearchServiceTest {
         assertThat(svc.search("nokia", 10)).hasSize(1);           // cache still served
     }
 
-    @Test void cooldownHealsOnTheFirstSuccessAfterItExpires() {
+    @Test void recordSuccessResetsAFailureStreakBelowThreshold() {
+        // threshold=2: fail once (streak=1, below threshold, not armed), succeed (must reset
+        // the streak to 0), then fail once more. A correct reset leaves the streak at 1 after
+        // that failure, still below threshold — so the 4th call must still reach upstream and
+        // succeed. Without the reset, the streak would reach 2 on the second failure and arm
+        // the cooldown, making the 4th call throw "cooling down" instead.
         AtomicInteger calls = new AtomicInteger();
         InstrumentSearchService svc = new InstrumentSearchService(
                 (q, count) -> {
-                    if (calls.incrementAndGet() <= 1) {
-                        throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "boom", null);
+                    int n = calls.incrementAndGet();
+                    if (n == 2 || n == 4) {
+                        return List.of(hit("SYNA"));
                     }
-                    return List.of(hit("SYNA"));
+                    throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "boom", null);
                 },
-                600_000L, 1, 60_000L, clock::get);
+                600_000L, 2, 60_000L, clock::get);
 
-        assertThatThrownBy(() -> svc.search("a", 10)).isInstanceOf(MarketDataException.class);
-        clock.addAndGet(60_001L);
+        assertThatThrownBy(() -> svc.search("a", 10)).isInstanceOf(MarketDataException.class); // failure, streak=1
+        assertThat(svc.search("b", 10)).hasSize(1);                                            // success, resets streak
+        assertThatThrownBy(() -> svc.search("c", 10)).isInstanceOf(MarketDataException.class);  // failure, streak=1
 
-        assertThat(svc.search("b", 10)).hasSize(1);
-        assertThat(svc.search("c", 10)).hasSize(1);
+        assertThat(svc.search("d", 10)).hasSize(1);                                             // not cooled down
     }
 }
