@@ -40,8 +40,8 @@ class MarketDataServiceTest {
     void quotesOmitsUnresolvedButKeepsResolved() {
         // ok provider resolves everything; ensure batch maps symbols (per-symbol cached)
         var svc = new MarketDataService(List.of(ok("b")), 1000, () -> 0L);
-        Map<String, Quote> q = svc.quotes(List.of("AAPL", "MSFT"));
-        assertThat(q).containsOnlyKeys("AAPL", "MSFT");
+        QuoteBatch batch = svc.quotes(List.of("AAPL", "MSFT"));
+        assertThat(batch.resolved()).containsOnlyKeys("AAPL", "MSFT");
     }
 
     @Test
@@ -81,8 +81,9 @@ class MarketDataServiceTest {
             public List<OhlcBar> ohlc(String symbol, int days) { throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "n/a", null); }
         };
         var svc = new MarketDataService(List.of(provider), 1000, () -> 0L);
-        Map<String, Quote> result = svc.quotes(List.of("AAPL", "BAD"));
-        assertThat(result).containsKey("AAPL");
-        assertThat(result).doesNotContainKey("BAD");
+        QuoteBatch batch = svc.quotes(List.of("AAPL", "BAD"));
+        assertThat(batch.resolved()).containsKey("AAPL");
+        assertThat(batch.resolved()).doesNotContainKey("BAD");
+        assertThat(batch.failed()).containsKey("BAD");
     }
 }

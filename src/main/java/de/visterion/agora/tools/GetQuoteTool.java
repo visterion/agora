@@ -3,6 +3,7 @@ package de.visterion.agora.tools;
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.MarketDataService;
 import de.visterion.agora.data.Quote;
+import de.visterion.agora.data.QuoteBatch;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.stereotype.Component;
@@ -56,31 +57,45 @@ public class GetQuoteTool implements AgoraTool {
             }
         }
         if (symbols.isEmpty()) return ToolResult.unavailable("no symbols provided");
-        try {
-            Map<String, Quote> resolved = service.quotes(symbols);
-            if (resolved.isEmpty()) return ToolResult.unavailable("market data unavailable");
-            ObjectNode out = mapper.createObjectNode();
-            ArrayNode arr = out.putArray("quotes");
-            for (Quote q : resolved.values()) {
-                ObjectNode o = arr.addObject();
-                o.put("symbol", q.symbol());
-                o.put("price", q.price());
-                o.put("dayChangePercent", q.dayChangePercent());
-                o.put("currency", q.currency());
-            }
-            // M-X8: symbols the service couldn't resolve are simply omitted from `resolved` —
-            // surface them explicitly instead of letting a partially-wrong batch look fully OK.
-            List<String> unresolved = new ArrayList<>();
-            for (String s : symbols) {
-                if (!resolved.containsKey(s)) unresolved.add(s);
-            }
-            if (!unresolved.isEmpty()) {
-                ArrayNode unresolvedArr = out.putArray("unresolved");
-                unresolved.forEach(unresolvedArr::add);
-            }
-            return ToolResult.ok(out);
-        } catch (MarketDataException e) {
-            return ToolResult.unavailable(e.getMessage());
+
+        QuoteBatch batch = service.quotes(symbols);
+        Map<String, Quote> resolved = batch.resolved();
+
+        ObjectNode out = mapper.createObjectNode();
+        ArrayNode arr = out.putArray("quotes");
+        for (Quote q : resolved.values()) {
+            ObjectNode o = arr.addObject();
+            o.put("symbol", q.symbol());
+            o.put("price", q.price());
+            o.put("dayChangePercent", q.dayChangePercent());
+            o.put("currency", q.currency());
         }
+
+        // M-X8: symbols the service couldn't resolve are simply omitted from `resolved` —
+        // surface them explicitly instead of letting a partially-wrong batch look fully OK.
+        List<String> unresolved = new ArrayList<>();
+        for (String s : symbols) {
+            if (!resolved.containsKey(s)) unresolved.add(s);
+        }
+        if (!unresolved.isEmpty()) {
+            ArrayNode unresolvedArr = out.putArray("unresolved");
+            unresolved.forEach(unresolvedArr::add);
+        }
+
+        // Decide PER SYMBOL, never per batch. Dracul sends whole watchlists in one call and
+        // collapses an error envelope to an empty map, so a batch-level rule would turn
+        // "29 of 30 refreshed" into "0 of 30" — and blind the stop watcher on one slow symbol.
+        if (!resolved.isEmpty()) {
+            return ToolResult.ok(out);
+        }
+        // Nothing resolved. A symbol with no recorded reason counts as an outage, not as
+        // NOT_FOUND — an empty reason set must never satisfy "all reasons were NOT_FOUND".
+        boolean everyReasonIsNotFound = unresolved.stream().allMatch(s ->
+                batch.failed().get(s) == MarketDataException.Kind.NOT_FOUND);
+        if (everyReasonIsNotFound) {
+            // The chain is healthy; these symbols simply do not exist. See ToolResult#noData.
+            return ToolResult.noData(out, "no quote for " + String.join(", ", unresolved));
+        }
+        return ToolResult.unavailable("market data unavailable");
     }
 }

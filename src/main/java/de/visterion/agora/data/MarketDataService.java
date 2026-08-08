@@ -234,14 +234,20 @@ public class MarketDataService {
     }
 
     /** Batch quotes; per-symbol cached via quote() (which also consults the negative cache
-     *  per symbol before walking providers). Symbols that fail are omitted. */
-    public Map<String, Quote> quotes(Collection<String> symbols) {
-        Map<String, Quote> out = new LinkedHashMap<>();
+     *  per symbol before walking providers). Failures are REPORTED, not swallowed: the kind
+     *  used to be discarded here, which made "symbol does not exist" and "provider is down"
+     *  indistinguishable for every caller. Keys are the raw request symbols. */
+    public QuoteBatch quotes(Collection<String> symbols) {
+        Map<String, Quote> resolved = new LinkedHashMap<>();
+        Map<String, MarketDataException.Kind> failed = new LinkedHashMap<>();
         for (String s : symbols) {
-            try { out.put(s, quote(s)); }
-            catch (MarketDataException ignored) { /* omit */ }
+            try {
+                resolved.put(s, quote(s));
+            } catch (MarketDataException e) {
+                failed.put(s, e.kind());
+            }
         }
-        return out;
+        return new QuoteBatch(resolved, failed);
     }
 
     private static MarketDataException notFoundCached(String what) {
