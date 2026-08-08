@@ -127,6 +127,11 @@ agora:
     finnhub:
       base-url: ${AGORA_DATA_FINNHUB_BASE_URL:https://finnhub.io/api/v1}
       key: ${AGORA_DATA_FINNHUB_KEY:}
+      # Default OFF (2026-08-08): the account's Finnhub plan does not include /stock/split — every
+      # call fails with 403 Forbidden, including for US symbols (confirmed for VICI). Alpaca is the
+      # primary split provider since 2026-07-07. SplitService still merges every enabled provider's
+      # answer, so leave this off until the plan is upgraded to include split history.
+      splits-enabled: ${AGORA_DATA_FINNHUB_SPLITS_ENABLED:false}
       # Shared rate-limit policy (M-D23) across every Finnhub caller: FinnhubClient (news/split/
       # fundamentals/estimates/profile/earnings-estimates), FinnhubMarketDataProvider (quote,
       # fail-fast) and FinnhubEarningsProvider (calendar, bounded wait) all inject the same

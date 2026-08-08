@@ -253,7 +253,7 @@ provider.
 | Fundamentals raw concepts / scores | US: SEC EDGAR XBRL; non-US: Yahoo `fundamentals-timeseries` (`get_fundamental_concepts`, `get_fundamental_score`) |
 | Filings / XBRL concepts / EPS / Form-4 | SEC EDGAR |
 | Earnings calendar | Finnhub, Yahoo |
-| Corporate-action splits (internal) | Alpaca, Finnhub — used for share-count adjustment in scoring, no dedicated tool |
+| Corporate-action splits (internal) | Alpaca; Finnhub merged in but disabled by default via `AGORA_DATA_FINNHUB_SPLITS_ENABLED` (the account's Finnhub plan lacks `/stock/split`, see "Configuration" below) — used for share-count adjustment in scoring, no dedicated tool |
 | Index constituents | Wikipedia (S&P 500) |
 | Index constituent changes | S&P Dow Jones Indices press-release RSS (S&P 500 add/remove); FTSE Russell reconstitution PDFs + iShares IWB/IWM holdings for the Russell 1000/2000 bucket split |
 | Execution | Alpaca and Saxo, selected per named connection (`alpaca-paper`, `alpaca-live`, `depot-1`, `saxo-live`) |
@@ -316,6 +316,7 @@ for the full list and defaults). Key ones:
 | `AGORA_TRADING_PROVIDER_TIMEOUT_MS` | Response timeout for broker/OAuth HTTP calls in ms (default `10000`; connect timeout is fixed at 3 s) |
 | `AGORA_DATA_ALPACA_KEY_ID` / `_SECRET` / `_BASE_URL` | Alpaca Market Data credentials (broker-first quote/OHLC + splits; IEX feed). Blank = provider self-skips |
 | `AGORA_DATA_FINNHUB_KEY` | Finnhub API key |
+| `AGORA_DATA_FINNHUB_SPLITS_ENABLED` | Enable Finnhub as a (merged, non-exclusive) split provider (default `false`). Off since 2026-08-08: the account's Finnhub plan does not include `/stock/split` — every call 403s, even for US symbols. Alpaca has been the primary split provider since 2026-07-07; only turn this on after upgrading the plan |
 | `AGORA_DATA_TWELVEDATA_KEY` | TwelveData API key |
 | `AGORA_DATA_PROVIDER_TIMEOUT_MS` | Per-request read timeout for market-data providers, so a slow upstream fails fast into the next (default `4000`) |
 | `AGORA_FETCH_TIMEOUT_MS` | Read timeout for EDGAR/Finnhub/Wikipedia/Yahoo-earnings fetch clients in ms (default `15000`; generous for multi-MB EDGAR downloads) |

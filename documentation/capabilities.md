@@ -609,7 +609,7 @@ timeout must reconcile via `get_order_by_ref` first. Exit contract details:
 
 | Capability | Role |
 |---|---|
-| Split providers (Alpaca, Finnhub) | Corporate-action splits; used for EPS/Piotroski share-count adjustment |
+| Split providers (Alpaca; Finnhub merged in but disabled by default, see `AGORA_DATA_FINNHUB_SPLITS_ENABLED` in [`../README.md`](../README.md#configuration)) | Corporate-action splits; used for EPS/Piotroski share-count adjustment |
 | Instrument identity | Ticker / exchange suffix / ISIN → `Instrument` (Saxo UIC when needed) |
 | Fundamentals routing | US → EDGAR concepts; non-US → Yahoo timeseries; optional global metrics shape |
 | TTL caches | Per-family (prices, news, fundamentals, filings, constituents, …) |

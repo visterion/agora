@@ -1,16 +1,26 @@
 package de.visterion.agora.fetch.split;
 
+import com.github.tomakehurst.wiremock.WireMockServer;
 import de.visterion.agora.data.MarketDataException;
-import org.junit.jupiter.api.Test;
+import de.visterion.agora.fetch.finnhub.FinnhubClient;
+import org.junit.jupiter.api.*;
+import org.springframework.web.client.RestClient;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.*;
+import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static org.assertj.core.api.Assertions.*;
 
 class SplitServiceTest {
+
+    static WireMockServer wm;
+    @BeforeAll static void start() { wm = new WireMockServer(options().dynamicPort()); wm.start(); }
+    @AfterAll static void stop() { wm.stop(); }
+    @BeforeEach void reset() { wm.resetAll(); }
 
     private static SplitEvent ev() { return new SplitEvent(LocalDate.parse("2024-06-10"), BigDecimal.ONE, BigDecimal.TEN); }
 
@@ -93,6 +103,33 @@ class SplitServiceTest {
         SplitService s = svc(List.of(p));
         s.splits("NVDA"); s.splits("NVDA");
         assertThat(calls.get()).isEqualTo(1);
+    }
+
+    @Test void finnhubSplitsDisabled_serviceNeverCallsFinnhubOverHttp() {
+        // 2026-08-08 sweep fix: agora.data.finnhub.splits-enabled=false must stop SplitService
+        // from reaching Finnhub at all, not merely change what it returns — verified at the HTTP
+        // interaction level (wm.verify), not just on resolve()'s result.
+        FinnhubClient client = new FinnhubClient(RestClient.builder().baseUrl(wm.baseUrl()).build(), "k");
+        FinnhubSplitProvider finnhub = new FinnhubSplitProvider(client, false);
+        SplitProvider alpaca = stub("alpaca", () -> { throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "alpaca: no data", null); });
+
+        assertThatThrownBy(() -> svc(List.of(alpaca, finnhub)).splits("VICI")).isInstanceOf(MarketDataException.class);
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/stock/split")));
+    }
+
+    @Test void finnhubSplitsEnabled_answerPassesThroughUnchanged() {
+        // Same wiring with the switch on: Finnhub is called and its answer reaches resolve()
+        // unchanged, matching today's behaviour.
+        wm.stubFor(get(urlPathEqualTo("/stock/split"))
+            .willReturn(okJson("[{\"symbol\":\"VICI\",\"date\":\"2024-06-10\",\"fromFactor\":1,\"toFactor\":10}]")));
+        FinnhubClient client = new FinnhubClient(RestClient.builder().baseUrl(wm.baseUrl()).build(), "k");
+        FinnhubSplitProvider finnhub = new FinnhubSplitProvider(client, true);
+        SplitProvider alpaca = stub("alpaca", () -> { throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "alpaca: no data", null); });
+
+        List<SplitEvent> result = svc(List.of(alpaca, finnhub)).splits("VICI");
+        assertThat(result).hasSize(1);
+        assertThat(result.get(0).date()).isEqualTo(LocalDate.parse("2024-06-10"));
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/stock/split")));
     }
 
     private static SplitProvider stub(String name, java.util.function.Supplier<List<SplitEvent>> body) {
