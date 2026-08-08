@@ -11,7 +11,10 @@ import tools.jackson.databind.node.ObjectNode;
 import org.mockito.Mockito;
 
 import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -47,14 +50,24 @@ class GetQuoteToolNoDataTest {
         assertThat(r.output().path("unresolved").get(0).asString()).isEqualTo("NOKIA");
     }
 
-    @Test void anIntermediateProviderFailureStillYieldsNoDataWhenTheKindIsNotFound() {
-        // The kind that reaches the tool is the LAST provider's; an UNAVAILABLE thrown by an
-        // earlier provider (e.g. Saxo without a uic) must not turn this into an outage.
-        ToolResult r = toolFor(new QuoteBatch(
-                Map.of(), Map.of("NOKIA", MarketDataException.Kind.NOT_FOUND)))
-                .call(symbols("NOKIA"));
+    @Test void multiSymbolQuotesArePinnedToRequestOrder() {
+        // QuoteBatch used to defensively copy via Map.copyOf, whose iteration order is
+        // unspecified (and salt-randomised per JVM run) — GetQuoteTool iterates
+        // resolved.values() to emit quotes[], so that reordered a caller's batch response on
+        // every restart. Only hasSize() was asserted before; this pins the actual order.
+        Map<String, Quote> resolved = new LinkedHashMap<>();
+        resolved.put("SIE.DE", quote("SIE.DE"));
+        resolved.put("NOK", quote("NOK"));
+        resolved.put("AAPL", quote("AAPL"));
+
+        ToolResult r = toolFor(new QuoteBatch(resolved, Map.of()))
+                .call(symbols("SIE.DE", "NOK", "AAPL"));
 
         assertThat(r.available()).isTrue();
+        var quoteSymbols = StreamSupport.stream(r.output().path("quotes").spliterator(), false)
+                .map(n -> n.path("symbol").asString())
+                .collect(Collectors.toList());
+        assertThat(quoteSymbols).containsExactly("SIE.DE", "NOK", "AAPL");
     }
 
     @Test void mixedBatchWithOneUnavailableSymbolStaysASuccess() {

@@ -84,6 +84,42 @@ class MarketDataServiceTest {
         QuoteBatch batch = svc.quotes(List.of("AAPL", "BAD"));
         assertThat(batch.resolved()).containsKey("AAPL");
         assertThat(batch.resolved()).doesNotContainKey("BAD");
-        assertThat(batch.failed()).containsKey("BAD");
+        assertThat(batch.failed()).containsEntry("BAD", MarketDataException.Kind.UNAVAILABLE);
+    }
+
+    @Test
+    void quotesKeysFailedReasonByTheRawRequestSymbolNotAnUppercasedCacheKey() {
+        // Regression guard for rule 2: QuoteBatch.failed() must be keyed by exactly the string
+        // the caller passed in, never by quote()'s internal uppercased cache key. A caller that
+        // requests "nokia" and looks the reason up under "nokia" must find it — keying under
+        // "NOKIA" would make the reason set empty and turn a real outage into "symbol not found"
+        // at the tool layer. (Fails if failed.put(s, ...) is changed to
+        // failed.put(s.toUpperCase(Locale.ROOT), ...) in MarketDataService.quotes.)
+        MarketDataProvider provider = new MarketDataProvider() {
+            public String name() { return "notfound"; }
+            public Quote quote(String symbol) {
+                throw new MarketDataException(MarketDataException.Kind.NOT_FOUND, "nf", null);
+            }
+            public List<OhlcBar> ohlc(String symbol, int days) { throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "n/a", null); }
+        };
+        var svc = new MarketDataService(List.of(provider), 1000, () -> 0L);
+        QuoteBatch batch = svc.quotes(List.of("nokia"));
+        assertThat(batch.failed()).containsEntry("nokia", MarketDataException.Kind.NOT_FOUND);
+    }
+
+    @Test
+    void quoteFailureKindIsTheLastProviderTriedNotAnEarlierOne() {
+        // The kind that reaches quotes()/failed() is the LAST provider's in the fallback chain:
+        // an UNAVAILABLE thrown by an earlier provider (e.g. Saxo without a uic) must not mask a
+        // later NOT_FOUND, and must not turn a genuine "symbol does not exist" into an outage.
+        MarketDataProvider unavailableFirst = failing("first");
+        MarketDataProvider notFoundLast = new MarketDataProvider() {
+            public String name() { return "last"; }
+            public Quote quote(String symbol) { throw new MarketDataException(MarketDataException.Kind.NOT_FOUND, "nf", null); }
+            public List<OhlcBar> ohlc(String symbol, int days) { throw new MarketDataException(MarketDataException.Kind.NOT_FOUND, "nf", null); }
+        };
+        var svc = new MarketDataService(List.of(unavailableFirst, notFoundLast), 1000, () -> 0L);
+        QuoteBatch batch = svc.quotes(List.of("NOKIA"));
+        assertThat(batch.failed()).containsEntry("NOKIA", MarketDataException.Kind.NOT_FOUND);
     }
 }
