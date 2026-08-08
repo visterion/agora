@@ -5,7 +5,7 @@ in the live MCP/webhook schemas, in [`api.md`](api.md) (fundamentals, earnings),
 [`exit-tools.md`](exit-tools.md) (trading exits). Provider coverage is in
 [`hunting-grounds.md`](hunting-grounds.md).
 
-**39 tools** · three logical surfaces · one Docker image.
+**40 tools** · three logical surfaces · one Docker image.
 
 | Surface | Package(s) | Role |
 |---|---|---|
@@ -44,6 +44,7 @@ the two flags — nothing has to special-case a missing container:
 
 Symmetrically, the same tools now put `"available": true` into their **successful** payload, so
 a consumer reading the flag with a `false` default never mistakes a good answer for a bad one.
+**`get_quote` is the one deliberate exception to that success-flag promise** — see below.
 
 Tools that follow this today: `get_intraday`, `get_ohlc`, `get_indicators`,
 `get_indicators_batch`, `get_r_framework` (payload flag + reason), and
@@ -52,13 +53,35 @@ payload, no reason). The trading equivalents are `get_order_by_ref` (`order: nul
 `cancel_order` (`accepted:false`, `rejectCode:"NOT_FOUND"`) — see
 [`exit-tools.md`](exit-tools.md).
 
+`get_quote` also follows it now, decided **per symbol, never per batch** (`GetQuoteTool` /
+`QuoteBatch`): a batch that mixed hits and misses used to collapse to a single error envelope,
+which Dracul (sending whole watchlists in one call) would read as "0 of 30 refreshed" and blind
+the stop watcher on one slow symbol.
+
+- **Nothing resolved, every miss was `NOT_FOUND`** — `MarketDataService.quotes()`'s `QuoteBatch`
+  records the failure `Kind` per raw request symbol; when every symbol in `unresolved[]` failed
+  with `NOT_FOUND` (never vacuously true over an empty set — a symbol with no recorded reason at
+  all counts as an outage, not `NOT_FOUND`), the tool returns an **available** result:
+  `{quotes: [], available: false, error, unresolved: [...]}`.
+- **Nothing resolved, at least one miss was not `NOT_FOUND`** (`UNAVAILABLE`, `RATE_LIMITED`, …)
+  — stays an **error envelope** (`ToolResult.unavailable`), same as before.
+- **Anything resolved** — stays a plain `ok` result exactly as before: `{quotes: [...]}`, plus
+  `unresolved[]` listing any misses in that same batch, whatever their reason.
+
+Two things carry over unchanged from before this: a no-data row is still **never** placed inside
+`quotes[]` — a consumer looping that array would coerce a missing price to 0 — and a partial
+batch still reports its misses in `unresolved[]`.
+
+**The one exception to the success-flag promise above:** `get_quote`'s success payload
+deliberately carries **no** `"available": true` key, on either the fully-resolved or the
+partial-batch path — its shape had to stay byte-identical to what existing consumers already
+parse. A consumer of `get_quote` must therefore not look for a payload `available` flag at all;
+branch on the MCP `isError` flag (source outage) and on whether `quotes[]` is empty (nothing
+resolved) instead. This does not weaken the promise for any other tool in the list above — they
+still all emit `"available": true` on success.
+
 Deliberately **not** following it:
 
-- **`get_quote`** — the per-symbol `NOT_FOUND` is swallowed inside `MarketDataService.quotes`,
-  so the tool cannot tell "unknown symbol" from "chain down" when *nothing* resolved; it keeps
-  the error envelope. A partial batch already reports the misses in `unresolved[]`, and a
-  no-data row is deliberately **never** placed inside `quotes[]` — a consumer looping that array
-  would coerce a missing price to 0.
 - **EDGAR tools** (`get_filings`, `search_filings`, `get_filing_text`, `get_company_concept`,
   `get_form4_*`, `get_eps_history`) — their `NOT_FOUND` also covers `invalid CIK (must be
   numeric)`, a malformed argument that is right to be an error. The kind is overloaded there;
@@ -128,14 +151,31 @@ bug, not routine chain traffic.
 | `get_ohlc` | Daily OHLCV history (oldest-first) |
 | `get_intraday` | Intraday OHLCV candles (interval + range) |
 | `get_fx_rate` | FX conversion rate: 1 unit of `from` in `to` |
+| `search_instruments` | Find instruments by ticker fragment or company name. Args: `query` (required string), `limit` (optional integer, default 10, clamped 1..25). Output `{"results":[{"symbol","name","exchange","type"}]}` — no currency field, the upstream search payload has none. Results keep the provider's own relevance order (best match first) and span all venues, so one company can appear more than once (e.g. `NOK` on NYSE and `NOKIA.HE` in Helsinki) |
 
 **Provider chain (quotes / OHLC):** Alpaca → Saxo → TwelveData → Finnhub → Yahoo  
 **Intraday:** Yahoo chart. **FX:** Yahoo pairs (optional scheduled warmer).
+**Instrument search:** Yahoo search only — no second provider, no fallback chain.
 
 `get_ohlc` and `get_intraday` answer "this symbol has nothing to serve" with an available
 result — `{symbol, bars: [], available: false, error}` — and reserve the error envelope for a
 real source failure. Successful payloads carry `available: true`. See
 [Tool result semantics](#tool-result-semantics-the-two-available-flags-and-not_found-vs-unavailable).
+
+`search_instruments` has no equivalent no-data case: zero hits is an ordinary available result
+carrying an empty `results[]`, not `unavailable` — only a provider failure or an armed cooldown
+(see below) returns an error envelope. It sits in the default `general` namespace, so it is
+published to every non-trading agent's tool list, same as `get_quote`.
+
+`search_instruments` is backed by a TTL cache
+(`agora.data.cache.ttl.instrument-search-seconds`,
+`AGORA_DATA_CACHE_TTL_INSTRUMENT_SEARCH_SECONDS`, default 600s) and a reactive cooldown
+(`agora.data.search.cooldown-threshold` / `AGORA_DATA_SEARCH_COOLDOWN_THRESHOLD`, default 3
+consecutive upstream failures; `agora.data.search.cooldown-ms` / `AGORA_DATA_SEARCH_COOLDOWN_MS`,
+default 60000). The cooldown is reactive only — no fixed min-interval — because a min-interval
+would abort the *last* query of a typing burst and let the earlier, stale ones through. Yahoo is
+also the last provider in the quote/OHLC chain, so an unprotected search burst from the same
+container IP would risk throttling live prices for every non-US symbol too.
 
 ---
 
@@ -593,7 +633,7 @@ token; live connections need stronger live scopes.
 
 ---
 
-## Tool count checklist (39)
+## Tool count checklist (40)
 
 ```
 cancel_order
@@ -635,6 +675,7 @@ ping
 place_bracket
 place_protective_stop
 search_filings
+search_instruments
 ```
 
 When adding or removing a tool: update this list, the README tool catalog, and the local

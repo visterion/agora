@@ -22,7 +22,8 @@ class YahooUserAgentPinTest {
             de.visterion.agora.data.FxService.class,
             de.visterion.agora.data.IntradayService.class,
             de.visterion.agora.fetch.earnings.YahooEarningsProvider.class,
-            de.visterion.agora.research.fundamentals.YahooCrumbClient.class);
+            de.visterion.agora.research.fundamentals.YahooCrumbClient.class,
+            de.visterion.agora.fetch.search.YahooSearchClient.class);
 
     @Test void allYahooClientsInjectTheSameUserAgentProperty() {
         List<String> found = new ArrayList<>();
