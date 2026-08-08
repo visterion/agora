@@ -316,6 +316,7 @@ for the full list and defaults). Key ones:
 | `AGORA_TRADING_PROVIDER_TIMEOUT_MS` | Response timeout for broker/OAuth HTTP calls in ms (default `10000`; connect timeout is fixed at 3 s) |
 | `AGORA_DATA_ALPACA_KEY_ID` / `_SECRET` / `_BASE_URL` | Alpaca Market Data credentials (broker-first quote/OHLC + splits; IEX feed). Blank = provider self-skips |
 | `AGORA_DATA_FINNHUB_KEY` | Finnhub API key |
+| `AGORA_DATA_FINNHUB_SPLITS_ENABLED` | Enable Finnhub as a (merged, non-exclusive) split provider (default `false`). Off since 2026-08-08: the account's Finnhub plan does not include `/stock/split` — every call 403s, even for US symbols. Alpaca has been the primary split provider since 2026-07-07; only turn this on after upgrading the plan |
 | `AGORA_DATA_TWELVEDATA_KEY` | TwelveData API key |
 | `AGORA_DATA_PROVIDER_TIMEOUT_MS` | Per-request read timeout for market-data providers, so a slow upstream fails fast into the next (default `4000`) |
 | `AGORA_FETCH_TIMEOUT_MS` | Read timeout for EDGAR/Finnhub/Wikipedia/Yahoo-earnings fetch clients in ms (default `15000`; generous for multi-MB EDGAR downloads) |

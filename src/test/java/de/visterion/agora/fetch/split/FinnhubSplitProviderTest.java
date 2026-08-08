@@ -56,4 +56,23 @@ class FinnhubSplitProviderTest {
     }
 
     @Test void name_isFinnhub() { assertThat(provider("k").name()).isEqualTo("finnhub"); }
+
+    @Test void splitsDisabled_throwsWithoutCallingFinnhub() {
+        // agora.data.finnhub.splits-enabled=false (the production default since 2026-08-08): the
+        // provider must report itself unavailable without making the HTTP call that would 403.
+        FinnhubSplitProvider p = new FinnhubSplitProvider(
+                new FinnhubClient(RestClient.builder().baseUrl(wm.baseUrl()).build(), "k"), false);
+        assertThatThrownBy(() -> p.splits("VICI")).isInstanceOf(MarketDataException.class);
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/stock/split")));
+    }
+
+    @Test void splitsEnabled_behavesLikeToday() {
+        wm.stubFor(get(urlPathEqualTo("/stock/split"))
+            .withQueryParam("symbol", equalTo("NVDA"))
+            .willReturn(okJson("[{\"symbol\":\"NVDA\",\"date\":\"2024-06-10\",\"fromFactor\":1,\"toFactor\":10}]")));
+        FinnhubSplitProvider p = new FinnhubSplitProvider(
+                new FinnhubClient(RestClient.builder().baseUrl(wm.baseUrl()).build(), "k"), true);
+        assertThat(p.splits("NVDA")).hasSize(1);
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/stock/split")));
+    }
 }
