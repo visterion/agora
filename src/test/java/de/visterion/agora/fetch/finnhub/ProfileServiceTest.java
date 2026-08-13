@@ -2,9 +2,14 @@ package de.visterion.agora.fetch.finnhub;
 
 import com.github.tomakehurst.wiremock.WireMockServer;
 import de.visterion.agora.data.MarketDataException;
+import de.visterion.agora.data.TtlCache;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.annotation.UserConfigurations;
+import org.springframework.boot.test.context.ConfigDataApplicationContextInitializer;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.RestClient;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.*;
@@ -111,38 +116,49 @@ class ProfileServiceTest {
     }
 
     /**
-     * Builds the ProfileService bean through its real {@code @Autowired} constructor (no
-     * property overrides for the finnhub-profile TTL), so the finnhub cache gets whatever TTL
-     * {@code application.yaml}/the {@code @Value} default actually resolves to today — the
-     * exact wiring that is broken in production (bound to the 6h {@code fundamentals-seconds}
-     * key, so Lazarus's nightly run always finds a cold cache). The cache's clock is then
-     * swapped out (reflection) for a controllable one, keeping the production-resolved TTL, so
-     * the test observes real wiring instead of a TTL chosen by the test itself.
+     * Builds the ProfileService bean through its real {@code @Autowired} constructor, with
+     * {@code application.yaml} actually loaded ({@link ConfigDataApplicationContextInitializer}
+     * — not just the {@code @Value} annotation default), so the finnhub cache gets exactly the
+     * TTL production would wire it with today. This is the exact wiring that was broken in
+     * production (bound to the 6h {@code fundamentals-seconds} key, so Lazarus's nightly run
+     * always found a cold cache). The cache's clock is then swapped out (reflection) for a
+     * controllable one, keeping the production-resolved TTL, so the test observes real wiring
+     * instead of a TTL chosen by the test itself — and a regression that only changes the YAML
+     * default (not the code) is caught too.
      */
-    private ProfileService productionWiredService(long[] clock) {
-        var runner = new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+    private record WiredService(ProfileService service, long resolvedFinnhubTtlMillis) {}
+
+    private WiredService productionWiredService(long[] clock) {
+        var runner = new ApplicationContextRunner()
+                .withInitializer(new ConfigDataApplicationContextInitializer())
                 .withBean(FinnhubClient.class, () -> new FinnhubClient(
                         RestClient.builder().baseUrl(wm.baseUrl()).build(), "k"))
                 .withBean(YahooCompanyDataSource.class, () -> mock(YahooCompanyDataSource.class))
-                .withConfiguration(org.springframework.boot.context.annotation.UserConfigurations.of(ProfileService.class));
+                .withConfiguration(UserConfigurations.of(ProfileService.class));
 
         ProfileService[] holder = new ProfileService[1];
         runner.run(ctx -> holder[0] = ctx.getBean(ProfileService.class));
         ProfileService svc = holder[0];
 
-        Object finnhubCache = org.springframework.test.util.ReflectionTestUtils.getField(svc, "cache");
-        long ttlMillis = (long) org.springframework.test.util.ReflectionTestUtils.getField(finnhubCache, "ttlMillis");
-        long maxSize = (long) org.springframework.test.util.ReflectionTestUtils.getField(finnhubCache, "maxSize");
-        var replacementCache = new de.visterion.agora.data.TtlCache<String, Profile>(ttlMillis, maxSize, () -> clock[0]);
-        org.springframework.test.util.ReflectionTestUtils.setField(svc, "cache", replacementCache);
-        return svc;
+        Object finnhubCache = ReflectionTestUtils.getField(svc, "cache");
+        long ttlMillis = (long) ReflectionTestUtils.getField(finnhubCache, "ttlMillis");
+        long maxSize = (long) ReflectionTestUtils.getField(finnhubCache, "maxSize");
+        var replacementCache = new TtlCache<String, Profile>(ttlMillis, maxSize, () -> clock[0]);
+        ReflectionTestUtils.setField(svc, "cache", replacementCache);
+        return new WiredService(svc, ttlMillis);
+    }
+
+    @Test void finnhubProfileTtlComesFromApplicationYaml() {
+        WiredService wired = productionWiredService(new long[] {0L});
+
+        assertThat(wired.resolvedFinnhubTtlMillis()).isEqualTo(604_800L * 1000L);
     }
 
     @Test void finnhubProfileSurvives7hJump() {
         wm.stubFor(get(urlPathEqualTo("/stock/profile2"))
                 .willReturn(okJson("{\"name\":\"Synth Inc\",\"finnhubIndustry\":\"Technology\",\"exchange\":\"NASDAQ\"}")));
         long[] clock = {0L};
-        ProfileService svc = productionWiredService(clock);
+        ProfileService svc = productionWiredService(clock).service();
 
         svc.profile("SYNTH");
         clock[0] += 7L * 3600 * 1000; // +7h
@@ -155,7 +171,7 @@ class ProfileServiceTest {
         wm.stubFor(get(urlPathEqualTo("/stock/profile2"))
                 .willReturn(okJson("{\"name\":\"Synth Inc\",\"finnhubIndustry\":\"Technology\",\"exchange\":\"NASDAQ\"}")));
         long[] clock = {0L};
-        ProfileService svc = productionWiredService(clock);
+        ProfileService svc = productionWiredService(clock).service();
 
         svc.profile("SYNTH");
         clock[0] += 8L * 24 * 3600 * 1000; // +8 days
