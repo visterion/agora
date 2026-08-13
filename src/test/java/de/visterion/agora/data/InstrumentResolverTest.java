@@ -183,6 +183,95 @@ class InstrumentResolverTest {
         wm.verify(3, getRequestedFor(urlPathEqualTo("/ref/v1/instruments/details/1126/Stock")));
     }
 
+    // HKEX: production regression 2026-08-13 — GET get_quote 0005.HK returned Chen Hsong Holdings
+    // (1.60 HKD) instead of HSBC (162.75 HKD) because the resolver accepted the first ExchangeId
+    // hit for fuzzy Keywords=0005 without checking it was the requested instrument.
+
+    @Test void hkNumericTickerIsZeroPaddedInTheQuery() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("ExchangeId", equalTo("HKEX")).willReturn(okJson("{\"Data\":[]}")));
+        resolver(true).resolve("0005.HK");
+        wm.verify(getRequestedFor(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("Keywords", equalTo("00005")));
+    }
+
+    @Test void hkKeywordHitOnLongerNumericTickerIsRejectedNotAcceptedAsHsbc() {
+        // Keywords=00005 fuzzy-matches Chen Hsong (00057:xhkg) as well as HSBC; only the hit whose
+        // own symbol is exactly (zero-padding aside) "00005" may be trusted.
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("ExchangeId", equalTo("HKEX")).willReturn(okJson("""
+                  {"Data":[{"AssetType":"Stock","CurrencyCode":"HKD","ExchangeId":"HKEX","Identifier":43922,"Symbol":"00057:xhkg"}]}""")));
+        Instrument i = resolver(true).resolve("0005.HK");
+        assertThat(i.resolved()).isFalse();          // falls back to raw, NOT built from the wrong hit
+        assertThat(i.displaySymbol()).isEqualTo("0005.HK");
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/ref/v1/instruments/details/43922/Stock")));
+    }
+
+    @Test void hkRejectedHitIsNotCachedAsSuccess() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("ExchangeId", equalTo("HKEX")).willReturn(okJson("""
+                  {"Data":[{"AssetType":"Stock","CurrencyCode":"HKD","ExchangeId":"HKEX","Identifier":43922,"Symbol":"00057:xhkg"}]}""")));
+        SaxoInstrumentResolver r = resolver(true);
+        assertThat(r.resolve("0005.HK").resolved()).isFalse();
+        assertThat(r.resolve("0005.HK").resolved()).isFalse();     // negative-cached, not positively cached
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/ref/v1/instruments")));   // 2nd call served from failureCache
+    }
+
+    @Test void hkExactPaddedMatchResolvesToHsbc() {
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("Keywords", equalTo("00005"))
+                .withQueryParam("ExchangeId", equalTo("HKEX")).willReturn(okJson("""
+                  {"Data":[{"AssetType":"Stock","CurrencyCode":"HKD","ExchangeId":"HKEX","Identifier":30307,"Symbol":"00005:xhkg"}]}""")));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/30307/Stock")).willReturn(okJson("""
+            {"Uic":30307,"ExchangeId":"HKEX","CurrencyCode":"HKD","CountryCode":"HK","PriceToContractFactor":1.0}""")));
+        Instrument i = resolver(true).resolve("00005.HK");
+        assertThat(i.resolved()).isTrue();
+        assertThat(i.uic()).isEqualTo(30307L);
+    }
+
+    @Test void hkShortNumericTickerAcceptsThePaddedHit() {
+        // Regression guard: 0700.HK is a working production symbol today. Requested ticker is
+        // "0700" but Saxo's own symbol is "00700:xhkg" — must still be accepted (leading-zero
+        // normalisation on both sides), not rejected by a naive exact-string comparison.
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("Keywords", equalTo("00700"))
+                .withQueryParam("ExchangeId", equalTo("HKEX")).willReturn(okJson("""
+                  {"Data":[{"AssetType":"Stock","CurrencyCode":"HKD","ExchangeId":"HKEX","Identifier":16,"Symbol":"00700:xhkg"}]}""")));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/16/Stock")).willReturn(okJson("""
+            {"Uic":16,"ExchangeId":"HKEX","CurrencyCode":"HKD","CountryCode":"HK","PriceToContractFactor":1.0}""")));
+        Instrument i = resolver(true).resolve("0700.HK");
+        assertThat(i.resolved()).isTrue();
+        assertThat(i.uic()).isEqualTo(16L);
+    }
+
+    @Test void nonHkSuffixIsUnaffectedByHkPadding() {
+        // BMW.DE: non-HK suffix must not be zero-padded or symbol-verified — same behaviour as
+        // the existing SAP.DE test (first exchange hit wins, no digit-match requirement).
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("Keywords", equalTo("BMW"))
+                .withQueryParam("ExchangeId", equalTo("FSE")).willReturn(okJson("""
+                  {"Data":[{"AssetType":"Stock","CurrencyCode":"EUR","ExchangeId":"FSE","Identifier":4021,"Symbol":"BMW:xetr"}]}""")));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/4021/Stock")).willReturn(okJson("""
+            {"Uic":4021,"ExchangeId":"FSE","CurrencyCode":"EUR","CountryCode":"DE","PriceToContractFactor":1.0}""")));
+        Instrument i = resolver(true).resolve("BMW.DE");
+        assertThat(i.resolved()).isTrue();
+        assertThat(i.uic()).isEqualTo(4021L);
+    }
+
+    @Test void tokyoNumericSuffixStillResolvesUnchanged() {
+        // 6758.T: Tokyo tickers are numeric too but padding/verification is scoped to HKEX only
+        // (see comment in SaxoInstrumentResolver#lookup) — this must resolve exactly as before.
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
+                .withQueryParam("Keywords", equalTo("6758"))
+                .withQueryParam("ExchangeId", equalTo("TYO")).willReturn(okJson("""
+                  {"Data":[{"AssetType":"Stock","CurrencyCode":"JPY","ExchangeId":"TYO","Identifier":5822,"Symbol":"6758:xtks"}]}""")));
+        wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments/details/5822/Stock")).willReturn(okJson("""
+            {"Uic":5822,"ExchangeId":"TYO","CurrencyCode":"JPY","CountryCode":"JP","PriceToContractFactor":1.0}""")));
+        Instrument i = resolver(true).resolve("6758.T");
+        assertThat(i.resolved()).isTrue();
+        assertThat(i.uic()).isEqualTo(5822L);
+    }
+
     @Test void londonSuffixIsMappedAndResolvesViaLseSets() {
         wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments"))
                 .withQueryParam("ExchangeId", equalTo("LSE_SETS"))
