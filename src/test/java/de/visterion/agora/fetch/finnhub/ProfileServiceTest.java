@@ -131,8 +131,10 @@ class ProfileServiceTest {
     private WiredService productionWiredService(long[] clock) {
         var runner = new ApplicationContextRunner()
                 .withInitializer(new ConfigDataApplicationContextInitializer())
+                .withPropertyValues("agora.data.finnhub.base-url=" + wm.baseUrl())
                 .withBean(FinnhubClient.class, () -> new FinnhubClient(
                         RestClient.builder().baseUrl(wm.baseUrl()).build(), "k"))
+                .withBean(FinnhubRateLimiter.class, () -> new FinnhubRateLimiter(60, 3000L, System::currentTimeMillis))
                 .withBean(YahooCompanyDataSource.class, () -> mock(YahooCompanyDataSource.class))
                 .withConfiguration(UserConfigurations.of(ProfileService.class));
 
@@ -178,6 +180,37 @@ class ProfileServiceTest {
         svc.profile("SYNTH");
 
         wm.verify(2, getRequestedFor(urlPathEqualTo("/stock/profile2")));
+    }
+
+    /**
+     * Pins the FAIL_FAST wiring: a bucket already drained by a simulated {@code /stock/metric}
+     * call must not make the profile call block-and-wait for a slot to free up. It must fail
+     * immediately, never reach WireMock, and leave the shared bucket exactly as exhausted as it
+     * found it — so the next {@code /stock/metric} call (not simulated here, but sharing the same
+     * limiter in production) is not made to wait behind a profile retry either.
+     */
+    @Test void finnhubProfileFailsFastWhenBucketExhausted_leavingMetricSlotUntouched() {
+        long[] clock = {0L};
+        FinnhubRateLimiter sharedLimiter = new FinnhubRateLimiter(1, 5_000L, () -> clock[0]);
+        assertThat(sharedLimiter.tryAcquire()).isTrue();   // simulates /stock/metric taking the only slot
+        assertThat(sharedLimiter.tryAcquire()).isFalse();  // bucket now exhausted
+
+        RestClient profileHttp = RestClient.builder()
+                .baseUrl(wm.baseUrl())
+                .requestInterceptor(sharedLimiter.withMode(FinnhubRateLimiter.Mode.FAIL_FAST))
+                .build();
+        wm.stubFor(get(urlPathEqualTo("/stock/profile2"))
+                .willReturn(okJson("{\"name\":\"Synth Inc\"}")));
+        ProfileService svc = new ProfileService(new FinnhubClient(profileHttp, "k"), 604800L, () -> clock[0],
+                de.visterion.agora.data.NonUsSuffixes.DEFAULT, 604800L, profileHttp, mock(YahooCompanyDataSource.class));
+
+        long startNanos = System.nanoTime();
+        assertThatThrownBy(() -> svc.profile("SYNTH")).isInstanceOf(MarketDataException.class);
+        long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+
+        assertThat(elapsedMs).isLessThan(1_000L); // never entered WAIT's poll loop (which would run up to maxWaitMs)
+        wm.verify(0, getRequestedFor(urlPathEqualTo("/stock/profile2"))); // acquire() threw before the request fired
+        assertThat(sharedLimiter.tryAcquire()).isFalse(); // still exhausted — the failed attempt spent no extra slot
     }
 
     @Test void us_unchanged() {
