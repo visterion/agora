@@ -60,10 +60,15 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
         int dot = input.lastIndexOf('.');
         String ticker = input.substring(0, dot);
         String exchangeId = SUFFIX_TO_EXCHANGE.get(input.substring(dot + 1).toUpperCase(Locale.ROOT));
+        boolean numericTicker = ticker.chars().allMatch(Character::isDigit) && !ticker.isEmpty();
+        // HKEX lists numeric tickers zero-padded to 5 digits (00005:xhkg = HSBC). Every other mapped
+        // exchange uses alphabetic/free-form local codes, so padding is scoped to HKEX only — padding
+        // e.g. a Toronto numeric ticker would be pure speculation with no evidence behind it.
+        String queryKeyword = (numericTicker && "HKEX".equals(exchangeId)) ? zeroPadHk(ticker) : ticker;
 
         tools.jackson.databind.JsonNode root = access.http().get()
                 .uri(uri -> uri.path("/ref/v1/instruments")
-                        .queryParam("Keywords", ticker).queryParam("AssetTypes", "Stock")
+                        .queryParam("Keywords", queryKeyword).queryParam("AssetTypes", "Stock")
                         .queryParam("$top", 10).queryParam("ExchangeId", exchangeId).build())
                 .header("Authorization", bearer)
                 .retrieve().body(tools.jackson.databind.JsonNode.class);
@@ -75,11 +80,40 @@ public class SaxoInstrumentResolver implements InstrumentResolver {
             if (!exchangeId.equals(hit.path("ExchangeId").asString(""))) continue;
             long id = hit.path("Identifier").asLong(0);
             if (id == 0) continue;
+            // Keyword search is fuzzy (e.g. "0005" also matches "00057:xhkg", a different company),
+            // so a numeric ticker must be verified against the hit's own symbol before it is trusted.
+            // Non-numeric tickers keep the pre-existing behaviour (first exchange match wins) because
+            // local venues legitimately return a different-looking symbol for the same instrument
+            // (e.g. "SAP.DE" resolving to Saxo's "SAPG:xetr").
+            if (numericTicker) {
+                String hitBase = baseSymbol(hit.path("Symbol").asString(""));
+                if (!hitBase.chars().allMatch(Character::isDigit) || hitBase.isEmpty()
+                        || !stripLeadingZeros(hitBase).equals(stripLeadingZeros(ticker))) {
+                    continue;
+                }
+            }
             tools.jackson.databind.JsonNode d = details(id, bearer);
             if (d == null) throw new IllegalStateException("no details for " + input);
             return build(input, id, d);        // displaySymbol = input (the suffixed symbol)
         }
         throw new IllegalStateException("no exchange hit");
+    }
+
+    /** "00057:xhkg" → "00057" (Saxo symbols carry the exchange suffix; mirrors
+     *  {@code trading.saxo.SaxoBrokerProvider#baseSymbol}, package-private there so duplicated
+     *  here rather than widened just for this one-liner). */
+    private static String baseSymbol(String saxoSymbol) {
+        int i = saxoSymbol.indexOf(':');
+        return i < 0 ? saxoSymbol : saxoSymbol.substring(0, i);
+    }
+
+    private static String zeroPadHk(String ticker) {
+        return ticker.length() >= 5 ? ticker : "0".repeat(5 - ticker.length()) + ticker;
+    }
+
+    private static String stripLeadingZeros(String digits) {
+        String stripped = digits.replaceFirst("^0+", "");
+        return stripped.isEmpty() ? "0" : stripped;
     }
 
     private String bearer() { return access.bearer().orElseThrow(); }
