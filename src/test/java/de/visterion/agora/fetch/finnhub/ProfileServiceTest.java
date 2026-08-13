@@ -110,6 +110,60 @@ class ProfileServiceTest {
         assertThat(p.profile().path("finnhubIndustry").asString("")).isEqualTo("Technology");
     }
 
+    /**
+     * Builds the ProfileService bean through its real {@code @Autowired} constructor (no
+     * property overrides for the finnhub-profile TTL), so the finnhub cache gets whatever TTL
+     * {@code application.yaml}/the {@code @Value} default actually resolves to today — the
+     * exact wiring that is broken in production (bound to the 6h {@code fundamentals-seconds}
+     * key, so Lazarus's nightly run always finds a cold cache). The cache's clock is then
+     * swapped out (reflection) for a controllable one, keeping the production-resolved TTL, so
+     * the test observes real wiring instead of a TTL chosen by the test itself.
+     */
+    private ProfileService productionWiredService(long[] clock) {
+        var runner = new org.springframework.boot.test.context.runner.ApplicationContextRunner()
+                .withBean(FinnhubClient.class, () -> new FinnhubClient(
+                        RestClient.builder().baseUrl(wm.baseUrl()).build(), "k"))
+                .withBean(YahooCompanyDataSource.class, () -> mock(YahooCompanyDataSource.class))
+                .withConfiguration(org.springframework.boot.context.annotation.UserConfigurations.of(ProfileService.class));
+
+        ProfileService[] holder = new ProfileService[1];
+        runner.run(ctx -> holder[0] = ctx.getBean(ProfileService.class));
+        ProfileService svc = holder[0];
+
+        Object finnhubCache = org.springframework.test.util.ReflectionTestUtils.getField(svc, "cache");
+        long ttlMillis = (long) org.springframework.test.util.ReflectionTestUtils.getField(finnhubCache, "ttlMillis");
+        long maxSize = (long) org.springframework.test.util.ReflectionTestUtils.getField(finnhubCache, "maxSize");
+        var replacementCache = new de.visterion.agora.data.TtlCache<String, Profile>(ttlMillis, maxSize, () -> clock[0]);
+        org.springframework.test.util.ReflectionTestUtils.setField(svc, "cache", replacementCache);
+        return svc;
+    }
+
+    @Test void finnhubProfileSurvives7hJump() {
+        wm.stubFor(get(urlPathEqualTo("/stock/profile2"))
+                .willReturn(okJson("{\"name\":\"Synth Inc\",\"finnhubIndustry\":\"Technology\",\"exchange\":\"NASDAQ\"}")));
+        long[] clock = {0L};
+        ProfileService svc = productionWiredService(clock);
+
+        svc.profile("SYNTH");
+        clock[0] += 7L * 3600 * 1000; // +7h
+        svc.profile("SYNTH");
+
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/stock/profile2")));
+    }
+
+    @Test void finnhubProfileRefetchesAfter8Days() {
+        wm.stubFor(get(urlPathEqualTo("/stock/profile2"))
+                .willReturn(okJson("{\"name\":\"Synth Inc\",\"finnhubIndustry\":\"Technology\",\"exchange\":\"NASDAQ\"}")));
+        long[] clock = {0L};
+        ProfileService svc = productionWiredService(clock);
+
+        svc.profile("SYNTH");
+        clock[0] += 8L * 24 * 3600 * 1000; // +8 days
+        svc.profile("SYNTH");
+
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/stock/profile2")));
+    }
+
     @Test void us_unchanged() {
         YahooCompanyDataSource yahoo = mock(YahooCompanyDataSource.class);
         wm.stubFor(get(urlPathEqualTo("/stock/profile2"))

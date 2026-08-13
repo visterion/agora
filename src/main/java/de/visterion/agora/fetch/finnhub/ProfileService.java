@@ -30,7 +30,7 @@ public class ProfileService {
 
     @Autowired
     public ProfileService(FinnhubClient client,
-                          @Value("${agora.data.cache.ttl.fundamentals-seconds:21600}") long ttlSeconds,
+                          @Value("${agora.data.cache.ttl.finnhub-profile-seconds:604800}") long ttlSeconds,
                           @Value("${agora.fundamentals.non-us-suffixes:DE,MI,TO,L,T,HK,PA,AS,SW,AX,ST,CO,OL,HE,MC,BR,LS,VI,IR,NZ}") String nonUsSuffixesCsv,
                           @Value("${agora.data.cache.ttl.company-profile-seconds:604800}") long yahooTtlSeconds,
                           YahooCompanyDataSource yahoo) {

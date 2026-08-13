@@ -227,6 +227,7 @@ agora:
         prices-seconds: ${AGORA_DATA_CACHE_TTL_PRICES:120}         # intraday, fx
         news-seconds: ${AGORA_DATA_CACHE_TTL_NEWS:900}
         fundamentals-seconds: ${AGORA_DATA_CACHE_TTL_FUNDAMENTALS:21600}
+        finnhub-profile-seconds: ${AGORA_DATA_CACHE_TTL_FINNHUB_PROFILE:604800}   # own TTL, decoupled from fundamentals-seconds — nightly runs must find a warm profile cache
         recommendation-seconds: ${AGORA_DATA_CACHE_TTL_RECOMMENDATION:86400}
         company-profile-seconds: ${AGORA_DATA_CACHE_TTL_COMPANY_PROFILE:604800}   # non-US Yahoo profile fallback (rarely changes)
         filings-seconds: ${AGORA_DATA_CACHE_TTL_FILINGS:3600}
