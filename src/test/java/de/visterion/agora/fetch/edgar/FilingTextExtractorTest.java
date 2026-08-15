@@ -39,6 +39,12 @@ class FilingTextExtractorTest {
         var ex = FilingTextExtractor.extract(sb.toString());
         assertThat(ex.truncated()).isTrue();
         assertThat(ex.text().length()).isEqualTo(FilingTextExtractor.MAX_CHARS);
+
+        // LEADING shares the same slice-then-truncate code path (extract(raw, mode)) — assert
+        // it too, since that path is otherwise unobserved by any test.
+        var leadingEx = FilingTextExtractor.extract(sb.toString(), FilingTextExtractor.Mode.LEADING);
+        assertThat(leadingEx.truncated()).isTrue();
+        assertThat(leadingEx.text().length()).isEqualTo(FilingTextExtractor.MAX_CHARS);
     }
 
     // Low: numeric entity decoding via a small map + &#NN;/&#xHH; — not just the previous
@@ -78,12 +84,22 @@ class FilingTextExtractorTest {
         assertThat(ex.text()).doesNotContain("char ter");
     }
 
-    // Table cells are block-level content, not inline runs — without a newline between them,
-    // adjacent <td> text glues into a single fused word once tags are stripped.
+    // Table cells are block-level content, not inline runs. Old SEC HTML routinely leaves
+    // <td>/<tr> unclosed, so between two adjacent cells there can be TWO tags in a row
+    // (</td><td> or just <td>...<td>), not one — the inline word-fusion regex only ever
+    // matches a single tag between word characters, so it never fires here either way; the
+    // defect this closes is specifically the unclosed-cell case, where td|th missing from the
+    // block-tag list would let the catch-all strip both tags to nothing and fuse "Ford" and
+    // "Motor" into "FordMotor". The closed-tag variant is kept as a second assertion to
+    // document that both shapes stay separated, even though it does not exercise the fix.
     @Test void tableCellsDoNotGlueWordsTogether() {
-        String html = "<table><tr><td>Ford</td><td>Motor</td></tr></table>";
-        var ex = FilingTextExtractor.extract(html);
-        assertThat(ex.text()).doesNotContain("FordMotor");
+        String unclosed = "<table><tr><td>Ford<td>Motor</tr></table>";
+        var exUnclosed = FilingTextExtractor.extract(unclosed);
+        assertThat(exUnclosed.text()).doesNotContain("FordMotor");
+
+        String closed = "<table><tr><td>Ford</td><td>Motor</td></tr></table>";
+        var exClosed = FilingTextExtractor.extract(closed);
+        assertThat(exClosed.text()).doesNotContain("FordMotor");
     }
 
     // The one-arg overload must remain behaviorally identical to explicit SECTION mode.
