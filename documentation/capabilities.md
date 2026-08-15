@@ -243,7 +243,7 @@ output contract.
 |---|---|
 | `get_filings` | Recent filings by symbol/CIK, optional form filter (`limit` default 40, max 100) |
 | `search_filings` | Full-text search by form type(s) and date window (`limit` default 100, max 1000) |
-| `get_filing_text` | Primary document as cleaned text (~24k chars, SSRF-guarded) |
+| `get_filing_text` | Primary document as cleaned text (~24k chars, SSRF-guarded); optional `exhibit_type` resolves a named exhibit (e.g. `EX-99.1`) via the filing's index page instead, optional `extract_mode` (`SECTION`/`LEADING`) picks where the text starts — see "Exhibit resolution" below |
 | `get_company_concept` | Full reported history of one XBRL concept |
 | `get_company_facts` | Several `us-gaap` concepts in one upstream fetch |
 | `get_form4_transactions` | Market-wide non-derivative Form-4 transactions in a date window (`limit` default 100, max 1000) |
@@ -510,6 +510,43 @@ Consequence for consumers: a market-wide `get_form4_transactions` call is a **sa
 newest filings in the window**, not the window. It reports `truncated: true`, and clustering
 logic must not read an absent cluster as evidence that none exists. Narrow the window (or the
 company, via `get_form4_owner_history`) to get complete coverage.
+
+### Exhibit resolution (`get_filing_text`)
+
+`get_filing_text` normally reads the filing's *primary document* — for a Form 10-12B spin-off
+registration, that is the cover shell (tens of KB), not the Information Statement that actually
+carries the distribution terms (typically filed as exhibit `EX-99.1`, several MB). Passing the
+optional `exhibit_type` parameter (e.g. `EX-99.1`) makes the tool read that exhibit instead:
+
+1. Agora builds the filing's index page URL from the primary document URL, in the **dashed**
+   accession form: `{archiveBase}/Archives/edgar/data/{cik}/{accNoDashes}/{accession-with-dashes}-index.htm`.
+   The dash-less form (`{accNoDashes}-index.html`) is not an alternative spelling — it answers
+   HTTP 503 with SEC's generic error page, indistinguishable on the wire from rate limiting.
+2. That page is fetched over the **same** SSRF-guarded, paced archive client used for the
+   document fetch — this is a genuine second `sec.gov` request per call, spent against the same
+   shared pacer budget.
+3. The page's document table (`Seq | Description | Document | Type | Size`) is parsed for a row
+   whose `Type` matches `exhibit_type` (case-insensitive). `index.json` is deliberately not
+   used here: its `type` field carries the ICON name (`text.gif`), not the exhibit type — the
+   typed table only exists on the `-index.htm` page.
+4. Found: that document is fetched and extracted; the response carries
+   `resolved_exhibit` set to the requested type. Not found — either the index page carries no
+   document table, or none of its rows match — the **primary document is read instead**; this is
+   reported as an ordinary successful result with `resolved_exhibit: null`, not as an error, and
+   a WARN is logged so the fallback is visible in the logs without failing the caller.
+5. The index page itself being **unreachable** (transport failure, non-2xx) is not treated as
+   "no exhibit" — it fails the whole call with `MarketDataException`/`kind=UNAVAILABLE`, exactly
+   like a failed document fetch. Silently falling back to the primary document on an unreachable
+   index page would make a rate-limit or outage indistinguishable from a legitimately absent
+   exhibit, and (for a caller like Dracul's spin-off hunter) would risk overwriting a good
+   previously-stored exhibit text with cover-shell boilerplate.
+
+`extract_mode` (`SECTION`, the default, or `LEADING`) travels independently of `exhibit_type` and
+is documented on `FilingTextExtractor.Mode`: `SECTION` seeks a known summary heading (correct for
+DEFM14A / SC TO-T mergers), `LEADING` always starts at character 0 (needed for spin-off
+Information Statements, which state their terms in plain prose before any heading exists). The
+internal cache key for `get_filing_text` includes both parameters, so the same URL requested once
+per exhibit/mode combination cannot answer from whichever combination happened to load first.
 
 ### Filing size cap (`get_filing_text`)
 

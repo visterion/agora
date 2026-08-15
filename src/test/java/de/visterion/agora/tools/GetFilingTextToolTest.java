@@ -15,9 +15,9 @@ class GetFilingTextToolTest {
 
     @Test void returnsExtractedText() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.filingText(any())).thenReturn(new EdgarSearchService.FilingText(
+        when(svc.filingText(any(), any(), any())).thenReturn(new EdgarSearchService.FilingText(
                 "SUMMARY TERM SHEET the offer is $52.00 cash", true, false, 43,
-                "https://www.sec.gov/Archives/edgar/data/1/x.htm"));
+                "https://www.sec.gov/Archives/edgar/data/1/x.htm", null));
         var args = mapper.createObjectNode();
         args.put("url", "https://www.sec.gov/Archives/edgar/data/1/x.htm");
 
@@ -29,6 +29,37 @@ class GetFilingTextToolTest {
         assertThat(r.output().get("truncated").asBoolean()).isFalse();
         assertThat(r.output().get("char_count").asInt()).isEqualTo(43);
         assertThat(r.output().get("source_url").asString()).endsWith("/x.htm");
+        assertThat(r.output().get("resolved_exhibit").isNull()).isTrue();
+    }
+
+    @Test void passesOptionalExhibitTypeAndExtractModeAndReportsResolvedExhibit() {
+        EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
+        when(svc.filingText(
+                "https://www.sec.gov/Archives/edgar/data/1/x.htm",
+                "EX-99.1",
+                de.visterion.agora.fetch.edgar.FilingTextExtractor.Mode.LEADING))
+                .thenReturn(new EdgarSearchService.FilingText(
+                        "one share for every two shares", false, false, 31,
+                        "https://www.sec.gov/Archives/edgar/data/1/ex991.htm", "EX-99.1"));
+        var args = mapper.createObjectNode();
+        args.put("url", "https://www.sec.gov/Archives/edgar/data/1/x.htm");
+        args.put("exhibit_type", "EX-99.1");
+        args.put("extract_mode", "LEADING");
+
+        var r = new GetFilingTextTool(svc).call(args);
+
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("resolved_exhibit").asString()).isEqualTo("EX-99.1");
+        assertThat(r.output().get("source_url").asString()).endsWith("/ex991.htm");
+    }
+
+    @Test void requiredStaysUrlOnly() {
+        var schema = new GetFilingTextTool(Mockito.mock(EdgarSearchService.class)).inputSchema();
+        var required = schema.get("required");
+        assertThat(required).hasSize(1);
+        assertThat(required.get(0).asString()).isEqualTo("url");
+        assertThat(schema.get("properties").has("exhibit_type")).isTrue();
+        assertThat(schema.get("properties").has("extract_mode")).isTrue();
     }
 
     @Test void blankUrlIsUnavailable() {
@@ -40,7 +71,7 @@ class GetFilingTextToolTest {
 
     @Test void serviceFailureIsUnavailable() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.filingText(any())).thenThrow(
+        when(svc.filingText(any(), any(), any())).thenThrow(
                 new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "boom", null));
         var args = mapper.createObjectNode();
         args.put("url", "https://www.sec.gov/Archives/edgar/data/1/x.htm");
@@ -56,7 +87,7 @@ class GetFilingTextToolTest {
      */
     @Test void oversizedFilingSurfacesTheTooLargeTokenOnTheWire() {
         EdgarSearchService svc = Mockito.mock(EdgarSearchService.class);
-        when(svc.filingText(any())).thenThrow(new MarketDataException(
+        when(svc.filingText(any(), any(), any())).thenThrow(new MarketDataException(
                 MarketDataException.Kind.TOO_LARGE,
                 "filing_too_large: document is more than 33554432 bytes (no usable Content-Length), "
                         + "cap is 33554432 bytes (raise agora.data.edgar.max-filing-bytes): "

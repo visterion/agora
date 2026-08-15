@@ -881,8 +881,17 @@ public class EdgarSearchService {
         }
     }
 
-    /** A filing's extracted summary/term-sheet text plus extraction metadata. */
-    public record FilingText(String text, boolean sectionFound, boolean truncated, int charCount, String sourceUrl) {}
+    /**
+     * A filing's extracted summary/term-sheet text plus extraction metadata.
+     *
+     * @param resolvedExhibit the exhibit type actually loaded (e.g. {@code EX-99.1}) when an
+     *                        {@code exhibitType} was requested and found; {@code null} when no
+     *                        exhibit was requested, or when the requested one was not found and
+     *                        the primary document was read instead — see
+     *                        {@link #filingText(String, String, FilingTextExtractor.Mode)}.
+     */
+    public record FilingText(String text, boolean sectionFound, boolean truncated, int charCount, String sourceUrl,
+                              String resolvedExhibit) {}
 
     /**
      * Fetch a filing's primary document from the SEC archive and extract its summary/term-sheet
@@ -900,12 +909,41 @@ public class EdgarSearchService {
      * so a byte-truncated document would silently yield the TOC entry instead of the real
      * section — a wrong answer presented as a complete one. Rejecting loudly is correct here;
      * the fix for an over-cap filing is to raise the property, not to return half a document.
+     *
+     * <p>Bitwise identical to {@code filingText(url, null, FilingTextExtractor.Mode.SECTION)}.
      */
     public FilingText filingText(String url) {
+        return filingText(url, null, FilingTextExtractor.Mode.SECTION);
+    }
+
+    /**
+     * As {@link #filingText(String)}, with two optional refinements:
+     *
+     * <p>{@code exhibitType} (e.g. {@code EX-99.1}), when set, first loads the filing's index
+     * page ({@link FilingIndex#indexUrl(String)} — the DASHED accession form; the dash-less form
+     * returns HTTP 503) over the SAME SSRF-guarded, paced archive client as the document fetch,
+     * and looks for a document of that type in {@link FilingIndex#parse(String)}. Found: that
+     * document is read instead of {@code url}, and {@code resolvedExhibit} carries the type. Not
+     * found (empty table, or no row of that type): the primary document ({@code url}) is read
+     * instead — a WARN is logged, and this is reported as success ({@code resolvedExhibit ==
+     * null}), never as a failure. The index page itself being unreachable, however, IS a failure
+     * — it throws {@link MarketDataException}, exactly as a failed document fetch does; it is
+     * never silently treated as "no exhibit", because SEC's 503 error page and a wrong URL form
+     * look identical on the wire.
+     *
+     * <p>{@code mode} ({@code null} means {@link FilingTextExtractor.Mode#SECTION}) is passed
+     * through to {@link FilingTextExtractor#extract(String, FilingTextExtractor.Mode)}.
+     *
+     * <p>The cache key includes both parameters — the same URL requested once per mode/exhibit
+     * combination must not answer from whichever combination happened to load first.
+     */
+    public FilingText filingText(String url, String exhibitType, FilingTextExtractor.Mode mode) {
         if (url == null || !url.startsWith(archiveBase + "/Archives/")) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "not an SEC archive url: " + url, null);
         }
-        return filingTextCache.get(cacheKey("text", url), () -> fetchFilingTextBounded(url));
+        FilingTextExtractor.Mode effectiveMode = mode == null ? FilingTextExtractor.Mode.SECTION : mode;
+        String key = cacheKey("text", url, exhibitType, effectiveMode.name());
+        return filingTextCache.get(key, () -> fetchFilingTextBounded(url, exhibitType, effectiveMode));
     }
 
     /**
@@ -939,7 +977,7 @@ public class EdgarSearchService {
      * control), and they are not harmful either: they cost nothing until 8 large fetches genuinely
      * overlap, which the pacer makes rarer but does not prevent.
      */
-    private FilingText fetchFilingTextBounded(String url) {
+    private FilingText fetchFilingTextBounded(String url, String exhibitType, FilingTextExtractor.Mode mode) {
         boolean acquired;
         try {
             acquired = filingFetchPermits.tryAcquire(filingFetchQueueTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
@@ -956,13 +994,52 @@ public class EdgarSearchService {
                             + "with a real heap bound): " + url, null);
         }
         try {
-            return fetchFilingText(url);
+            return fetchFilingTextResolved(url, exhibitType, mode);
         } finally {
             filingFetchPermits.release();
         }
     }
 
-    private FilingText fetchFilingText(String url) {
+    /**
+     * Resolves {@code exhibitType} (if set) against the filing's index page, then delegates the
+     * actual document fetch to {@link #fetchFilingText}. See
+     * {@link #filingText(String, String, FilingTextExtractor.Mode)} for the resolution contract.
+     */
+    private FilingText fetchFilingTextResolved(String url, String exhibitType, FilingTextExtractor.Mode mode) {
+        if (exhibitType == null || exhibitType.isBlank()) {
+            return fetchFilingText(url, mode, null);
+        }
+        String indexUrl = FilingIndex.indexUrl(url);
+        String indexHtml;
+        try {
+            // Same SSRF-guarded, paced archive client as the document fetch below — indexUrl is
+            // derived from an already-validated url and stays in the same folder, so it inherits
+            // the guard. A failure here is a failure, never a silent "no exhibit": SEC's 503 on
+            // the dash-less URL form looks identical to a genuinely unreachable index page.
+            indexHtml = archiveHttp.get().uri(indexUrl).retrieve().body(String.class);
+        } catch (Exception e) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    "filing index fetch failed: " + e.getMessage(), e);
+        }
+        List<FilingIndex.Doc> docs = FilingIndex.parse(indexHtml);
+        if (docs.isEmpty()) {
+            log.warn("no document table at filing index {} — falling back to the primary document", indexUrl);
+            return fetchFilingText(url, mode, null);
+        }
+        java.util.Optional<FilingIndex.Doc> match = docs.stream()
+                .filter(d -> exhibitType.equalsIgnoreCase(d.type()))
+                .findFirst();
+        if (match.isEmpty()) {
+            log.warn("exhibit type {} not found at filing index {} — falling back to the primary document",
+                    exhibitType, indexUrl);
+            return fetchFilingText(url, mode, null);
+        }
+        int lastSlash = url.lastIndexOf('/');
+        String exhibitUrl = url.substring(0, lastSlash + 1) + match.get().name();
+        return fetchFilingText(exhibitUrl, mode, exhibitType);
+    }
+
+    private FilingText fetchFilingText(String url, FilingTextExtractor.Mode mode, String resolvedExhibit) {
         String raw;
         try {
             raw = archiveHttp.get().uri(url).exchange((request, response) -> {
@@ -990,8 +1067,8 @@ public class EdgarSearchService {
         if (raw == null || raw.isBlank()) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "empty filing document: " + url, null);
         }
-        var ex = FilingTextExtractor.extract(raw, FilingTextExtractor.Mode.SECTION);
-        return new FilingText(ex.text(), ex.sectionFound(), ex.truncated(), ex.text().length(), url);
+        var ex = FilingTextExtractor.extract(raw, mode);
+        return new FilingText(ex.text(), ex.sectionFound(), ex.truncated(), ex.text().length(), url, resolvedExhibit);
     }
 
     /**

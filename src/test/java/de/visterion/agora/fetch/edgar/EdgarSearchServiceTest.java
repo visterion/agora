@@ -1324,6 +1324,103 @@ class EdgarSearchServiceTest {
         assertThat(ft.sectionFound()).isTrue();
     }
 
+    // ---- A2: exhibit resolution via the filing index page --------------------------------------
+    // All index-page HTML below is hand-written and synthetic: invented accession, invented
+    // company/document names. Never a real SEC document.
+
+    private static final String PRIMARY_URL =
+            "/Archives/edgar/data/11/000121390026000001/newco-1012ba.htm";
+    private static final String INDEX_URL =
+            "/Archives/edgar/data/11/000121390026000001/0001213900-26-000001-index.htm";
+    private static final String EXHIBIT_URL =
+            "/Archives/edgar/data/11/000121390026000001/newco-ex991.htm";
+
+    private static final String INDEX_WITH_EXHIBIT = """
+            <html><body>
+            <table class="tableFile" summary="Document Format Files">
+            <tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th></tr>
+            <tr><td>1</td><td>Registration Statement</td><td><a href="newco-1012ba.htm">newco-1012ba.htm</a></td><td>10-12B/A</td><td>88888</td></tr>
+            <tr><td>2</td><td>Information Statement</td><td><a href="newco-ex991.htm">newco-ex991.htm</a></td><td>EX-99.1</td><td>3100000</td></tr>
+            </table>
+            </body></html>
+            """;
+
+    private static final String INDEX_WITHOUT_EXHIBIT = """
+            <html><body>
+            <table class="tableFile" summary="Document Format Files">
+            <tr><th>Seq</th><th>Description</th><th>Document</th><th>Type</th><th>Size</th></tr>
+            <tr><td>1</td><td>Registration Statement</td><td><a href="newco-1012ba.htm">newco-1012ba.htm</a></td><td>10-12B/A</td><td>88888</td></tr>
+            </table>
+            </body></html>
+            """;
+
+    @Test void resolvesTheRequestedExhibit() {
+        wm.stubFor(get(urlPathEqualTo(INDEX_URL))
+                .willReturn(aResponse().withHeader("Content-Type", "text/html").withBody(INDEX_WITH_EXHIBIT)));
+        wm.stubFor(get(urlPathEqualTo(EXHIBIT_URL))
+                .willReturn(aResponse().withHeader("Content-Type", "text/html")
+                        .withBody("<p>INFORMATION STATEMENT: one share for every two shares.</p>")));
+        wm.stubFor(get(urlPathEqualTo(PRIMARY_URL))
+                .willReturn(aResponse().withHeader("Content-Type", "text/html")
+                        .withBody("<p>Form 10 cover boilerplate.</p>")));
+        var svc = new EdgarSearchService(
+                wmClient(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+
+        var ft = svc.filingText(wm.baseUrl() + PRIMARY_URL, "EX-99.1", FilingTextExtractor.Mode.LEADING);
+
+        assertThat(ft.resolvedExhibit()).isEqualTo("EX-99.1");
+        assertThat(ft.sourceUrl()).isEqualTo(wm.baseUrl() + EXHIBIT_URL);
+        assertThat(ft.text()).contains("INFORMATION STATEMENT");
+    }
+
+    @Test void fallsBackToThePrimaryDocumentWhenTheExhibitIsAbsent() {
+        wm.stubFor(get(urlPathEqualTo(INDEX_URL))
+                .willReturn(aResponse().withHeader("Content-Type", "text/html").withBody(INDEX_WITHOUT_EXHIBIT)));
+        wm.stubFor(get(urlPathEqualTo(PRIMARY_URL))
+                .willReturn(aResponse().withHeader("Content-Type", "text/html")
+                        .withBody("<p>Form 10 cover boilerplate.</p>")));
+        var svc = new EdgarSearchService(
+                wmClient(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+
+        var ft = svc.filingText(wm.baseUrl() + PRIMARY_URL, "EX-99.1", FilingTextExtractor.Mode.SECTION);
+
+        assertThat(ft.resolvedExhibit()).isNull();
+        assertThat(ft.sourceUrl()).isEqualTo(wm.baseUrl() + PRIMARY_URL);
+        assertThat(ft.text()).contains("Form 10 cover boilerplate");
+    }
+
+    @Test void failsWhenTheIndexPageIsUnreachable() {
+        wm.stubFor(get(urlPathEqualTo(INDEX_URL)).willReturn(aResponse().withStatus(503)));
+        wm.stubFor(get(urlPathEqualTo(PRIMARY_URL))
+                .willReturn(aResponse().withHeader("Content-Type", "text/html")
+                        .withBody("<p>Form 10 cover boilerplate.</p>")));
+        var svc = new EdgarSearchService(
+                wmClient(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+
+        assertThatThrownBy(() -> svc.filingText(wm.baseUrl() + PRIMARY_URL, "EX-99.1", FilingTextExtractor.Mode.LEADING))
+                .isInstanceOf(MarketDataException.class)
+                .satisfies(e -> assertThat(((MarketDataException) e).kind())
+                        .isEqualTo(MarketDataException.Kind.UNAVAILABLE));
+        // no silent fallback: the primary document must never have been fetched
+        wm.verify(0, getRequestedFor(urlPathEqualTo(PRIMARY_URL)));
+    }
+
+    @Test void cacheKeyDistinguishesModes() {
+        wm.stubFor(get(urlPathEqualTo("/Archives/edgar/data/12/both.htm"))
+                .willReturn(aResponse().withHeader("Content-Type", "text/html").withBody(
+                        "<p>one share for every two shares</p><p>SUMMARY TERM SHEET</p><p>more prose</p>")));
+        var svc = new EdgarSearchService(
+                wmClient(), wm.baseUrl(), 3600L, System::currentTimeMillis, TICKERS);
+        String url = wm.baseUrl() + "/Archives/edgar/data/12/both.htm";
+
+        var section = svc.filingText(url, null, FilingTextExtractor.Mode.SECTION);
+        var leading = svc.filingText(url, null, FilingTextExtractor.Mode.LEADING);
+
+        assertThat(section.sectionFound()).isTrue();
+        assertThat(leading.sectionFound()).isFalse();
+        assertThat(section.text()).isNotEqualTo(leading.text());
+    }
+
     // ---- A4: an oversized filing must be distinguishable from a dead source -------------------
     // Production symptom this pins: Dracul logged "Agora unreachable for get_filing_text" for six
     // DEFM14A merger proxies every single run, indistinguishable from a transport outage.
