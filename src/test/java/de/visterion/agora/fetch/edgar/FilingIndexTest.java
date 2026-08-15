@@ -1,10 +1,12 @@
 package de.visterion.agora.fetch.edgar;
 
+import de.visterion.agora.data.MarketDataException;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Pure parsing of a SEC filing index page — no I/O. All fixtures below are hand-written and
@@ -47,5 +49,21 @@ class FilingIndexTest {
 
         assertThat(indexUrl).isEqualTo(
                 "https://www.sec.gov/Archives/edgar/data/1234/000121390026074253/0001213900-26-074253-index.htm");
+    }
+
+    /**
+     * {@code get_filing_text} accepts a model-supplied URL. A folder segment that is not the
+     * expected 18-digit accession-no-dashes form must fail cleanly instead of a raw
+     * {@code StringIndexOutOfBoundsException} from the fixed-offset {@code substring} calls —
+     * two reachable shapes: an accession folder that already carries dashes (a document URL one
+     * level too shallow) and a short numeric CIK folder mistaken for the accession folder.
+     */
+    @Test void rejectsAFolderSegmentThatIsNotAnEighteenDigitAccession() {
+        assertThatThrownBy(() -> FilingIndex.indexUrl(
+                "https://www.sec.gov/Archives/edgar/data/320193/0000320193-25-000123.txt"))
+                .isInstanceOf(MarketDataException.class);
+        assertThatThrownBy(() -> FilingIndex.indexUrl(
+                "https://www.sec.gov/Archives/edgar/data/12/both.htm"))
+                .isInstanceOf(MarketDataException.class);
     }
 }

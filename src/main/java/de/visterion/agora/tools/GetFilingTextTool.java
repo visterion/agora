@@ -43,7 +43,8 @@ public class GetFilingTextTool implements AgoraTool {
                 .put("description", "Optional exhibit type to resolve via the filing's index page "
                         + "(e.g. EX-99.1); falls back to the primary document when absent");
         props.putObject("extract_mode").put("type", "string")
-                .put("description", "Optional: SECTION (default) or LEADING");
+                .put("description", "Optional: SECTION (default) or LEADING; any other or "
+                        + "unrecognised value falls back to SECTION");
         schema.putArray("required").add("url");
         return schema;
     }

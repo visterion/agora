@@ -1,5 +1,7 @@
 package de.visterion.agora.fetch.edgar;
 
+import de.visterion.agora.data.MarketDataException;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -17,6 +19,7 @@ public final class FilingIndex {
     private static final Pattern ROW = Pattern.compile("(?is)<tr[^>]*>(.*?)</tr>");
     private static final Pattern CELL = Pattern.compile("(?is)<t[dh][^>]*>(.*?)</t[dh]>");
     private static final Pattern SEQ = Pattern.compile("^\\d+$");
+    private static final Pattern ACCESSION_NO_DASHES = Pattern.compile("^\\d{18}$");
 
     private FilingIndex() {}
 
@@ -60,12 +63,25 @@ public final class FilingIndex {
      * same folder. The dash-less form ({@code {accNoDashes}-index.html}) returns HTTP 503 with
      * SEC's generic error page — measured three times against two real accessions — so getting
      * this form wrong looks exactly like a rate-limiting failure, not like a "no index" result.
+     *
+     * <p>{@code documentUrl} comes from a model-supplied {@code get_filing_text} call, so it is
+     * reachable-but-untrusted input. The folder segment directly above the document is expected
+     * to be the 18-digit accession-no-dashes form; anything else (already-dashed, a short CIK
+     * folder, non-numeric) throws {@link MarketDataException} rather than a raw
+     * {@code StringIndexOutOfBoundsException} from a fixed-offset slice. There is deliberately no
+     * fallback to the primary document here: a malformed URL is a caller bug, and swallowing it
+     * would look identical to "this filing legitimately has no exhibit".
      */
     public static String indexUrl(String documentUrl) {
         int lastSlash = documentUrl.lastIndexOf('/');
         String dir = documentUrl.substring(0, lastSlash);
         int prevSlash = dir.lastIndexOf('/');
         String accNoDashes = dir.substring(prevSlash + 1);
+        if (!ACCESSION_NO_DASHES.matcher(accNoDashes).matches()) {
+            throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE,
+                    "not a filing document url (accession folder must be 18 digits, got '"
+                            + accNoDashes + "'): " + documentUrl, null);
+        }
         String dashed = accNoDashes.substring(0, 10) + "-" + accNoDashes.substring(10, 12) + "-"
                 + accNoDashes.substring(12);
         return dir + "/" + dashed + "-index.htm";
