@@ -990,7 +990,7 @@ public class EdgarSearchService {
         if (raw == null || raw.isBlank()) {
             throw new MarketDataException(MarketDataException.Kind.UNAVAILABLE, "empty filing document: " + url, null);
         }
-        var ex = FilingTextExtractor.extract(raw);
+        var ex = FilingTextExtractor.extract(raw, FilingTextExtractor.Mode.SECTION);
         return new FilingText(ex.text(), ex.sectionFound(), ex.truncated(), ex.text().length(), url);
     }
 

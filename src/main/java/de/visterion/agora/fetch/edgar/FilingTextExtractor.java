@@ -28,11 +28,34 @@ public final class FilingTextExtractor {
 
     public record Extract(String text, boolean sectionFound, boolean truncated) {}
 
+    /**
+     * SECTION seeks a known heading ("Summary Term Sheet" and friends) and slices from there —
+     * correct for DEFM14A / SC TO-T merger filings, which carry that heading. LEADING skips the
+     * heading search entirely and always slices from character 0 — required for SEC spin-off
+     * information statements (Form 10-12B exhibits), which state the distribution terms in plain
+     * prose before any heading exists. On one measured filing the nearest matching heading sat
+     * 264,910 characters past the answer, so a heading-seeking slice missed it by a margin no
+     * MAX_CHARS budget could close.
+     */
+    public enum Mode { SECTION, LEADING }
+
     public static Extract extract(String rawDocument) {
+        return extract(rawDocument, Mode.SECTION);
+    }
+
+    public static Extract extract(String rawDocument, Mode mode) {
         String text = htmlToText(rawDocument);
-        int start = headingIndex(text);
-        boolean sectionFound = start >= 0;
-        String slice = sectionFound ? text.substring(start) : text;
+        int start;
+        boolean sectionFound;
+        if (mode == Mode.LEADING) {
+            start = 0;
+            sectionFound = false;
+        } else {
+            start = headingIndex(text);
+            sectionFound = start >= 0;
+            if (!sectionFound) start = 0;
+        }
+        String slice = text.substring(start);
         boolean truncated = slice.length() > MAX_CHARS;
         if (truncated) slice = slice.substring(0, MAX_CHARS);
         return new Extract(slice.strip(), sectionFound, truncated);
@@ -63,7 +86,15 @@ public final class FilingTextExtractor {
         if (raw == null) return "";
         String s = raw;
         s = s.replaceAll("(?is)<(script|style)[^>]*>.*?</\\1>", " ");   // drop script/style bodies
-        s = s.replaceAll("(?i)<(/?)(p|div|br|tr|h[1-6]|li|table)[^>]*>", "\n"); // block tags → newline
+        // Block tags → newline. td|th included: table cells are block-level content — without a
+        // newline between them, stripping tags below would glue adjacent cell text together
+        // (<td>Ford</td><td>Motor</td> → "FordMotor").
+        s = s.replaceAll("(?i)<(/?)(p|div|br|tr|td|th|h[1-6]|li|table)[^>]*>", "\n");
+        // A remaining inline tag (e.g. <font>) sitting directly between two word characters is
+        // markup splitting a single word, not a word boundary — drop it with no replacement so
+        // "char<font>ter</font>" reads "charter", not "char ter". Must run BEFORE the catch-all
+        // below, which replaces every other remaining tag with a space.
+        s = s.replaceAll("(?s)(?<=\\w)<[^>]+>(?=\\w)", "");
         s = s.replaceAll("(?s)<[^>]+>", " ");                           // strip remaining tags
         s = decodeEntities(s);                                          // single-pass entity decode
         s = s.replaceAll("[ \\t\\x0B\\f\\r]+", " ");                    // collapse inline whitespace

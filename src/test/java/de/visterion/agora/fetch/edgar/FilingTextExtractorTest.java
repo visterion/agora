@@ -49,6 +49,57 @@ class FilingTextExtractorTest {
         assertThat(ex.text()).contains("café").contains("’tis").contains("“quoted”");
     }
 
+    // Information statements (10-12B, EX-99.1) carry the terms as plain prose before ANY
+    // heading — the heading-seeking SECTION mode can land hundreds of thousands of characters
+    // past the answer. LEADING mode ignores headings entirely and starts at character 0.
+    @Test void leadingModeIgnoresHeadingAndStartsAtZero() {
+        String html = "<p>"
+                + "a".repeat(80)
+                + " one share for every two shares "
+                + "b".repeat(80)
+                + "</p><p>Questions and Answers</p><p>"
+                + "c".repeat(80)
+                + "</p>";
+        var leading = FilingTextExtractor.extract(html, FilingTextExtractor.Mode.LEADING);
+        assertThat(leading.text()).startsWith("a".repeat(80));
+        assertThat(leading.text()).contains("one share for every two shares");
+        assertThat(leading.sectionFound()).isFalse();
+
+        var section = FilingTextExtractor.extract(html, FilingTextExtractor.Mode.SECTION);
+        assertThat(section.text()).startsWith("Questions and Answers");
+    }
+
+    // htmlToText replaced a remaining inline tag with a single space unconditionally, which
+    // split words that only had a tag (e.g. a formatting <font>) between two word characters.
+    @Test void inlineTagBetweenWordCharactersDoesNotSplitTheWord() {
+        String html = "<p>char<font>ter</font> of the company</p>";
+        var ex = FilingTextExtractor.extract(html);
+        assertThat(ex.text()).contains("charter");
+        assertThat(ex.text()).doesNotContain("char ter");
+    }
+
+    // Table cells are block-level content, not inline runs — without a newline between them,
+    // adjacent <td> text glues into a single fused word once tags are stripped.
+    @Test void tableCellsDoNotGlueWordsTogether() {
+        String html = "<table><tr><td>Ford</td><td>Motor</td></tr></table>";
+        var ex = FilingTextExtractor.extract(html);
+        assertThat(ex.text()).doesNotContain("FordMotor");
+    }
+
+    // The one-arg overload must remain behaviorally identical to explicit SECTION mode.
+    @Test void defaultOverloadStillMeansSection() {
+        String html = "<p>"
+                + "a".repeat(80)
+                + " one share for every two shares "
+                + "b".repeat(80)
+                + "</p><p>Questions and Answers</p><p>"
+                + "c".repeat(80)
+                + "</p>";
+        var viaDefault = FilingTextExtractor.extract(html);
+        var viaSection = FilingTextExtractor.extract(html, FilingTextExtractor.Mode.SECTION);
+        assertThat(viaDefault).isEqualTo(viaSection);
+    }
+
     // Low: heading matcher must skip a table-of-contents hit and land on the real section
     // heading further down (typical 10-K/DEFM14A structure: TOC lists the heading first).
     @Test void skipsTableOfContentsHeadingHit() {
