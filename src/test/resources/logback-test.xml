@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logback picks `logback-test.xml` over `logback-spring.xml` when both are on the
+  classpath, so every `@SpringBootTest` in the suite uses this file instead of the
+  production config. Without it, the FILE appender in `logback-spring.xml` would be
+  active during tests too: every test run would write to `${AGORA_LOG_DIR:-logs}/
+  agora.log`, and if `AGORA_LOG_DIR` happens to be exported in the shell or in CI
+  (plausible once the deploy step makes it a familiar variable), the suite would append
+  test noise into whatever directory that variable names — potentially a production
+  bind mount. CONSOLE only, no FILE appender, so tests can never do that.
+
+  `LogbackRetentionTest` is unaffected: it loads `logback-spring.xml` directly by
+  resource name via JoranConfigurator, bypassing this file entirely.
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

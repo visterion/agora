@@ -13,6 +13,32 @@ adapter.
 | `agora.provider-logging.enabled` | `AGORA_PROVIDER_LOGGING_ENABLED` | `true` | Turn provider-call logging on/off entirely. |
 | `agora.provider-logging.max-body-chars` | `AGORA_PROVIDER_LOGGING_MAX_BODY_CHARS` | `4096` | Caps how many characters of the (redacted) request/response body are logged per call; the remainder is summarized as a byte count. |
 
+## File-based log retention
+
+`docker logs` belongs to the container and is lost on every deploy or restart —
+`provider_call` is the highest-volume, best diagnostic log category in the system
+(roughly 10,400 lines/24h), so losing it on every deploy is the worst place for that
+to happen. `logback-spring.xml` adds a second, file-based appender alongside the
+console one (never replacing it — `docker logs` keeps working exactly as before):
+
+| Property | Env var | Default | Purpose |
+|---|---|---|---|
+| Log directory | `AGORA_LOG_DIR` | `logs` | Where the rolling log file is written. Point this at a bind-mounted, persistent directory in production so logs survive container recreation. |
+
+Rolling policy (`ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy`):
+- Normally one file per day, `agora.log` for today's file, `agora.YYYY-MM-DD.N.log.gz`
+  for rotated/compressed history — but the active file also rolls *within* a day once
+  it exceeds `maxFileSize` (see below), producing more than one `agora.YYYY-MM-DD.N.log.gz`
+  for the same date, with `N` incrementing.
+- `maxFileSize` 100MB — bounds today's active file too, not just the archives (a plain
+  time-based policy only counts already-rotated files against the total cap, so a retry
+  storm could otherwise grow the active file unbounded until midnight).
+- `maxHistory` 14 — keeps roughly 14 days of daily files.
+- `totalSizeCap` 10GB — higher than a typical 2GB cap, sized for Agora's provider-call
+  volume. When this cap is reached, Logback drops the *oldest* files first, so retention
+  can silently fall below 14 days under sustained high volume; worth a periodic size
+  check.
+
 To silence provider-call logging without a redeploy (e.g. during a noisy incident),
 raise the logger's level instead of touching config:
 
@@ -59,6 +85,21 @@ docker logs agora | grep provider_call \
 This prints one line per `(provider, status)` pair with a count, sorted descending —
 useful for spotting an unexpected fallback chain (e.g. Yahoo being hit far more than
 expected because Saxo is failing) or a provider returning non-200 statuses repeatedly.
+
+`docker logs` only covers the currently running container, though — once deployed with
+`AGORA_LOG_DIR` pointed at a mounted host directory (see "File-based log retention"
+above), the same `provider_call` lines are also retained on disk for up to 14 days and
+survive deploys/restarts. Grep today's active file the same way:
+
+```
+grep provider_call <LOG_DIR>/agora.log
+```
+
+or across the rolled, gzip-compressed history:
+
+```
+zgrep provider_call <LOG_DIR>/agora.*.log.gz
+```
 
 ## News provider rate-limit summary logging
 
