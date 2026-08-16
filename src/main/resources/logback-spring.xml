@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Two appenders on purpose.
+
+  CONSOLE stays exactly as Spring Boot had it, because `docker logs` on the running
+  container is the input the evening analysis parses. Replacing it instead of adding
+  to it would blind that report.
+
+  FILE is the one that answers the actual requirement: `docker logs` belongs to the
+  container and is lost on every deploy/restart. A bind-mounted directory on the host
+  outlives the container.
+-->
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <!-- Default `logs` keeps local runs and tests inside the (gitignored) working
+         directory; production overrides it to the bind mount. One path, one config. -->
+    <property name="LOG_DIR" value="${AGORA_LOG_DIR:-logs}"/>
+
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/agora.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/agora.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <!-- Bounds the ACTIVE file too, not just the archives: a plain
+                 TimeBasedRollingPolicy only counts already-rotated .gz files against
+                 totalSizeCap, so a retry storm could grow today's agora.log without
+                 limit until midnight. SizeAndTimeBasedRollingPolicy rolls a new
+                 numbered file within the same day once maxFileSize is hit, keeping the
+                 active file bounded too. -->
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <!-- Higher than the other services' 2GB cap: Agora logs one `provider_call`
+                 line per outbound API call, roughly 10,400 lines/24h, the busiest
+                 category in this system and the best diagnostic source for it. 10GB
+                 gives that volume headroom across the 14-day window before the cap
+                 would start dropping the oldest archives early. NOTE when this cap
+                 bites, Logback drops the OLDEST files and retention silently falls
+                 below 14 days. -->
+            <totalSizeCap>10GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+</configuration>
