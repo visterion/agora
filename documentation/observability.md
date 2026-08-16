@@ -26,8 +26,10 @@ console one (never replacing it — `docker logs` keeps working exactly as befor
 | Log directory | `AGORA_LOG_DIR` | `logs` | Where the rolling log file is written. Point this at a bind-mounted, persistent directory in production so logs survive container recreation. |
 
 Rolling policy (`ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy`):
-- One file per day, `agora.log` for today's file, `agora.YYYY-MM-DD.N.log.gz` for
-  rotated/compressed history.
+- Normally one file per day, `agora.log` for today's file, `agora.YYYY-MM-DD.N.log.gz`
+  for rotated/compressed history — but the active file also rolls *within* a day once
+  it exceeds `maxFileSize` (see below), producing more than one `agora.YYYY-MM-DD.N.log.gz`
+  for the same date, with `N` incrementing.
 - `maxFileSize` 100MB — bounds today's active file too, not just the archives (a plain
   time-based policy only counts already-rotated files against the total cap, so a retry
   storm could otherwise grow the active file unbounded until midnight).
@@ -83,6 +85,21 @@ docker logs agora | grep provider_call \
 This prints one line per `(provider, status)` pair with a count, sorted descending —
 useful for spotting an unexpected fallback chain (e.g. Yahoo being hit far more than
 expected because Saxo is failing) or a provider returning non-200 statuses repeatedly.
+
+`docker logs` only covers the currently running container, though — once deployed with
+`AGORA_LOG_DIR` pointed at a mounted host directory (see "File-based log retention"
+above), the same `provider_call` lines are also retained on disk for up to 14 days and
+survive deploys/restarts. Grep today's active file the same way:
+
+```
+grep provider_call <LOG_DIR>/agora.log
+```
+
+or across the rolled, gzip-compressed history:
+
+```
+zgrep provider_call <LOG_DIR>/agora.*.log.gz
+```
 
 ## News provider rate-limit summary logging
 

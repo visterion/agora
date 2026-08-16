@@ -6,8 +6,10 @@ import ch.qos.logback.core.rolling.RollingFileAppender;
 import ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy;
 import ch.qos.logback.core.util.FileSize;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.lang.reflect.Field;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -18,8 +20,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class LogbackRetentionTest {
 
-    private LoggerContext configure() throws Exception {
+    /**
+     * Loads {@code logback-spring.xml} by resource name via Joran, so it actually starts
+     * the FILE appender for real (unlike the app's own {@code logback-test.xml}, which
+     * only shadows Spring Boot's normal config lookup and does not apply here). To keep
+     * that appender from ever touching a real production log directory, the
+     * {@code AGORA_LOG_DIR} property is pinned directly on this throwaway
+     * {@link LoggerContext} to the test's own {@code @TempDir} *before* configuring —
+     * this overrides whatever {@code AGORA_LOG_DIR} happens to be set to in the actual
+     * process environment.
+     */
+    private LoggerContext configure(Path logDir) throws Exception {
         LoggerContext context = new LoggerContext();
+        context.putProperty("AGORA_LOG_DIR", logDir.toString());
         JoranConfigurator configurator = new JoranConfigurator();
         configurator.setContext(context);
         configurator.doConfigure(
@@ -40,8 +53,8 @@ class LogbackRetentionTest {
     }
 
     @Test
-    void keepsFourteenDaysOfDailyFiles() throws Exception {
-        LoggerContext context = configure();
+    void keepsFourteenDaysOfDailyFiles(@TempDir Path logDir) throws Exception {
+        LoggerContext context = configure(logDir);
 
         var appender = (RollingFileAppender<?>) context.getLogger("ROOT").getAppender("FILE");
         assertThat(appender).as("appender FILE must exist").isNotNull();
@@ -65,8 +78,8 @@ class LogbackRetentionTest {
     }
 
     @Test
-    void keepsTheConsoleAppenderSoDockerLogsStillWorks() throws Exception {
-        LoggerContext context = configure();
+    void keepsTheConsoleAppenderSoDockerLogsStillWorks(@TempDir Path logDir) throws Exception {
+        LoggerContext context = configure(logDir);
 
         // The evening analysis reads `docker logs` for the provider_call lines.
         // Replacing the console appender instead of adding to it would blind that
