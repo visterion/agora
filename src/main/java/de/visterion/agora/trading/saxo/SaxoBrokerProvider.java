@@ -763,10 +763,12 @@ public class SaxoBrokerProvider implements BrokerProvider {
      *   java.math.BigDecimal)} of the full position, which is the authoritative "close
      *   whatever position resulted" step — this is what actually protects a partial fill (Saxo
      *   cancel only pulls the still-working remainder, leaving the filled part as a live,
-     *   unprotected position) just as well as a full fill. A {@code NOT_FOUND} from flatten
+     *   unprotected position) just as well as a full fill. A {@code NO_POSITION} from flatten
      *   (the entry was purely unfilled and cancel removed it — no position ever existed) is
-     *   tolerated. Any other flatten failure is escalated loudly via {@code log.error} since an
-     *   unprotected position may now exist with nothing automated left to try.</li>
+     *   tolerated — the definite, narrow determination {@code resolveNetPosition} makes, not the
+     *   generic {@code NOT_FOUND} an unrelated 404 elsewhere could also produce. Any other
+     *   flatten failure is escalated loudly via {@code log.error} since an unprotected position
+     *   may now exist with nothing automated left to try.</li>
      *   <li>Always returns {@code rejected("STOP_PLACEMENT_FAILED")} — this method never lets a
      *   cancel/flatten failure propagate as a thrown {@link BrokerException}.</li>
      * </ol>
@@ -785,14 +787,16 @@ public class SaxoBrokerProvider implements BrokerProvider {
         try {
             flatten(symbol, BigDecimal.ONE, null);
         } catch (BrokerException e) {
-            if (e.kind() != BrokerException.Kind.NOT_FOUND) {
+            if (e.kind() != BrokerException.Kind.NO_POSITION) {
                 log.error("saxo far-stop fail-safe: cancel of unprotected entry {} and best-effort "
                         + "flatten of {} both failed to leave a confirmed clean state ({}); an "
                         + "unprotected position may exist and needs manual review",
                         entryId, symbol, e.getMessage());
             }
-            // NOT_FOUND: no position existed — the entry was purely unfilled and cancel
-            // already removed it. Nothing left to protect.
+            // NO_POSITION: no position existed — the entry was purely unfilled and cancel
+            // already removed it. Nothing left to protect. A generic NOT_FOUND (some OTHER 404
+            // inside flatten, e.g. a related-orders lookup) does NOT mean that and must still be
+            // escalated above -- folding it in here was the exact regression fix round 3 closes.
         }
         String cause = stopFailure == null ? "no OrderId in response" : stopFailure.getMessage();
         return OrderResult.rejected(reject.prefix("standalone stop placement failed: " + cause),

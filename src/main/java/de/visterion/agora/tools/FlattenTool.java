@@ -125,11 +125,17 @@ public class FlattenTool implements AgoraTool {
             }
             // Deliberate: a generic BrokerException.Kind.NOT_FOUND reaching here is an HTTP 404
             // on something OTHER than the position check -- a related-orders lookup, a session
-            // read, the closing POST itself (SaxoBrokerProvider.safeWriteError) -- and says
-            // nothing about whether the position exists. Folding that into "already gone" was
-            // the actual defect (fix round 2): a stale instrument mapping or a transient 404 on
-            // an unrelated read would have made a live position look closed. So NOT_FOUND stays
-            // here with NOT_READY/UNAVAILABLE -- a real outage-shaped failure, retriable.
+            // read, or the closing POST of a FULL close (writeError/readError THROW directly for
+            // a 404 there) -- and says nothing about whether the position exists. (The closing
+            // POST of a PARTIAL close is different: SaxoBrokerProvider.safeWriteError catches
+            // that same NOT_FOUND and RETURNS a rejected OrderResult instead of throwing, so it
+            // never reaches this catch at all -- it crosses as accepted:false/rejectCode:
+            // "NOT_FOUND" straight from the accepted-branch code above, not from here. Fix round
+            // 3 correction: an earlier comment here wrongly listed that path as reaching this
+            // catch.) Folding either shape into "already gone" was the actual defect (fix round
+            // 2): a stale instrument mapping or a transient 404 on an unrelated read would have
+            // made a live position look closed. So NOT_FOUND stays here with NOT_READY/UNAVAILABLE
+            // -- a real outage-shaped failure, retriable.
             return ToolResult.unavailable(e.getMessage());
         }
     }

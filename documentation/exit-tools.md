@@ -534,12 +534,29 @@ from a genuine outage to a caller that only checks that flag.
 order id, "no open position" for a flatten is not ambiguous — there is no "already
 cancelled vs filled vs wrong id" split to preserve, just a definite scan of the broker's
 actual holdings that came back empty. Giving it its own code also keeps a **generic** HTTP
-404 reached elsewhere inside `flatten` (a related-orders lookup, the closing POST itself)
-from ever being folded into "the position is gone": that 404 says nothing about whether a
-position exists and stays a plain outage (`available:false`), same as before this fix.
+404 reached elsewhere inside `flatten` from ever being folded into "the position is gone":
+that 404 says nothing about whether a position exists. Two different shapes, by which
+Saxo code path the 404 hits (fix round 3 correction — the previous wording here was wrong
+about the closing-POST case):
+
+- A related-orders lookup, or the closing POST of a **FULL** close: `writeError`/`readError`
+  throw the generic `BrokerException.Kind.NOT_FOUND` directly, which `FlattenTool` does not
+  special-case — it surfaces as a plain outage (`available:false`), same as before this fix.
+- The closing POST of a **PARTIAL** close specifically: routed through `safeWriteError`
+  (`SaxoBrokerProvider.java`), which never throws — it RETURNS `OrderResult.rejected(msg,
+  "NOT_FOUND")`, so this one reaches Dracul as `accepted:false`/`rejectCode:"NOT_FOUND"`, a
+  rejection, not an outage. Still the generic code, still correctly NOT treated as "position
+  gone" by either caller in Dracul, just a different tool-result shape than the full-close
+  case above.
+
 Both providers (`SaxoBrokerProvider.resolveNetPosition`, `AlpacaBrokerProvider`'s
-symbol-scoped `GET /positions/{symbol}` pre-fetch) agree on this: the specific "no open
-position" determination throws `BrokerException.Kind.NO_POSITION`, nothing else does.
+symbol-scoped `GET /positions/{symbol}` pre-fetch) agree that the specific "no open
+position" determination throws `BrokerException.Kind.NO_POSITION` and nothing else does —
+but the two providers' determinations are not equally narrow. Saxo's is a full scan of
+every net position; Alpaca's is a single `GET /positions/{symbol}`, which 404s not only for
+a genuinely closed position but also for an unknown or delisted symbol. Still accurately
+"there is no open position" either way — the mapping holds — but it is worth knowing the
+Alpaca signal is the marginally broader of the two.
 
 `place_protective_stop` shares the same underlying `Kind.NO_POSITION` determination (it
 calls the identical net-position resolution) but does **not** have this rejection shape —

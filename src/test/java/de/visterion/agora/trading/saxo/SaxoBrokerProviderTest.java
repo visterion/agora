@@ -1014,6 +1014,12 @@ class SaxoBrokerProviderTest {
 
     @Test
     void submitBracketFarStopFallbackFailSafeCancelsEntryWhenStopPlacementFails() {
+        // Fix round 3 regression test: this is the exact scenario the round-2 NOT_FOUND ->
+        // NO_POSITION split broke and then fixed. Before the fix, protectUnprotectedEntry's
+        // `e.kind() != BrokerException.Kind.NOT_FOUND` check stayed pinned to the OLD kind while
+        // resolveNetPosition started throwing NO_POSITION -- so this entirely ordinary outcome
+        // (purely unfilled entry, cancel removed it, no position ever existed) started logging a
+        // false "an unprotected position may exist and needs manual review" ERROR every time.
         stubInstrument();
         stubBracketRejectTooFar("far-stop-cancel");
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel")
@@ -1029,19 +1035,77 @@ class SaxoBrokerProviderTest {
                             """)));
         wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/E1")).willReturn(aResponse().withStatus(200)));
         // entry was purely unfilled: cancel (200) removed the working order, so the
-        // fail-safe's always-on flatten finds no residual position — NOT_FOUND is tolerated.
+        // fail-safe's always-on flatten finds no residual position — NO_POSITION is tolerated.
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("{\"Data\":[]}")));
 
-        var r = provider.submitBracket(bracketReq());
+        Logger logger = (Logger) LoggerFactory.getLogger(SaxoBrokerProvider.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.ERROR);
+        OrderResult r;
+        try {
+            r = provider.submitBracket(bracketReq());
+        } finally {
+            logger.detachAppender(appender);
+        }
 
         assertThat(r.accepted()).isFalse();
         assertThat(r.rejectCode()).isEqualTo("STOP_PLACEMENT_FAILED");
         wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/E1"))
                 .withQueryParam("AccountKey", equalTo("Acc+Key/1==")));
         wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions")));
-        // no position existed (pure unfilled) — flatten's NOT_FOUND is tolerated without a
+        // no position existed (pure unfilled) — flatten's NO_POSITION is tolerated without a
         // fourth order POST (only the rejected bracket + the entry + the failed stop were placed above)
         wm.verify(3, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        // The actual regression: an ordinary, fully-handled outcome must stay silent.
+        assertThat(appender.list).noneMatch(e -> e.getLevel() == Level.ERROR
+                && e.getFormattedMessage().contains("unprotected position may exist"));
+    }
+
+    @Test
+    void submitBracketFarStopFallbackLogsOnAGenericFlattenFailure() {
+        // The inverse of the test above: a GENERIC 404 during the fail-safe's flatten (here, the
+        // netpositions read itself failing, not "no position found") is NOT a determination that
+        // no position exists -- it must still be escalated loudly, since an unprotected position
+        // may be sitting there with nothing automated left to try. Folding this into the tolerated
+        // case (as the round-2 regression did in the other direction) would silently swallow the
+        // one failure mode that actually deserves manual review.
+        stubInstrument();
+        stubBracketRejectTooFar("far-stop-generic-404");
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-generic-404")
+                .whenScenarioStateIs("toofar-rejected")
+                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
+                .willSetStateTo("entry-placed"));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-generic-404")
+                .whenScenarioStateIs("entry-placed")
+                .willReturn(aResponse().withStatus(400)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                            {"ErrorInfo":{"ErrorCode":"SomeStopRejection","Message":"stop rejected"}}
+                            """)));
+        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/E1")).willReturn(aResponse().withStatus(200)));
+        // The netpositions GET itself 404s (not a normal 200 with empty Data) -- readError maps
+        // this to the GENERIC BrokerException.Kind.NOT_FOUND, distinct from the definite
+        // NO_POSITION resolveNetPosition throws when the list came back empty.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(aResponse().withStatus(404)));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(SaxoBrokerProvider.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.ERROR);
+        OrderResult r;
+        try {
+            r = provider.submitBracket(bracketReq());
+        } finally {
+            logger.detachAppender(appender);
+        }
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("STOP_PLACEMENT_FAILED");
+        assertThat(appender.list).anyMatch(e -> e.getLevel() == Level.ERROR
+                && e.getFormattedMessage().contains("unprotected position may exist"));
     }
 
     @Test
