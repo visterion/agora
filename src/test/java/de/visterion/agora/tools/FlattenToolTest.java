@@ -198,6 +198,35 @@ class FlattenToolTest {
         assertThat(r.output().get("legs_collapsed").booleanValue()).isTrue();
     }
 
+    // A flatten for a symbol with no open position is a DEFINITE answer, not an outage: no
+    // retry will ever make a gone position come back. Reported as unavailable it is
+    // indistinguishable from a real outage to a caller that only checks `available` -- mirrors
+    // CancelOrderTool's NOT_FOUND handling, one file over.
+    @Test void notFoundIsADistinguishableNegativeNotAnOutage() {
+        var stub = new StubBroker() {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
+                throw new BrokerException(BrokerException.Kind.NOT_FOUND, "no open position: AAPL", null);
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol", "AAPL"));
+
+        assertThat(r.available()).isTrue();
+        assertThat(r.output().get("accepted").asBoolean()).isFalse();
+        assertThat(r.output().get("rejectCode").asString()).isEqualTo("NOT_FOUND");
+        assertThat(r.output().get("rejectReason").asString()).contains("AAPL");
+    }
+
+    @Test void notReadyStaysUnavailable() {
+        var stub = new StubBroker() {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
+                throw new BrokerException(BrokerException.Kind.NOT_READY, "saxo rate limited", null);
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol", "AAPL"));
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("saxo rate limited");
+    }
+
     @Test void unavailableOnBrokerException() {
         var stub = new StubBroker() {
             public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
