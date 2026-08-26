@@ -234,8 +234,11 @@ with nothing else touched. It is **purely additive**:
 
 ### Rejections
 
-- No open position for `symbol` → `NOT_FOUND` (broker exception, same as `flatten`).
-  Requires the net-position read to discover.
+- No open position for `symbol` → reported as an outage (`available:false`), NOT the same as
+  `flatten` any more (fix round 2): the underlying broker exception is `Kind.NO_POSITION`, the
+  same definite determination `flatten` uses, but `PlaceProtectiveStopTool` does not branch on
+  exception kind at all, so every broker exception — this one included — surfaces as a plain
+  outage. Requires the net-position read to discover.
 - `qty` not positive → `INVALID_QTY`. The only rejection made before any broker call.
 - `qty` exceeds the position size → `QTY_EXCEEDS_POSITION`. Placing more protective
   interest than shares held is exactly the failure this tool exists to prevent, so it
@@ -518,6 +521,30 @@ position exists), or the id may simply be wrong. A silent success would let a ca
 a filled entry as "cancelled" and stop guarding a real position. The distinguishable
 rejection lets a caller that can reconcile order/position state branch on `NOT_FOUND`,
 while a caller that cannot keeps the safe reading: "did not happen", not "retry me".
+
+## `flatten` — no open position is a rejection, not an outage
+
+Flattening a symbol with no open position returns `available:true` with `accepted:false`,
+`rejectCode:"NO_POSITION"` and the broker's message in `rejectReason` — a definite "this
+did not happen", not a retriable transport failure (fix round 2, 2026-08). No retry ever
+makes a gone position come back, and reported as `available:false` it was indistinguishable
+from a genuine outage to a caller that only checks that flag.
+
+**Deliberately a different code from `cancel_order`'s `NOT_FOUND`.** Unlike a cancelled
+order id, "no open position" for a flatten is not ambiguous — there is no "already
+cancelled vs filled vs wrong id" split to preserve, just a definite scan of the broker's
+actual holdings that came back empty. Giving it its own code also keeps a **generic** HTTP
+404 reached elsewhere inside `flatten` (a related-orders lookup, the closing POST itself)
+from ever being folded into "the position is gone": that 404 says nothing about whether a
+position exists and stays a plain outage (`available:false`), same as before this fix.
+Both providers (`SaxoBrokerProvider.resolveNetPosition`, `AlpacaBrokerProvider`'s
+symbol-scoped `GET /positions/{symbol}` pre-fetch) agree on this: the specific "no open
+position" determination throws `BrokerException.Kind.NO_POSITION`, nothing else does.
+
+`place_protective_stop` shares the same underlying `Kind.NO_POSITION` determination (it
+calls the identical net-position resolution) but does **not** have this rejection shape —
+see its own Rejections section above; every broker exception there, this one included,
+still surfaces as a plain outage.
 
 ## `get_orders` / `get_order_by_ref` — field list
 

@@ -120,9 +120,13 @@ class PlaceProtectiveStopToolTest {
     }
 
     @Test void unavailableOnBrokerException() {
+        // Unlike FlattenTool, this tool does not branch on Kind at all -- every BrokerException
+        // (NO_POSITION included) stays unavailable/retriable here, so any kind exercises the
+        // same path. Uses NO_POSITION with a matching message since that is what the real
+        // resolveNetPosition call this tool makes would actually throw.
         var stub = new StubBroker() {
             public OrderResult placeProtectiveStop(String sym, BigDecimal qty, BigDecimal stopPrice) {
-                throw new BrokerException(BrokerException.Kind.NOT_FOUND, "no open position: AAPL", null);
+                throw new BrokerException(BrokerException.Kind.NO_POSITION, "no open position: AAPL", null);
             }
         };
         var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN)

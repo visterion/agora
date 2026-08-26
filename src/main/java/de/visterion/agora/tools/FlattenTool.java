@@ -32,7 +32,7 @@ public class FlattenTool implements AgoraTool {
                 + "A partial close restores the protective orders sized to the remainder and returns "
                 + "their new ids under protective_legs, keyed by the id each replaces. No open "
                 + "position for the symbol is reported as a result, not an outage: accepted=false "
-                + "with rejectCode NOT_FOUND -- do not retry it.";
+                + "with rejectCode NO_POSITION -- do not retry it.";
     }
 
     @Override
@@ -101,27 +101,35 @@ public class FlattenTool implements AgoraTool {
             }
             return ToolResult.ok(out);
         } catch (BrokerException e) {
-            if (e.kind() == BrokerException.Kind.NOT_FOUND) {
+            if (e.kind() == BrokerException.Kind.NO_POSITION) {
                 // No open position for the symbol is a DEFINITE answer, not an outage: no retry
                 // will ever make a gone position come back. Reported as unavailable it looks
                 // like "broker down", which invites the caller into a retry loop that can never
                 // succeed -- and worse, callers that branch on the shape of a rejection (rather
                 // than treating every failure alike) never see the distinction at all.
                 //
-                // Unlike cancel_order's NOT_FOUND, this one is not ambiguous: a flatten found no
-                // open position, full stop -- there is no "already cancelled vs filled vs wrong
-                // id" split to preserve. So the safe, DISTINGUISHABLE outcome is a business
-                // rejection (available=true, accepted=false) carrying rejectCode=NOT_FOUND.
-                // Callers that can act on that (skip the retry, escalate as a reconciliation gap
-                // rather than a transport failure) may branch on it; callers that cannot keep the
-                // old behaviour, since accepted=false already means "did not happen".
+                // Unlike cancel_order's NOT_FOUND, this one is not ambiguous: NO_POSITION is
+                // thrown only at the one determination point in each provider that scans the
+                // actual holdings and finds none for this symbol -- there is no "already
+                // cancelled vs filled vs wrong id" split to preserve. So the safe,
+                // DISTINGUISHABLE outcome is a business rejection (available=true,
+                // accepted=false) carrying rejectCode=NO_POSITION. Callers that can act on that
+                // (skip the retry, escalate as a reconciliation gap rather than a transport
+                // failure) may branch on it; callers that cannot keep the old behaviour, since
+                // accepted=false already means "did not happen".
                 ObjectNode out = mapper.createObjectNode();
                 out.put("accepted", false);
                 out.put("rejectReason", e.getMessage());
-                out.put("rejectCode", "NOT_FOUND");
+                out.put("rejectCode", "NO_POSITION");
                 return ToolResult.ok(out);
             }
-            // UNAVAILABLE / NOT_READY are real outages and stay retriable.
+            // Deliberate: a generic BrokerException.Kind.NOT_FOUND reaching here is an HTTP 404
+            // on something OTHER than the position check -- a related-orders lookup, a session
+            // read, the closing POST itself (SaxoBrokerProvider.safeWriteError) -- and says
+            // nothing about whether the position exists. Folding that into "already gone" was
+            // the actual defect (fix round 2): a stale instrument mapping or a transient 404 on
+            // an unrelated read would have made a live position look closed. So NOT_FOUND stays
+            // here with NOT_READY/UNAVAILABLE -- a real outage-shaped failure, retriable.
             return ToolResult.unavailable(e.getMessage());
         }
     }

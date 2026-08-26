@@ -393,7 +393,12 @@ public class AlpacaBrokerProvider implements BrokerProvider {
             return (n != null && n.hasNonNull("qty")) ? bd(n.path("qty")) : BigDecimal.ZERO;
         } catch (RestClientResponseException e) {
             if (e.getStatusCode().value() == 404) {
-                throw new BrokerException(BrokerException.Kind.NOT_FOUND, "no open position", e);
+                // A definite determination, not a generic 404: this endpoint is scoped to the
+                // one symbol being flattened, so its 404 means exactly "no open position" --
+                // NO_POSITION, not NOT_FOUND. See BrokerException.Kind's javadoc for why the two
+                // must not be conflated; mirrors SaxoBrokerProvider.resolveNetPosition so both
+                // providers agree on which kind this is.
+                throw new BrokerException(BrokerException.Kind.NO_POSITION, "no open position", e);
             }
             throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
                     "Alpaca flatten pre-fetch failed HTTP " + e.getStatusCode().value(), e);

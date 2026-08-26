@@ -1572,7 +1572,10 @@ public class SaxoBrokerProvider implements BrokerProvider {
             }
         }
         if (match == null) {
-            throw new BrokerException(BrokerException.Kind.NOT_FOUND, "no open position: " + symbol, null);
+            // A definite determination, not a generic 404: the full net-positions list was
+            // read and scanned, and the symbol simply isn't in it. NO_POSITION, not NOT_FOUND --
+            // see BrokerException.Kind's javadoc for why the two must not be conflated.
+            throw new BrokerException(BrokerException.Kind.NO_POSITION, "no open position: " + symbol, null);
         }
         BigDecimal amount = bd(match.path("NetPositionBase").path("Amount"));
         return new NetPositionSnapshot(amount.abs(), amount.signum() > 0 ? "Sell" : "Buy");
@@ -1612,6 +1615,12 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 case NOT_FOUND -> "NOT_FOUND";
                 case NOT_READY -> "RATE_LIMITED";
                 case UNAVAILABLE -> "UNAVAILABLE";
+                // Structurally unreachable here: NO_POSITION is thrown only by
+                // resolveNetPosition, which runs before the closing POST this method backs and
+                // never through writeError/readError. Kept exhaustive (required by the switch)
+                // and mapped conservatively to the same code a generic 404 gets, rather than
+                // silently swallowed, in case that invariant ever breaks.
+                case NO_POSITION -> "NOT_FOUND";
             };
             return OrderResult.rejected(be.getMessage(), code);
         }

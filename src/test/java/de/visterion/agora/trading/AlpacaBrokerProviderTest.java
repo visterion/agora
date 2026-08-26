@@ -444,14 +444,16 @@ class AlpacaBrokerProviderTest {
     }
 
     @Test
-    void flatten_404_throwsNotFound() {
+    void flatten_404_throwsNoPosition() {
         // M-T3: position qty is now fetched BEFORE the DELETE; a 404 on that pre-fetch means
-        // "no open position" — the DELETE is never even attempted.
+        // "no open position" — the DELETE is never even attempted. NO_POSITION (fix round 2),
+        // not the generic NOT_FOUND: this endpoint is scoped to the one symbol being flattened,
+        // so its 404 is a definite determination, not an ambiguous "something returned 404".
         wm.stubFor(get(urlPathEqualTo("/positions/ZZZZ")).willReturn(aResponse().withStatus(404)));
 
         assertThatThrownBy(() -> provider.flatten("ZZZZ", null, null))
                 .isInstanceOfSatisfying(BrokerException.class, ex -> {
-                    assertThat(ex.kind()).isEqualTo(BrokerException.Kind.NOT_FOUND);
+                    assertThat(ex.kind()).isEqualTo(BrokerException.Kind.NO_POSITION);
                     assertThat(ex.getMessage()).contains("no open position");
                 });
         wm.verify(0, deleteRequestedFor(urlPathEqualTo("/positions/ZZZZ")));

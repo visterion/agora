@@ -49,9 +49,11 @@ a consumer reading the flag with a `false` default never mistakes a good answer 
 Tools that follow this today: `get_intraday`, `get_ohlc`, `get_indicators`,
 `get_indicators_batch`, `get_r_framework` (payload flag + reason), and
 `get_company_facts`, `get_fundamental_concepts`, `get_fundamental_score` (empty well-formed
-payload, no reason). The trading equivalents are `get_order_by_ref` (`order: null`) and
-`cancel_order` (`accepted:false`, `rejectCode:"NOT_FOUND"`) — see
-[`exit-tools.md`](exit-tools.md).
+payload, no reason). The trading equivalents are `get_order_by_ref` (`order: null`),
+`cancel_order` (`accepted:false`, `rejectCode:"NOT_FOUND"`), and `flatten` (`accepted:false`,
+`rejectCode:"NO_POSITION"` — a distinct code from `cancel_order`'s, since a flatten's "no open
+position" is a definite determination against the broker's actual holdings, not the same
+generic-404 ambiguity `NOT_FOUND` covers elsewhere) — see [`exit-tools.md`](exit-tools.md).
 
 `get_quote` also follows it now, decided **per symbol, never per batch** (`GetQuoteTool` /
 `QuoteBatch`): a batch that mixed hits and misses used to collapse to a single error envelope,
@@ -631,7 +633,7 @@ Extensible without rebuild: mount YAML and set `AGORA_RESEARCH_INDICATORS_FILE`.
 | `place_bracket` | Entry + stop-loss, optional take-profit (omit `takeProfitLimit` → entry+stop only; Saxo only) |
 | `modify_bracket` | Change stop-loss and/or take-profit; optional `stopOrderId`/`targetOrderId` address one exact leg (required when a symbol carries more than one bracket, e.g. a multi-tranche position) |
 | `cancel_order` | Cancel by broker order id; unknown id → `available:true` with `accepted:false`, `rejectCode:"NOT_FOUND"`, not an error |
-| `flatten` | Close entire position via market order |
+| `flatten` | Close entire (or partial) position via market order; no open position → `available:true` with `accepted:false`, `rejectCode:"NO_POSITION"`, not an error |
 | `place_protective_stop` | Place ONE protective stop for `qty` shares of an existing position at `stop_price`; purely additive — cancels nothing, reads no other order (Saxo only; Alpaca rejects `PROTECTIVE_STOP_UNSUPPORTED`) |
 
 **Brokers:** Alpaca (paper/live), Saxo (headless OAuth). Selected per connection, no

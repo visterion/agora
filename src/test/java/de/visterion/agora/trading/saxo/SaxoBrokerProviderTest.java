@@ -1408,14 +1408,16 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
-    void flattenWithoutPositionIsNotFound() {
+    void flattenWithoutPositionIsNoPosition() {
+        // NO_POSITION (fix round 2), not the generic NOT_FOUND: resolveNetPosition scanned the
+        // full net-positions list and found nothing for the symbol -- a definite determination.
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions"))
                 .willReturn(okJson("{\"Data\":[]}")));
         assertThatThrownBy(() -> provider.flatten("AAPL", null, null))
                 .isInstanceOf(BrokerException.class)
                 .extracting(e -> ((BrokerException) e).kind())
-                .isEqualTo(BrokerException.Kind.NOT_FOUND);
+                .isEqualTo(BrokerException.Kind.NO_POSITION);
     }
 
     @Test
@@ -3111,7 +3113,8 @@ class SaxoBrokerProviderTest {
     }
 
     @Test
-    void placeProtectiveStopWithoutPositionIsNotFound() {
+    void placeProtectiveStopWithoutPositionIsNoPosition() {
+        // Same resolveNetPosition call as flatten's; same NO_POSITION kind (fix round 2).
         stubInstrument();
         wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions"))
                 .willReturn(okJson("{\"Data\":[]}")));
@@ -3119,7 +3122,7 @@ class SaxoBrokerProviderTest {
         assertThatThrownBy(() -> provider.placeProtectiveStop("AAPL", new java.math.BigDecimal("10"), new java.math.BigDecimal("45.49")))
                 .isInstanceOf(BrokerException.class)
                 .extracting(e -> ((BrokerException) e).kind())
-                .isEqualTo(BrokerException.Kind.NOT_FOUND);
+                .isEqualTo(BrokerException.Kind.NO_POSITION);
         wm.verify(0, postRequestedFor(urlEqualTo("/trade/v2/orders")));
     }
 

@@ -201,19 +201,38 @@ class FlattenToolTest {
     // A flatten for a symbol with no open position is a DEFINITE answer, not an outage: no
     // retry will ever make a gone position come back. Reported as unavailable it is
     // indistinguishable from a real outage to a caller that only checks `available` -- mirrors
-    // CancelOrderTool's NOT_FOUND handling, one file over.
-    @Test void notFoundIsADistinguishableNegativeNotAnOutage() {
+    // CancelOrderTool's NOT_FOUND handling, one file over. NO_POSITION (not the generic
+    // NOT_FOUND) because it is thrown only at the one determination point that actually scanned
+    // the holdings and found none -- fix round 2 finding.
+    @Test void noOpenPositionIsADistinguishableNegativeNotAnOutage() {
         var stub = new StubBroker() {
             public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
-                throw new BrokerException(BrokerException.Kind.NOT_FOUND, "no open position: AAPL", null);
+                throw new BrokerException(BrokerException.Kind.NO_POSITION, "no open position: AAPL", null);
             }
         };
         var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol", "AAPL"));
 
         assertThat(r.available()).isTrue();
         assertThat(r.output().get("accepted").asBoolean()).isFalse();
-        assertThat(r.output().get("rejectCode").asString()).isEqualTo("NOT_FOUND");
+        assertThat(r.output().get("rejectCode").asString()).isEqualTo("NO_POSITION");
         assertThat(r.output().get("rejectReason").asString()).contains("AAPL");
+    }
+
+    // A generic BrokerException.Kind.NOT_FOUND (an HTTP 404 on some OTHER read/write inside
+    // flatten -- a related-orders lookup, the closing POST itself) must NOT be folded into
+    // NO_POSITION: it says nothing about whether the position exists, and a caller told
+    // "position already gone" on a transient 404 elsewhere would be lied to. Stays unavailable
+    // and retriable, same as before this whole fix.
+    @Test void aGenericNotFoundStaysUnavailableNotNoPosition() {
+        var stub = new StubBroker() {
+            public OrderResult flatten(String sym, BigDecimal fraction, BigDecimal qty) {
+                throw new BrokerException(BrokerException.Kind.NOT_FOUND, "Resource not found (HTTP 404)", null);
+            }
+        };
+        var r = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN).put("symbol", "AAPL"));
+
+        assertThat(r.available()).isFalse();
+        assertThat(r.error()).contains("Resource not found");
     }
 
     @Test void notReadyStaysUnavailable() {
