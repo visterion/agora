@@ -241,12 +241,17 @@ output contract.
 | `data.edgar.max-concurrent-filing-fetches` | `8` | How many filing bodies may be in memory at once. Not independent of `max-filing-bytes`: the two multiply into the service's memory ceiling (~1.25 GiB at the defaults). Over the bound a caller waits 30 s and is then refused with `filing_fetch_busy:` — see "Concurrency bound" below |
 
 **Pacing invariant for consumers.** A single trading tool call can issue several order writes, so
-a consumer's per-call timeout has to hold the spacing:
+a consumer's per-call timeout has to hold the spacing. The single `+ order-write-max-block-ms` term
+below assumes **at most one 429 in the whole tool call** — the expected case once writes are
+already paced ≥ `order-write-min-interval-ms` apart, since Saxo's own limit is one order operation
+per second per session. It is not a hard ceiling: `blockedUntilMs` re-arms on every 429 (see
+`SaxoOrderWritePacer.recordBlock`), so each additional 429 within the same tool call adds up to
+another `order-write-max-block-ms` on top:
 
 ```
 (N_paced − 1) × order-write-min-interval-ms
   + N_paced × request time
-  + order-write-max-block-ms
+  + order-write-max-block-ms                      // holds for at most one 429 per tool call
   < the consumer's write-call timeout
 ```
 
@@ -254,11 +259,21 @@ with `N_paced = max(4L + 1, L + 5)` and `L` = protective legs resting on the sym
 the partial-flatten-with-rollback shape (2 leg cancels + 2 sized leg placements + 1 close, or 9
 writes when the rollback interleave runs); `L + 5` is the `place_bracket` fail-safe shape (bracket
 + fallback entry + standalone stop + cancel + L leg cancels + flatten close). Every other tool is
-below both. At `L = 2` (a two-tranche position, no take-profit leg) that is 9 writes ≈ 13.6 s; at
-`L = 4` (both tranches carrying a take-profit) 17 writes ≈ 24.0 s — both inside the 30 000 ms
-write timeout Dracul uses. The consumer's timeout is a **cut-off, not a bound**: Agora's own
-per-request timeout applies to each request separately, so a badly degraded broker can exceed it
-while Agora finishes the sequence.
+below both. At `L = 2` (a two-tranche position, no take-profit leg) that is 9 writes ≈ 13.6 s with
+at most one 429; at `L = 4` (both tranches carrying a take-profit) 17 writes ≈ 24.0 s under the
+same one-429 assumption — both inside the 30 000 ms write timeout Dracul uses.
+
+**Sustained 429s break this at `L = 4`.** If Saxo keeps rate-limiting for the whole tool call, every
+one of the `N_paced` writes can draw its own clamped block, so the bound above becomes
+`(N_paced − 1) × order-write-max-block-ms + N_paced × request time` (the max-block term dominates
+`min-interval-ms` once a 429 is in play). At `L = 2` that is 8 × 3000 ms + 9 × 0.2 s ≈ 25.8 s —
+still inside 30 s, so this does not bite in production as configured today. At `L = 4` it is
+16 × 3000 ms + 17 × 0.2 s ≈ 51.4 s, well past the 30 000 ms write timeout: Dracul would book a
+non-transient `BROKER_ERROR` mid-sequence while Agora keeps writing. **If a take-profit leg is
+ever introduced (`L = 4` becomes reachable), raise the write timeout alongside it**, or lower
+`order-write-max-block-ms`. The consumer's timeout is a **cut-off, not a bound** even in the
+one-429 case: Agora's own per-request timeout applies to each request separately, so a badly
+degraded broker can exceed it while Agora finishes the sequence.
 
 ---
 
