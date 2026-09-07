@@ -72,6 +72,7 @@ public final class SaxoOrderWritePacer implements ClientHttpRequestInterceptor {
     private final long maxBlockMs;
     private final long defaultRetryAfterMs;
     private final LongSupplier now;
+    private final LongSupplier monotonicMs;
     private final Sleeper sleeper;
 
     /** Earliest instant at which the NEXT paced request may be released. */
@@ -79,18 +80,37 @@ public final class SaxoOrderWritePacer implements ClientHttpRequestInterceptor {
     /** Extra block imposed by a 429, clamped to {@link #maxBlockMs}. */
     private long blockedUntilMs = 0L;
 
-    /** Production constructor: real wall clock, real sleeps. */
+    /** Production constructor: real wall clock, real monotonic clock, real sleeps. */
     public SaxoOrderWritePacer(long minIntervalMs, long maxBlockMs, long defaultRetryAfterMs) {
-        this(minIntervalMs, maxBlockMs, defaultRetryAfterMs, System::currentTimeMillis, Thread::sleep);
+        this(minIntervalMs, maxBlockMs, defaultRetryAfterMs, System::currentTimeMillis,
+                () -> System.nanoTime() / 1_000_000L, Thread::sleep);
     }
 
-    /** Test constructor: injected clock and sleep seam, so no test ever really sleeps. */
+    /**
+     * Test constructor: injected wall clock and sleep seam, so no test ever really sleeps. The
+     * monotonic ceiling (see {@link #awaitSlot}) is driven by the SAME clock as {@code now} here,
+     * which is exactly right for every existing test — they only ever move the clock forward, so
+     * the ceiling can never be tighter than the natural {@code minIntervalMs}/{@code maxBlockMs}
+     * bound and never fires early. A test that wants to exercise a wall-clock step backwards
+     * without also defeating the monotonic ceiling uses the 6-arg constructor below instead.
+     */
     SaxoOrderWritePacer(long minIntervalMs, long maxBlockMs, long defaultRetryAfterMs,
                         LongSupplier now, Sleeper sleeper) {
+        this(minIntervalMs, maxBlockMs, defaultRetryAfterMs, now, now, sleeper);
+    }
+
+    /**
+     * Test constructor with an independently injected monotonic clock, for tests that step {@code
+     * now} (the wall clock) backwards while the monotonic clock keeps advancing — exactly what a
+     * real NTP step does to {@code System.currentTimeMillis()} vs {@code System.nanoTime()}.
+     */
+    SaxoOrderWritePacer(long minIntervalMs, long maxBlockMs, long defaultRetryAfterMs,
+                        LongSupplier now, LongSupplier monotonicMs, Sleeper sleeper) {
         this.minIntervalMs = minIntervalMs;
         this.maxBlockMs = maxBlockMs;
         this.defaultRetryAfterMs = defaultRetryAfterMs;
         this.now = now;
+        this.monotonicMs = monotonicMs;
         this.sleeper = sleeper;
     }
 
@@ -167,15 +187,29 @@ public final class SaxoOrderWritePacer implements ClientHttpRequestInterceptor {
      *  itself: see the caller for why. */
     private synchronized WaitOutcome awaitSlot(HttpRequest request) {
         long arrivedMs = now.getAsLong();
+        // Monotonic ceiling, mirroring FinnhubRateLimiter's System.nanoTime() deadline:
+        // nextReleaseMs/blockedUntilMs are stamped from the injected WALL clock (`now`), so a
+        // backwards NTP step (chrony/systemd-timesyncd makestep, a container restart, a host
+        // suspend or snapshot restore) would otherwise make remainingMs arbitrarily large and this
+        // wait unbounded — while holding the monitor that gates every order write on this
+        // connection, including the naked-entry fail-safe. `monotonicMs` (System.nanoTime()-backed
+        // in production) is immune to wall-clock steps, so bounding the real wait by whichever of
+        // minIntervalMs/maxBlockMs is currently driving remainingMs caps it at "one interval" (no
+        // 429 block outstanding) or "one clamped 429 block" (one is) no matter what the wall clock
+        // does. Chosen once at entry: nothing but this call can change nextReleaseMs/blockedUntilMs
+        // while the monitor is held.
+        long ceilingBoundMs = blockedUntilMs > nextReleaseMs ? maxBlockMs : minIntervalMs;
+        long ceilingDeadlineMs = monotonicMs.getAsLong() + ceilingBoundMs;
         while (true) {
             long ts = now.getAsLong();
             long remainingMs = Math.max(nextReleaseMs, blockedUntilMs) - ts;
-            if (remainingMs <= 0) {
+            long ceilingMs = ceilingDeadlineMs - monotonicMs.getAsLong();
+            if (remainingMs <= 0 || ceilingMs <= 0) {
                 nextReleaseMs = ts + minIntervalMs;
                 return new WaitOutcome(ts - arrivedMs, false);
             }
             try {
-                sleeper.sleepMs(remainingMs);
+                sleeper.sleepMs(Math.min(remainingMs, ceilingMs));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 long releasedAt = now.getAsLong();

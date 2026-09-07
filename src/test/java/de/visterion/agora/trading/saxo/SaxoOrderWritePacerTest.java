@@ -116,6 +116,34 @@ class SaxoOrderWritePacerTest {
         assertThat(sleeps).containsExactly(1_000L);
     }
 
+    // ---- (c2) a backwards wall-clock step cannot stall a write beyond the monotonic ceiling ----
+
+    @Test
+    void aBackwardsWallClockStepBetweenTwoWritesStillWaitsAtMostTheMinInterval() throws Exception {
+        // Simulates an NTP step (chrony/systemd-timesyncd makestep, a host suspend, a snapshot
+        // restore): the WALL clock (used for scheduling, i.e. `now`) jumps back 10 minutes, but
+        // the MONOTONIC clock (System.nanoTime() in production) keeps advancing forward exactly as
+        // real time does. Without the ceiling in awaitSlot, the second write would compute
+        // remainingMs = 10 minutes + minIntervalMs and sleep that long while holding the pacer's
+        // monitor. With it, the wait is capped at minIntervalMs because no 429 block is active.
+        var wallClock = new AtomicLong(0L);
+        var monotonicClock = new AtomicLong(0L);
+        var localSleeps = new ArrayList<Long>();
+        var pacer = new SaxoOrderWritePacer(1_100L, 3_000L, 1_000L, wallClock::get, monotonicClock::get,
+                ms -> {
+                    localSleeps.add(ms);
+                    wallClock.addAndGet(ms);
+                    monotonicClock.addAndGet(ms);
+                });
+
+        send(pacer, HttpMethod.PATCH, SIM + ORDERS);            // released at wall t=0
+        wallClock.addAndGet(-600_000L);                          // wall clock steps back 10 minutes
+        send(pacer, HttpMethod.PATCH, SIM + ORDERS);             // must not wait ~600_000 + 1_100 ms
+
+        assertThat(localSleeps).hasSize(1);
+        assertThat(localSleeps.get(0)).isLessThanOrEqualTo(1_100L);
+    }
+
     // ---- (d) 429 feedback, clamped, one header dimension only ----
 
     @Test
