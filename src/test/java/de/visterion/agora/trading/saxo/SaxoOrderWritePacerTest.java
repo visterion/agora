@@ -238,6 +238,71 @@ class SaxoOrderWritePacerTest {
                 .endsWith("}");
     }
 
+    @FunctionalInterface
+    private interface ThrowingAction {
+        void run() throws IOException;
+    }
+
+    /** Attaches a {@link ch.qos.logback.core.read.ListAppender} to this class's logger at INFO
+     *  for the duration of {@code action}, then returns every captured formatted message. */
+    private static List<String> captureLogLines(ThrowingAction action) throws IOException {
+        var logger = (ch.qos.logback.classic.Logger)
+                org.slf4j.LoggerFactory.getLogger(SaxoOrderWritePacer.class);
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        var previousLevel = logger.getLevel();
+        logger.setLevel(ch.qos.logback.classic.Level.INFO);
+        try {
+            action.run();
+        } finally {
+            logger.setLevel(previousLevel);
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+        return appender.list.stream()
+                .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                .toList();
+    }
+
+    @Test
+    void aSecondPacedWriteThatHadToWaitLogsHowLongItWaited() throws Exception {
+        // Without this line, "zero 429 tonight" is indistinguishable from "pacer inert": a wrong
+        // path predicate or a kill switch left on would produce the same silence in the logs.
+        var pacer = pacer(1_100L);
+
+        var lines = captureLogLines(() -> {
+            send(pacer, HttpMethod.PATCH, SIM + ORDERS);   // released at t=0, no wait
+            clock.addAndGet(100L);
+            send(pacer, HttpMethod.PATCH, SIM + ORDERS);   // must wait ~1000 ms
+        });
+
+        var waitedLines = lines.stream().filter(m -> m.startsWith("saxo write pacer: waited "))
+                .toList();
+        assertThat(waitedLines).hasSize(1);
+        assertThat(waitedLines.get(0))
+                .isEqualTo("saxo write pacer: waited 1000 ms for PATCH /sim/openapi/trade/v2/orders");
+    }
+
+    @Test
+    void a429BlockLogsItsResolvedWaitAndWhichHeaderSourceItCameFrom() throws Exception {
+        // Without this line a 429 that falls through to the configured default is invisible, so
+        // the post-deploy header-name discovery cannot tell which branch prod actually exercised.
+        var pacer = pacer(1_100L);
+
+        var sessionOrdersLines = captureLogLines(() -> send(pacer, HttpMethod.PATCH, SIM + ORDERS,
+                429, headers(SaxoOrderWritePacer.SESSION_ORDERS_RESET, "2")));
+        assertThat(sessionOrdersLines)
+                .contains("saxo write pacer: 429 blocks order writes for 2000 ms "
+                        + "(header=session-orders-reset)");
+
+        var pacer2 = pacer(1_100L);
+        var defaultLines = captureLogLines(
+                () -> send(pacer2, HttpMethod.PATCH, SIM + ORDERS, 429, new HttpHeaders()));
+        assertThat(defaultLines)
+                .contains("saxo write pacer: 429 blocks order writes for 1000 ms (header=default)");
+    }
+
     // ---- (e) the kill switch ----
 
     @Test

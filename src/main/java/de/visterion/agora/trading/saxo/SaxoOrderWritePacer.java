@@ -102,14 +102,25 @@ public final class SaxoOrderWritePacer implements ClientHttpRequestInterceptor {
         // minIntervalMs = 0 is the documented kill switch: full pass-through, no spacing AND no
         // 429 block, so an operator can disable pacing with one env var.
         if (minIntervalMs <= 0 || !isOrderWrite(request)) return execution.execute(request, body);
-        awaitSlot(request);
+        // The wait outcome is computed inside the synchronized awaitSlot call but logged only
+        // AFTER execution.execute() below, never in between: logging is slow enough relative to
+        // the millisecond-granularity spacing this class enforces that any log call sitting
+        // between "release decided" and "request actually sent" would jitter the send instant
+        // itself — exactly the kind of silent under-pacing this class must not introduce. The
+        // same reasoning is why nothing here logs while holding the pacer's lock (see awaitSlot).
+        WaitOutcome wait = awaitSlot(request);
         ClientHttpResponse response = execution.execute(request, body);
+        logWaitOutcome(request, wait);
         int status = response.getStatusCode().value();
         // Header discovery: this interceptor is the ONLY place a broker response header is
         // visible. Logged on every paced request, 200 as well as 429, so the names are on
         // record before the first 429 ever arrives.
         log.info("{}", headerLogLine(status, request, response.getHeaders()));
-        if (status == 429) recordBlock(response.getHeaders());
+        if (status == 429) {
+            BlockOutcome block = recordBlock(response.getHeaders());
+            log.info("saxo write pacer: 429 blocks order writes for {} ms (header={})",
+                    block.waitMs(), block.source());
+        }
         return response;
     }
 
@@ -144,46 +155,78 @@ public final class SaxoOrderWritePacer implements ClientHttpRequestInterceptor {
         return path != null && path.contains(ORDER_WRITE_PATH);
     }
 
+    /** Outcome of one {@link #awaitSlot} call, carried out of the synchronized section so the
+     *  caller can log it without holding the pacer's lock. */
+    private record WaitOutcome(long waitedMs, boolean interrupted) {}
+
+    /** Outcome of one {@link #recordBlock} call, carried out for the same reason. */
+    private record BlockOutcome(long waitMs, String source) {}
+
     /** Blocks until this request's slot. Never throws — an interrupt restores the flag and
-     *  releases the request rather than dropping an order write on the floor. */
-    private synchronized void awaitSlot(HttpRequest request) {
+     *  releases the request rather than dropping an order write on the floor. Does no logging
+     *  itself: see the caller for why. */
+    private synchronized WaitOutcome awaitSlot(HttpRequest request) {
+        long arrivedMs = now.getAsLong();
         while (true) {
             long ts = now.getAsLong();
             long remainingMs = Math.max(nextReleaseMs, blockedUntilMs) - ts;
             if (remainingMs <= 0) {
-                release(ts);
-                return;
+                nextReleaseMs = ts + minIntervalMs;
+                return new WaitOutcome(ts - arrivedMs, false);
             }
             try {
                 sleeper.sleepMs(remainingMs);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                release(now.getAsLong());
-                return;
+                long releasedAt = now.getAsLong();
+                nextReleaseMs = releasedAt + minIntervalMs;
+                return new WaitOutcome(releasedAt - arrivedMs, true);
             }
         }
     }
 
-    private void release(long ts) {
-        nextReleaseMs = ts + minIntervalMs;
+    private void logWaitOutcome(HttpRequest request, WaitOutcome wait) {
+        String path = request.getURI() == null ? "-" : request.getURI().getPath();
+        if (wait.interrupted()) {
+            log.info("saxo write pacer: wait interrupted after {} ms, sending {} {} anyway",
+                    wait.waitedMs(), request.getMethod(), path);
+        } else if (wait.waitedMs() > 0) {
+            // Without this line, "zero 429 tonight" is indistinguishable from "pacer inert" — a
+            // wrong path predicate or a kill switch left on would look identical to success.
+            log.info("saxo write pacer: waited {} ms for {} {}", wait.waitedMs(), request.getMethod(), path);
+        }
     }
 
     /**
      * Translates a 429 into a clamped block. Precedence: {@link #SESSION_ORDERS_RESET} (relative
      * seconds, the dimension the order limit lives on) → {@code Retry-After} (relative seconds) →
      * the configured default. Every branch is clamped to {@code maxBlockMs}. The pacer issues no
-     * retry of its own.
+     * retry of its own. Does no logging itself — without a line naming the resolved wait and its
+     * source ({@code session-orders-reset}, {@code retry-after}, or {@code default}) a 429 that
+     * falls through to the default would be invisible, and the post-deploy header-name discovery
+     * (see the class javadoc) could not tell which branch prod actually exercised; the caller logs
+     * the returned {@link BlockOutcome} outside this method's lock for the same reason
+     * {@link #awaitSlot} does not log internally either.
      */
-    private synchronized void recordBlock(HttpHeaders headers) {
-        Long sessionReset = parseSecondsToMs(headers.getFirst(SESSION_ORDERS_RESET));
+    private synchronized BlockOutcome recordBlock(HttpHeaders headers) {
+        String source;
         long waitMs;
+        Long sessionReset = parseSecondsToMs(headers.getFirst(SESSION_ORDERS_RESET));
         if (sessionReset != null) {
+            source = "session-orders-reset";
             waitMs = clamp(sessionReset);
         } else {
             Long retryAfter = parseSecondsToMs(headers.getFirst(HttpHeaders.RETRY_AFTER));
-            waitMs = clamp(retryAfter != null ? retryAfter : defaultRetryAfterMs);
+            if (retryAfter != null) {
+                source = "retry-after";
+                waitMs = clamp(retryAfter);
+            } else {
+                source = "default";
+                waitMs = clamp(defaultRetryAfterMs);
+            }
         }
         blockedUntilMs = Math.max(blockedUntilMs, now.getAsLong() + waitMs);
+        return new BlockOutcome(waitMs, source);
     }
 
     private long clamp(long waitMs) {
