@@ -240,6 +240,13 @@ output contract.
 | `data.edgar.max-filing-bytes` | `33554432` (32 MiB) | Ceiling on one filing's primary document (`get_filing_text`); an over-cap document is rejected, never truncated — see "Filing size cap" below |
 | `data.edgar.max-concurrent-filing-fetches` | `8` | How many filing bodies may be in memory at once. Not independent of `max-filing-bytes`: the two multiply into the service's memory ceiling (~1.25 GiB at the defaults). Over the bound a caller waits 30 s and is then refused with `filing_fetch_busy:` — see "Concurrency bound" below |
 
+**Observed on SIM, 2026-09-07.** Every order-write response carried `X-RateLimit-AppDay-{Limit,Remaining,Reset}`
+and `X-RateLimit-TradeOrdersPostSecond-{Limit,Remaining,Reset}` (limit `1` per second; `Reset` in
+whole seconds, `0` inside the current second) — neither `X-RateLimit-SessionOrders-Reset` nor
+`Retry-After` was present. A 429 block on SIM therefore currently runs on the default
+(`order-write-default-retry-after-ms`) path, which the clamp bounds. A `Reset` of `0` seconds would
+be useless as a block source, so the code deliberately does not read `TradeOrdersPostSecond-Reset`.
+
 **Pacing invariant for consumers.** A single trading tool call can issue several order writes, so
 a consumer's per-call timeout has to hold the spacing. The single `+ order-write-max-block-ms` term
 below assumes **at most one 429 in the whole tool call** — the expected case once writes are
