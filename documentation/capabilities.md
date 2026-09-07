@@ -234,8 +234,31 @@ output contract.
 | `data.finnhub.calls-per-minute` | `60` | Shared rate-limit policy across all eight Finnhub callers (news, fundamentals, estimates, profile, quote, earnings, etc.) — one limiter instance, not per-caller |
 | `data.finnhub.max-wait-ms` | `3000` | Bounded wait for a caller that opts to wait out the limiter instead of failing fast (e.g. quotes). Applies to callers with no total call budget; the earnings path overrides it with its budget-derived ceiling (see above) |
 | `data.finnhub.default-retry-after-ms` | `2000` | Fallback wait when a Finnhub 429 carries neither `Retry-After` nor a parseable `x-ratelimit-reset` |
+| `trading.saxo.order-write-min-interval-ms` | `1100` | Minimum spacing between two Saxo order writes (POST/PATCH/DELETE on `/trade/v2/orders`) on ONE connection — Saxo allows one order operation per second per session, and Agora's transport has automatic retries disabled, so a 429 is final for that call. The pacer **waits, it never throws**: there is no wait cap and no rejection, because a throw would turn a client-side queue into a broker failure and would block the naked-entry fail-safe with the very condition that triggered it. `0` makes the interceptor a full pass-through — no spacing and no 429 block |
+| `trading.saxo.order-write-max-block-ms` | `3000` | Ceiling on the extra block a 429 may impose, whatever the response header says. Header precedence is `X-RateLimit-SessionOrders-Reset` (relative seconds — the dimension the order limit lives on) → `Retry-After` → the default below; `X-RateLimit-AppDay-Reset` runs to 86 400 s and is deliberately never read. A 409 (Saxo's answer to a byte-identical operation inside 15 s) is not rate-limit feedback and sets no block |
+| `trading.saxo.order-write-default-retry-after-ms` | `1000` | Block applied when a Saxo order 429 carries neither of those two headers |
 | `data.edgar.max-filing-bytes` | `33554432` (32 MiB) | Ceiling on one filing's primary document (`get_filing_text`); an over-cap document is rejected, never truncated — see "Filing size cap" below |
 | `data.edgar.max-concurrent-filing-fetches` | `8` | How many filing bodies may be in memory at once. Not independent of `max-filing-bytes`: the two multiply into the service's memory ceiling (~1.25 GiB at the defaults). Over the bound a caller waits 30 s and is then refused with `filing_fetch_busy:` — see "Concurrency bound" below |
+
+**Pacing invariant for consumers.** A single trading tool call can issue several order writes, so
+a consumer's per-call timeout has to hold the spacing:
+
+```
+(N_paced − 1) × order-write-min-interval-ms
+  + N_paced × request time
+  + order-write-max-block-ms
+  < the consumer's write-call timeout
+```
+
+with `N_paced = max(4L + 1, L + 5)` and `L` = protective legs resting on the symbol. `4L + 1` is
+the partial-flatten-with-rollback shape (2 leg cancels + 2 sized leg placements + 1 close, or 9
+writes when the rollback interleave runs); `L + 5` is the `place_bracket` fail-safe shape (bracket
++ fallback entry + standalone stop + cancel + L leg cancels + flatten close). Every other tool is
+below both. At `L = 2` (a two-tranche position, no take-profit leg) that is 9 writes ≈ 13.6 s; at
+`L = 4` (both tranches carrying a take-profit) 17 writes ≈ 24.0 s — both inside the 30 000 ms
+write timeout Dracul uses. The consumer's timeout is a **cut-off, not a bound**: Agora's own
+per-request timeout applies to each request separately, so a badly degraded broker can exceed it
+while Agora finishes the sequence.
 
 ---
 

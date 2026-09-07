@@ -469,13 +469,16 @@ This holds for a rejected/failed fallback entry as well as for the
 `STOP_PLACEMENT_FAILED` path, so a consumer never sees a bare downstream error with the
 actual trigger lost.
 
-**Spacing:** the fallback waits `FAR_STOP_DELAY_MS` (1000 ms) before POSTing the entry.
-Previously it fired ~90 ms after the rejected bracket and tripped Saxo's own rate limit —
-in all five observed production incidents the fallback never got through, so it had never
-actually worked. The 1000 ms is a **hypothesis**, not a measured limit from Saxo's
-documentation: it is a plausible spacing, and whether it is enough stays verifiable from
-the logs (a fallback that still comes back rate-limited now says so with the original
-bracket reject attached).
+**Spacing:** the fallback no longer waits on its own. Every Saxo order write on a connection —
+the rejected bracket, the fallback entry, the standalone stop, and the fail-safe's cancel and
+flatten — goes through one per-connection pacer that spaces `POST`/`PATCH`/`DELETE` on
+`/trade/v2/orders` by `trading.saxo.order-write-min-interval-ms` (1100 ms), measured from the
+previous release. The old hand-rolled `FAR_STOP_DELAY_MS` spaced only the bracket → entry hop and
+left the standalone stop ~56–90 ms behind the entry, which is exactly where Saxo's
+one-order-per-second-per-session limit rejected it; the pacer covers all three writes and the
+fail-safe's as well. A 429 that still arrives adds a clamped block (≤ 3000 ms) instead of a retry
+— the transport has automatic retries disabled on purpose, so the caller, not the pacer, decides
+what to do with a rejected write.
 
 ### Request-ID semantics (Saxo)
 

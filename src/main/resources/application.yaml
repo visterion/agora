@@ -35,6 +35,16 @@ agora:
     saxo:
       token-dir: ${AGORA_TRADING_SAXO_TOKEN_DIR:/data/saxo}
       refresh-check-ms: ${AGORA_TRADING_SAXO_REFRESH_CHECK_MS:30000}
+      # Saxo allows ONE order operation per second per session. SaxoOrderWritePacer spaces every
+      # POST/PATCH/DELETE on /trade/v2/orders per connection by this much, measured from the
+      # previous release. 0 = full pass-through (no spacing, no 429 block) — the rollback switch.
+      order-write-min-interval-ms: ${AGORA_TRADING_SAXO_ORDER_WRITE_MIN_INTERVAL_MS:1100}
+      # Ceiling on the extra block a 429 may impose, whatever the response header claims. Without
+      # it one malformed header wedges every order write on the connection for hours, silently.
+      order-write-max-block-ms: ${AGORA_TRADING_SAXO_ORDER_WRITE_MAX_BLOCK_MS:3000}
+      # Block applied when a Saxo order 429 carries neither X-RateLimit-SessionOrders-Reset nor
+      # Retry-After.
+      order-write-default-retry-after-ms: ${AGORA_TRADING_SAXO_ORDER_WRITE_DEFAULT_RETRY_AFTER_MS:1000}
     connections:
       alpaca-paper:
         provider: alpaca
