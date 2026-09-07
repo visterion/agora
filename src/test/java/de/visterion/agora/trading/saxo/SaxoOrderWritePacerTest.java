@@ -322,13 +322,25 @@ class SaxoOrderWritePacerTest {
 
     @Test
     void concurrentWritersAreSerializedAndNoneIsLostOrRefused() throws Exception {
-        // Real clock and real sleeps here: an injected clock cannot express "five threads
-        // arrive at once". 20 ms spacing keeps the whole test under ~100 ms.
-        var pacer = new SaxoOrderWritePacer(20L, 3_000L, 1_000L, System::currentTimeMillis,
-                Thread::sleep);
-        var instants = Collections.synchronizedList(new ArrayList<Long>());
+        // Deterministic by construction, not by timing luck: the fake clock only ever moves
+        // inside the sleeper below, and that sleeper is only ever invoked from inside the
+        // pacer's OWN synchronized wait loop -- so however the OS schedules the five real
+        // threads racing to enter that loop, only one is ever inside it at a time (that mutual
+        // exclusion is exactly the property under test), and each one always finds the clock
+        // exactly where the previous occupant left it. With minIntervalMs = 20 that forces every
+        // waiting caller's remaining-time computation to resolve to exactly 20 ms and its sleep
+        // call to advance the shared clock by exactly 20 -- there is no wall-clock race left to
+        // lose: the recorded numbers are pure arithmetic on a lock-serialized fake clock, not a
+        // measurement of real elapsed time, so this cannot flake. Real threads are still used
+        // (not a single-threaded simulation) because the property under test is the locking
+        // itself, not the arithmetic.
+        var clock = new AtomicLong(0L);
+        var sleepEnds = Collections.synchronizedList(new ArrayList<Long>());
+        var pacer = new SaxoOrderWritePacer(20L, 3_000L, 1_000L, clock::get,
+                ms -> sleepEnds.add(clock.addAndGet(ms)));
+        var responses = Collections.synchronizedList(new ArrayList<Object>());
         ClientHttpRequestExecution execution = (req, body) -> {
-            instants.add(System.currentTimeMillis());
+            responses.add(new Object());
             return new MockClientHttpResponse(new byte[0], 200);
         };
 
@@ -356,12 +368,19 @@ class SaxoOrderWritePacerTest {
             assertThat(pool.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
         }
 
-        assertThat(instants).hasSize(5);
-        List<Long> sorted = new ArrayList<>(instants);
-        Collections.sort(sorted);
-        for (int i = 1; i < sorted.size(); i++) {
-            assertThat(sorted.get(i) - sorted.get(i - 1)).isGreaterThanOrEqualTo(20L);
-        }
+        // None lost, none refused: all five callers got a response.
+        assertThat(responses).hasSize(5);
+
+        // Serialized with exact spacing: the very first caller is released immediately (fake-clock
+        // instant 0, no sleep call recorded for it); the other four each advance the shared clock
+        // by exactly 20 from wherever the previous release left it. Four waiters starting from a
+        // shared clock of 0 can only ever produce this exact sorted sequence — see the comment
+        // above for why that holds regardless of how the OS interleaves the five real threads.
+        var releaseInstants = new ArrayList<Long>();
+        releaseInstants.add(0L);
+        releaseInstants.addAll(sleepEnds);
+        Collections.sort(releaseInstants);
+        assertThat(releaseInstants).containsExactly(0L, 20L, 40L, 60L, 80L);
     }
 
     // ---- (g) interrupts ----
