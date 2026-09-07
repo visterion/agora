@@ -21,11 +21,20 @@ public class SaxoBrokerProviderFactory implements BrokerProviderFactory {
 
     private final SaxoTokenStores stores;
     private final long timeoutMs;
+    private final long orderWriteMinIntervalMs;
+    private final long orderWriteMaxBlockMs;
+    private final long orderWriteDefaultRetryAfterMs;
 
     public SaxoBrokerProviderFactory(SaxoTokenStores stores,
-            @Value("${agora.trading.provider-timeout-ms:10000}") long timeoutMs) {
+            @Value("${agora.trading.provider-timeout-ms:10000}") long timeoutMs,
+            @Value("${agora.trading.saxo.order-write-min-interval-ms:1100}") long orderWriteMinIntervalMs,
+            @Value("${agora.trading.saxo.order-write-max-block-ms:3000}") long orderWriteMaxBlockMs,
+            @Value("${agora.trading.saxo.order-write-default-retry-after-ms:1000}") long orderWriteDefaultRetryAfterMs) {
         this.stores = stores;
         this.timeoutMs = timeoutMs;
+        this.orderWriteMinIntervalMs = orderWriteMinIntervalMs;
+        this.orderWriteMaxBlockMs = orderWriteMaxBlockMs;
+        this.orderWriteDefaultRetryAfterMs = orderWriteDefaultRetryAfterMs;
     }
 
     @Override
@@ -33,7 +42,13 @@ public class SaxoBrokerProviderFactory implements BrokerProviderFactory {
 
     @Override
     public BrokerProvider create(String connectionId, ConnectionConfig cfg) {
-        RestClient client = TradingHttp.clientBuilder(timeoutMs)
+        // ONE pacer per connection: Saxo's order limit is per session, and exactly one
+        // SaxoBrokerProvider/RestClient exists per active connection. Two connections do not
+        // share a bucket. Registered ahead of ProviderCallLogger so its wait is not billed to
+        // the logged dur_ms.
+        SaxoOrderWritePacer pacer = new SaxoOrderWritePacer(
+                orderWriteMinIntervalMs, orderWriteMaxBlockMs, orderWriteDefaultRetryAfterMs);
+        RestClient client = TradingHttp.clientBuilder(timeoutMs, pacer)
                 .baseUrl(cfg.getBaseUrl())
                 .build();
         SaxoTokenStore store = stores.forConnection(connectionId);

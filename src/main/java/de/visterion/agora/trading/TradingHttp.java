@@ -6,6 +6,7 @@ import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
 import org.apache.hc.core5.util.Timeout;
 import org.springframework.http.client.ClientHttpRequestFactory;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
@@ -56,6 +57,15 @@ public final class TradingHttp {
     public static RestClient.Builder clientBuilder(long responseTimeoutMs) {
         return RestClient.builder()
                 .requestFactory(requestFactory(responseTimeoutMs))
+                .requestInterceptor(ProviderCallLogger.INSTANCE);
+    }
+
+    /** Same as {@link #clientBuilder(long)} but with {@code first} ahead of the call logger, so
+     *  a throttle's wait is not billed to the provider's measured latency. */
+    public static RestClient.Builder clientBuilder(long responseTimeoutMs, ClientHttpRequestInterceptor first) {
+        return RestClient.builder()
+                .requestFactory(requestFactory(responseTimeoutMs))
+                .requestInterceptor(first)
                 .requestInterceptor(ProviderCallLogger.INSTANCE);
     }
 }

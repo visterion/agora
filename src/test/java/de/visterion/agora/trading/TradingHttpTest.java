@@ -84,4 +84,50 @@ class TradingHttpTest {
             pool.awaitTermination(30, TimeUnit.SECONDS);
         }
     }
+
+    /**
+     * Spring runs request interceptors in registration order. The pacer MUST be registered
+     * before ProviderCallLogger, otherwise its wait lands inside the logger's clock and every
+     * paced call is logged with an inflated dur_ms — which is exactly the number the rollout
+     * verification uses to compute send instants (line timestamp - dur_ms). This test proves
+     * the ordering by its only externally visible consequence.
+     */
+    @Test
+    void firstInterceptorRunsAheadOfTheCallLoggerSoItsWaitIsNotBilled() {
+        wm.stubFor(get(urlEqualTo("/ping")).willReturn(okJson("{}")));
+        var logger = (ch.qos.logback.classic.Logger)
+                org.slf4j.LoggerFactory.getLogger("agora.providercall");
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        appender.start();
+        logger.addAppender(appender);
+        var previousLevel = logger.getLevel();
+        logger.setLevel(ch.qos.logback.classic.Level.INFO);
+        try {
+            RestClient client = TradingHttp.clientBuilder(10_000L, (request, body, execution) -> {
+                try {
+                    Thread.sleep(400L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return execution.execute(request, body);
+            }).baseUrl(wm.baseUrl()).build();
+
+            long t0 = System.nanoTime();
+            client.get().uri("/ping").retrieve().body(String.class);
+            long totalMs = (System.nanoTime() - t0) / 1_000_000L;
+
+            assertThat(totalMs).isGreaterThanOrEqualTo(400L);
+            String line = appender.list.stream()
+                    .map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage)
+                    .filter(m -> m.startsWith("provider_call"))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("no provider_call line was logged"));
+            long durMs = Long.parseLong(line.replaceAll(".*\\bdur_ms=(\\d+).*", "$1"));
+            assertThat(durMs).isLessThan(400L);
+        } finally {
+            logger.setLevel(previousLevel);
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+    }
 }
