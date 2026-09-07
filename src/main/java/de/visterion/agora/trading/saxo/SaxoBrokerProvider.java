@@ -49,26 +49,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
     int legLookupMaxAttempts = 3;
     long legLookupDelayMillis = 200;
 
-    /**
-     * Wartezeit zwischen dem abgelehnten Bracket-POST und dem Fallback-Entry.
-     *
-     * <p>Ohne sie feuert der Fallback ~90 ms nach dem Bracket und löst Saxos
-     * Order-Rate-Limit selbst aus: in den 14 Tagen vor dem 2026-07-25 kamen 0 von 5
-     * Fallback-Versuchen durch, alle mit HTTP 429.
-     *
-     * <p>Der Wert ist eine HYPOTHESE, kein gemessenes Limit — Saxos genaue Order-Rate ist
-     * nicht dokumentiert und wurde nicht ausgemessen. Nach dem Deploy an denselben Logs
-     * überprüfbar (grep far-stop): bleibt es bei 429, ist die Wartezeit zu kurz.
-     */
-    static final long FAR_STOP_DELAY_MS = 1000L;
-
-    /**
-     * Effective pre-fallback wait. Package-private (not final) for the same reason as
-     * {@link #legLookupDelayMillis}: {@code SaxoBrokerProviderTest} zeroes it so tests
-     * never actually sleep.
-     */
-    long farStopDelayMillis = FAR_STOP_DELAY_MS;
-
     record AccountContext(String clientKey, String accountKey) {}
 
     SaxoBrokerProvider(ConnectionConfig cfg, SaxoTokenStore store, RestClient client,
@@ -679,11 +659,15 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * runs a uniform best-effort cancel-then-flatten so the entry is neutralized whether it
      * ended up unfilled, partially filled, or fully filled. Either way the fallback reports
      * {@code rejected("STOP_PLACEMENT_FAILED")} rather than an accepted-but-unprotected result.
+     *
+     * <p>Spacing between the rejected bracket, the fallback entry and the standalone stop is
+     * NOT this method's business: {@code SaxoOrderWritePacer} on the connection's RestClient
+     * spaces every order write on that client, so a hand-rolled pre-fallback sleep here would
+     * only add a second, uncoordinated delay.
      */
     private OrderResult submitFarStopFallback(BracketOrderRequest req, SaxoInstrumentResolver.ResolvedInstrument ri,
                                                 AccountContext ctx, String opposite, ObjectNode entryBody,
                                                 BracketReject reject) {
-        sleepBeforeFarStopFallback();
         String entryId;
         try {
             JsonNode resp = client.post().uri("/trade/v2/orders")
@@ -859,22 +843,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
             // best-effort only — leg lookup failing must not fail the placement itself
         }
         return null;
-    }
-
-    /**
-     * Spacing seam before the far-stop fallback's entry POST, mirroring
-     * {@link #sleepBetweenLegLookups}: SaxoBrokerProviderTest zeroes {@link #farStopDelayMillis}
-     * so tests never actually sleep, and overrides this method where it needs to observe the wait.
-     * An interrupt is restored on the thread but does not abort the fallback — an entry that is
-     * about to be placed must not be skipped silently.
-     */
-    void sleepBeforeFarStopFallback() {
-        if (farStopDelayMillis <= 0) return;
-        try {
-            Thread.sleep(farStopDelayMillis);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
     }
 
     /** Injectable delay seam: SaxoBrokerProviderTest zeroes legLookupDelayMillis so tests never actually sleep. */

@@ -48,7 +48,6 @@ class SaxoBrokerProviderTest {
         provider = new SaxoBrokerProvider(cfg, store, RestClient.builder().baseUrl(wm.baseUrl()).build(),
                 resolver());
         provider.legLookupDelayMillis = 0;   // don't actually sleep in tests
-        provider.farStopDelayMillis = 0;     // ditto for the pre-fallback spacing
         stubAccounts();
     }
 
@@ -1237,44 +1236,6 @@ class SaxoBrokerProviderTest {
         assertThat(second).isNotNull().isNotEqualTo("ref-1").isNotEqualTo(first);
         assertThat(posts.get(0).getBodyAsString()).contains("\"ExternalReference\":\"ref-1\"");
         assertThat(posts.get(1).getBodyAsString()).contains("\"ExternalReference\":\"ref-1\"");
-    }
-
-    @Test
-    void farStopFallbackWaitsBeforeRePlacingTheEntry() {
-        // The fallback used to fire ~90 ms after the rejected bracket and tripped Saxo's own
-        // order rate limit every single time (0 of 5 got through in the 14 days before
-        // 2026-07-25). The delay seam mirrors legLookupDelayMillis: a package-private field
-        // that tests neutralize — here the sleep is observed instead of actually slept.
-        stubInstrument();
-        stubBracketRejectTooFar("far-stop-delay");
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-delay")
-                .whenScenarioStateIs("toofar-rejected")
-                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
-                .willSetStateTo("entry-placed"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-delay")
-                .whenScenarioStateIs("entry-placed")
-                .willReturn(okJson("{\"OrderId\":\"S1\"}")));
-
-        var sleeps = new java.util.concurrent.atomic.AtomicInteger();
-        var postsSeenAtSleep = new java.util.concurrent.atomic.AtomicInteger(-1);
-        var spy = new SaxoBrokerProvider(cfg, store,
-                RestClient.builder().baseUrl(wm.baseUrl()).build(), resolver()) {
-            @Override void sleepBeforeFarStopFallback() {
-                sleeps.incrementAndGet();
-                postsSeenAtSleep.set(wm.findAll(postRequestedFor(urlEqualTo("/trade/v2/orders"))).size());
-            }
-        };
-        spy.legLookupDelayMillis = 0;
-
-        var r = spy.submitBracket(bracketReq());
-
-        assertThat(r.accepted()).isTrue();
-        assertThat(sleeps.get()).isEqualTo(1);
-        // exactly one POST had happened when the wait started: the rejected bracket. The
-        // fallback entry comes AFTER the wait.
-        assertThat(postsSeenAtSleep.get()).isEqualTo(1);
-        // the wait is the configured one, defaulting to the documented constant
-        assertThat(spy.farStopDelayMillis).isEqualTo(SaxoBrokerProvider.FAR_STOP_DELAY_MS);
     }
 
     // ---- rejectedLeg: which leg did Saxo actually reject? ----
