@@ -16,15 +16,14 @@ import java.util.function.LongSupplier;
 
 /**
  * Per-connection spacing for Saxo ORDER WRITES. Saxo allows one order operation per second per
- * session; every writer (the nightly stop ratchet, a flatten, this provider's own bracket
- * submission and rollback interleave) funnels through one {@code RestClient} per connection, so
- * one interceptor on that client is the only place that sees them all.
+ * session; every writer (the nightly stop ratchet, a flatten, this provider's rollback
+ * interleave) funnels through one {@code RestClient} per connection, so one interceptor on that
+ * client is the only place that sees them all.
  *
  * <p><b>It waits; it never throws.</b> There is no wait cap and no {@code NOT_READY}: a throw
- * would turn a client-side queue into a broker failure, and the naked-entry fail-safe would
- * itself be several paced writes — a throwing pacer would block the rescue with the same
- * condition that triggered it. The total wait is bounded by construction instead: one interval
- * plus one clamped 429 block.
+ * would turn a client-side queue into a broker failure, and a multi-write sequence such as the
+ * flatten rollback interleave would be cut off mid-way by the same condition that triggered it.
+ * The total wait is bounded by construction instead: one interval plus one clamped 429 block.
  *
  * <p><b>Assumption:</b> one writer per connection at a time. The pacer serializes RELEASES; two
  * concurrent callers would afterwards race through later layers. If that ever stops being true,

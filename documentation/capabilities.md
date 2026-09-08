@@ -262,13 +262,13 @@ another `order-write-max-block-ms` on top:
   < the consumer's write-call timeout
 ```
 
-with `N_paced = max(4L + 1, L + 5)` and `L` = protective legs resting on the symbol. `4L + 1` is
-the partial-flatten-with-rollback shape (2 leg cancels + 2 sized leg placements + 1 close, or 9
-writes when the rollback interleave runs); `L + 5` is the `place_bracket` fail-safe shape (bracket
-+ fallback entry + standalone stop + cancel + L leg cancels + flatten close). Every other tool is
-below both. At `L = 2` (a two-tranche position, no take-profit leg) that is 9 writes ≈ 13.6 s with
-at most one 429; at `L = 4` (both tranches carrying a take-profit) 17 writes ≈ 24.0 s under the
-same one-429 assumption — both inside the 30 000 ms write timeout Dracul uses.
+with `N_paced = 4L + 1` and `L` = protective legs resting on the symbol. `4L + 1` is the
+partial-flatten-with-rollback shape (2 leg cancels + 2 sized leg placements + 1 close, or 9 writes
+when the rollback interleave runs), and it is the widest shape any tool reaches. `place_bracket`
+is one paced write, accepted or rejected. At `L = 2` (a two-tranche position, no take-profit leg)
+that is 9 writes ≈ 13.6 s with at most one 429; at `L = 4` (both tranches carrying a take-profit)
+17 writes ≈ 24.0 s under the same one-429 assumption — both inside the 30 000 ms write timeout
+Dracul uses.
 
 **Sustained 429s break this at `L = 4`.** If Saxo keeps rate-limiting for the whole tool call, every
 one of the `N_paced` writes can draw its own clamped block, so the bound above becomes

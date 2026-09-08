@@ -267,9 +267,7 @@ worked: 46 shares held, 12 already protected by a surviving stop, so the call pa
 ### Saxo implementation
 
 Resolves the instrument, reads the net position to derive the opposite side (no other
-order is read), then POSTs a single `StopIfTraded` order with `GoodTillCancel` duration
-— the same standalone-stop body shape the far-stop fallback already uses for a lone
-entry/stop pair.
+order is read), then POSTs a single `StopIfTraded` order with `GoodTillCancel` duration.
 
 ### Alpaca: not implemented
 
@@ -388,8 +386,8 @@ rather than silently PATCHing the wrong order.
 `takeProfitLimit` is **optional**. Omit it to place an entry plus a protective stop and
 no take-profit leg — the shape needed when a synthesised target (e.g. 3R) sits outside
 Saxo's proximity band and would otherwise get the whole bracket rejected with
-`400 TooFarFromEntryOrder`. It is the same body the far-stop fallback below produces,
-only requested deliberately instead of reached reactively after a reject.
+`400 TooFarFromEntryOrder`. An entry plus a stop and no take-profit leg is a first-class
+bracket shape here, not a reactive fallback.
 
 - **Saxo**: supported. The child `Orders[]` array then carries the stop leg only, and
   `takeProfitLegId` is absent from the response.
@@ -429,60 +427,59 @@ though Saxo's own `modify_bracket` works off the parent id (they let Dracul corr
   reported `accepted` — the leg ids are simply left null. Callers should treat null leg
   ids as "look them up later via `get_orders`", not as failure.
 
-### Saxo — far-stop fallback (entry + standalone stop, no take-profit)
+### Saxo — `TooFarFromEntryOrder` is a plain reject
 
-Saxo enforces a proximity band on a bracket's stop-loss (`TooFarFromEntryOrder`); a
-requested stop outside that band rejects the whole bracket. `place_bracket` places the
-bracket directly (no dry-run) and the fallback is detected reactively when Saxo rejects the
-bracket with `TooFarFromEntryOrder`: that reject is atomic (Saxo either accepts the whole
-bracket body or rejects it wholesale — nothing is ever placed on this path), so on that
-specific reject `place_bracket` switches to placing the entry order alone followed by a
-**standalone `StopIfTraded`** at the requested stop level — with **no take-profit leg**
-(Dracul manages such positions' exits itself via a trailing chandelier, so a lone entry/stop
-needs no TP). **Fail-safe:** if the standalone stop cannot be placed,
-the entry is canceled (or, if it already filled before the cancel landed, the resulting
-position is flattened instead) — an entry is never left without a protective stop. The
-fallback result still uses `stopLegId` for the standalone stop's id, with `takeProfitLegId`
-left null; any other bracket reject short-circuits to a plain `rejected(...)` with no
-further fallback, and every bracket reject (regardless of code) is logged for diagnosis.
+Saxo enforces an undocumented proximity band around the entry price: a bracket whose stop-loss
+or take-profit leg sits outside it is rejected with `400 TooFarFromEntryOrder`, and that reject
+takes the whole bracket down — Saxo either accepts the entire body or rejects it wholesale (this
+endpoint has no 200-with-per-leg-errors shape), so **nothing is placed**. `place_bracket` reports
+the reject as-is and makes no further broker call: no entry, no stop, no cancel, no flatten, no
+position read. It is one paced order write, whatever the outcome.
 
-**The named leg is the one Saxo actually rejected.** Saxo's 400 body carries a per-leg
-`Orders[]` array in addition to the top-level `ErrorInfo`; the log line and the reject
-message are derived from that array, not from a hard-coded assumption. Legs marked
-`OrderNotPlaced` ("order not placed as other order in request was rejected") are
-**collateral damage** and are skipped — the first leg with a real error code is the
-culprit. This matters: a bracket whose take-profit sits too far out rejects with the
-take-profit named and the stop merely `OrderNotPlaced`. Agora previously logged the stop
-in that case, which sent diagnosis down the wrong path. If the body carries no per-leg
-information, the leg is reported as `unknown` rather than guessed. (Index → role follows
-the order legs are built in: with a take-profit, index 0 is the TP and index 1 the stop;
-without one, index 0 is the stop. Tests pin both shapes.)
-
-**The original reject reason survives the fallback.** If the fallback itself fails, the
-message names both causes rather than only the last one — e.g.
-
-```
-bracket rejected [TooFarFromEntryOrder am take_profit 237.71]; fallback dann gescheitert: saxo rate limited
+```json
+{ "accepted": false,
+  "rejectCode": "TooFarFromEntryOrder",
+  "rejectReason": "bracket rejected [TooFarFromEntryOrder am take_profit 110]: Order price is too far from the entry order" }
 ```
 
-This holds for a rejected/failed fallback entry as well as for the
-`STOP_PLACEMENT_FAILED` path, so a consumer never sees a bare downstream error with the
-actual trigger lost.
+**There is no fallback, on purpose.** Agora used to answer this reject by placing the entry alone
+plus a standalone `StopIfTraded` at the requested level. On a cash account that stop is a sell of
+shares not held, and Saxo rejects it with `NotOwned` — measured on SIM on 2026-09-07. The fallback
+could therefore never succeed on the account shape actually in use, and it paid for the attempt
+with three further paced order writes plus a cancel-and-flatten fail-safe against a live account,
+for a result that was `accepted:false` either way. The price is the caller's to change; Agora
+cannot place it for them. Attaching a protective stop AFTER an entry has filled is a separate,
+deliberate operation — see `place_protective_stop`.
 
-**Spacing:** the fallback no longer waits on its own. Every Saxo order write on a connection —
-the rejected bracket, the fallback entry, the standalone stop, and the fail-safe's cancel and
-flatten — goes through one per-connection pacer that spaces `POST`/`PATCH`/`DELETE` on
-`/trade/v2/orders` by `trading.saxo.order-write-min-interval-ms` (1100 ms), measured from the
-previous release. The old hand-rolled `FAR_STOP_DELAY_MS` spaced only the bracket → entry hop and
-left the standalone stop ~56–90 ms behind the entry, which is exactly where Saxo's
-one-order-per-second-per-session limit rejected it; the pacer covers all three writes and the
-fail-safe's as well. A 429 that still arrives adds a clamped block (≤ 3000 ms) instead of a retry
-— the transport has automatic retries disabled on purpose, so the caller, not the pacer, decides
-what to do with a rejected write.
+**The realistic trigger is the take-profit leg, which is why the leg is named.** Dracul caps the
+distance between entry and broker stop (`max-broker-stop-pct`), so the stop leg normally stays
+inside the band; an explicit take-profit from the LLM is forwarded uncapped. The single production
+occurrence of this reject was a take-profit leg. Naming the leg is what tells the caller which of
+the two numbers to move.
+
+**The named leg is the one Saxo actually rejected.** Saxo's 400 body carries a per-leg `Orders[]`
+array in addition to the top-level `ErrorInfo`; the log line and the reject message are derived
+from that array, not from a hard-coded assumption. Legs marked `OrderNotPlaced` ("order not placed
+as other order in request was rejected") are **collateral damage** and are skipped — the first leg
+with a real error code is the culprit. This matters: a bracket whose take-profit sits too far out
+rejects with the take-profit named and the stop merely `OrderNotPlaced`. Agora previously logged
+the stop in that case, which sent diagnosis down the wrong path. If the body carries no per-leg
+information, the reject reads `bracket rejected [TooFarFromEntryOrder]` with no leg named, rather
+than guessing one. (Index → role follows the order legs are built in: with a take-profit, index 0
+is the TP and index 1 the stop; without one, index 0 is the stop. Tests pin both shapes.)
+
+**Logging.** This reject logs its own single consolidated INFO line — every other bracket reject is
+logged by the shared write-error path instead:
+
+```
+saxo response [POST /trade/v2/orders (bracket)]: status=400 body={…} — bracket rejected [TooFarFromEntryOrder am stop_loss 90]: <Saxo message> for AAPL
+```
+
+The body is redacted before it is logged. No line mentions a fallback, because there is none.
 
 ### Request-ID semantics (Saxo)
 
-Every Saxo order POST — the bracket, the fallback entry, the standalone stop, a flatten —
+Every Saxo order POST — the bracket, a protective stop, a flatten —
 sends a **fresh `X-Request-ID` per attempt**. Saxo deduplicates on that header, so a value
 kept stable across retries is burned after the first use: a bracket rejected with 400 and
 then retried under the same id comes back `409` forever. The header is therefore a

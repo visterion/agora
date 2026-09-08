@@ -648,9 +648,8 @@ class SaxoBrokerProviderTest {
 
     @Test
     void bracketWithoutTakeProfitOmitsTheTakeProfitLeg() {
-        // Entry + Stop, no take-profit. The capability existed only inside the far-stop
-        // fallback so far; here it becomes the regular case (Dracul places tranche 2 without
-        // a take-profit because Saxo rejects a 3R target with TooFarFromEntryOrder).
+        // Entry + Stop, no take-profit: a first-class bracket shape. Dracul places tranche 2
+        // without a take-profit because Saxo rejects a 3R target with TooFarFromEntryOrder.
         stubInstrument();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(okJson("""
             {"OrderId":"9001","Orders":[{"OrderId":"9003"}]}
