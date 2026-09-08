@@ -606,6 +606,14 @@ class SaxoBrokerProviderTest {
         // TP/SL near entry: Saxo enforces a proximity band (TooFarFromEntryOrder)
     }
 
+    /** Same as {@link #bracketReq()} but WITHOUT a take-profit leg, so index 0 is the stop. */
+    private de.visterion.agora.trading.BracketOrderRequest bracketReqNoTakeProfit() {
+        return new de.visterion.agora.trading.BracketOrderRequest(
+                "AAPL", "buy", new java.math.BigDecimal("1"), "limit", "gtc",
+                new java.math.BigDecimal("100"), new java.math.BigDecimal("90"), null,
+                null, "ref-1");
+    }
+
     private void stubInstrument() {
         wm.stubFor(get(urlPathEqualTo("/ref/v1/instruments")).willReturn(okJson("""
             {"Data":[{"Identifier":211,"AssetType":"Stock","Symbol":"AAPL:xnas"}]}
@@ -929,23 +937,8 @@ class SaxoBrokerProviderTest {
         }
     }
 
-    // ---- submitBracket far-stop fallback (REACTIVE: real bracket 400 TooFarFromEntryOrder) ----
-
-    /** The atomic 400/writeError path: nothing was placed by this rejected POST — confirmed
-     *  by the fact that the fallback then places a genuinely NEW entry via a second POST. */
-    private void stubBracketRejectTooFar(String scenario) {
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario(scenario)
-                .whenScenarioStateIs(Scenario.STARTED)
-                .willReturn(aResponse().withStatus(400)
-                        .withHeader("Content-Type", "application/json")
-                        .withBody("""
-                            {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"}}
-                            """))
-                .willSetStateTo("toofar-rejected"));
-    }
-
     @Test
-    void submitBracketOtherRejectionIsRejectedWithoutFallback() {
+    void submitBracketOtherRejectionIsRejected() {
         stubInstrument();
         wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)
                 .withHeader("Content-Type", "application/json")
@@ -958,260 +951,131 @@ class SaxoBrokerProviderTest {
         assertThat(r.accepted()).isFalse();
         assertThat(r.rejectReason()).isEqualTo("Instrument not tradable");
         assertThat(r.rejectCode()).isEqualTo("IllegalInstrumentId");
-        // no fallback triggered — exactly the one rejected POST, nothing further
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+    }
+
+    // ---- submitBracket: TooFarFromEntryOrder is a plain reject (no fallback) ----
+
+    /** Top-level ErrorInfo + one per-leg error, the shape Saxo sends for a no-take-profit bracket. */
+    private static final String TOO_FAR_STOP_BODY = """
+        {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"},
+         "Orders":[{"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"}}]}
+        """;
+
+    @Test
+    void submitBracketTooFarOnStopIsRejectedWithoutAnyFurtherWrite() {
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)
+                .withHeader("Content-Type", "application/json")
+                .withBody(TOO_FAR_STOP_BODY)));
+
+        var r = provider.submitBracket(bracketReqNoTakeProfit());
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("TooFarFromEntryOrder");
+        assertThat(r.rejectReason()).isEqualTo(
+                "bracket rejected [TooFarFromEntryOrder am stop_loss 90]: "
+                        + "Order price is too far from the entry order");
+        // The reject is atomic: nothing was placed, so nothing is re-placed, canceled or flattened.
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders")));
+        wm.verify(0, deleteRequestedFor(urlMatching("/trade/v2/orders.*")));
+        wm.verify(0, getRequestedFor(urlPathMatching("/port/v1/netpositions.*")));
+    }
+
+    @Test
+    void submitBracketTooFarOnTakeProfitNamesTheTakeProfit() {
+        // The realistic production trigger: the take-profit leg is too far, the stop is only
+        // collateral damage (OrderNotPlaced). The caller must learn WHICH number to move.
+        stubInstrument();
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)
+                .withHeader("Content-Type", "application/json")
+                .withBody(REAL_REJECT_BODY)));
+
+        var r = provider.submitBracket(bracketReq());
+
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("TooFarFromEntryOrder");
+        assertThat(r.rejectReason()).contains("am take_profit 110");
+        assertThat(r.rejectReason()).doesNotContain("stop_loss");
         wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders")));
     }
 
     @Test
-    void submitBracketTooFarRejectTriggersReactiveFallback() {
+    void submitBracketTooFarWithoutPerLegInfoStillRejectsWithTheCode() {
         stubInstrument();
-        stubBracketRejectTooFar("far-stop-reactive-ok");
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-reactive-ok")
-                .whenScenarioStateIs("toofar-rejected")
-                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
-                .willSetStateTo("entry-placed"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-reactive-ok")
-                .whenScenarioStateIs("entry-placed")
-                .willReturn(okJson("{\"OrderId\":\"S1\"}")));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                    {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"}}
+                    """)));
 
-        var r = provider.submitBracket(bracketReq());
+        var r = provider.submitBracket(bracketReqNoTakeProfit());
 
-        assertThat(r.accepted()).isTrue();
-        assertThat(r.brokerOrderId()).isEqualTo("E1");
-        assertThat(r.clientRef()).isEqualTo("ref-1");
-        assertThat(r.stopLegId()).isEqualTo("S1");
-        assertThat(r.takeProfitLegId()).isNull();
-
-        var posts = wm.findAll(postRequestedFor(urlEqualTo("/trade/v2/orders")));
-        assertThat(posts).hasSize(3);
-        // 1st POST: full bracket body (rejected TooFar)
-        assertThat(posts.get(0).getBodyAsString()).contains("Orders");
-        // 2nd POST: entry-only re-placement
-        assertThat(posts.get(1).getBodyAsString()).doesNotContain("Orders");
-        // 3rd POST: standalone stop
-        assertThat(posts.get(2).getBodyAsString()).doesNotContain("Orders");
-        String entryReqId = posts.get(1).getHeader("X-Request-ID");
-        String stopReqId = posts.get(2).getHeader("X-Request-ID");
-        assertThat(entryReqId).isNotNull();
-        // Fallback entry gets a FRESH X-Request-ID, distinct from the clientRef the rejected
-        // bracket already consumed under that dedupe key — otherwise Saxo could replay/409
-        // the rejected bracket's cached response instead of placing the entry.
-        assertThat(entryReqId).isNotEqualTo("ref-1");
-        assertThat(stopReqId).isNotNull().isNotEqualTo(entryReqId);
-        // ExternalReference on the entry body still carries the clientRef for order
-        // tracking / orderByClientRef reconcile matching — only the header changed.
-        assertThat(posts.get(1).getBodyAsString()).contains("\"ExternalReference\":\"ref-1\"");
-
-        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
-                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("StopIfTraded")))
-                .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell")))
-                .withRequestBody(matchingJsonPath("$.Amount", equalTo("1")))
-                .withRequestBody(matchingJsonPath("$.OrderPrice", equalTo("90")))
-                .withRequestBody(matchingJsonPath("$.OrderDuration.DurationType", equalTo("GoodTillCancel")))
-                .withRequestBody(matchingJsonPath("$.Uic", equalTo("211"))));
+        assertThat(r.accepted()).isFalse();
+        assertThat(r.rejectCode()).isEqualTo("TooFarFromEntryOrder");
+        // No leg is guessed when the body names none.
+        assertThat(r.rejectReason()).startsWith("bracket rejected [TooFarFromEntryOrder]: ");
+        wm.verify(1, postRequestedFor(urlEqualTo("/trade/v2/orders")));
     }
 
     @Test
-    void submitBracketFarStopFallbackFailSafeCancelsEntryWhenStopPlacementFails() {
-        // Fix round 3 regression test: this is the exact scenario the round-2 NOT_FOUND ->
-        // NO_POSITION split broke and then fixed. Before the fix, protectUnprotectedEntry's
-        // `e.kind() != BrokerException.Kind.NOT_FOUND` check stayed pinned to the OLD kind while
-        // resolveNetPosition started throwing NO_POSITION -- so this entirely ordinary outcome
-        // (purely unfilled entry, cancel removed it, no position ever existed) started logging a
-        // false "an unprotected position may exist and needs manual review" ERROR every time.
+    void submitBracketTooFarLogsExactlyOneRedactedLine() {
+        // This branch bypasses writeError and logs itself, so the one-line-per-reject rule and
+        // the body redaction have to be pinned here rather than on writeError's own test.
         stubInstrument();
-        stubBracketRejectTooFar("far-stop-cancel");
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel")
-                .whenScenarioStateIs("toofar-rejected")
-                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
-                .willSetStateTo("entry-placed"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel")
-                .whenScenarioStateIs("entry-placed")
-                .willReturn(aResponse().withStatus(400)
-                        .withHeader("Content-Type", "application/json")
-                        .withBody("""
-                            {"ErrorInfo":{"ErrorCode":"SomeStopRejection","Message":"stop rejected"}}
-                            """)));
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/E1")).willReturn(aResponse().withStatus(200)));
-        // entry was purely unfilled: cancel (200) removed the working order, so the
-        // fail-safe's always-on flatten finds no residual position — NO_POSITION is tolerated.
-        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("{\"Data\":[]}")));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(400)
+                .withHeader("Content-Type", "application/json")
+                .withBody("""
+                    {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"},
+                     "Orders":[{"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"Order price is too far from the entry order"}}],
+                     "token":"SEKRET"}
+                    """)));
 
         Logger logger = (Logger) LoggerFactory.getLogger(SaxoBrokerProvider.class);
         ListAppender<ILoggingEvent> appender = new ListAppender<>();
         appender.start();
         logger.addAppender(appender);
-        logger.setLevel(Level.ERROR);
+        logger.setLevel(Level.INFO);
         OrderResult r;
         try {
-            r = provider.submitBracket(bracketReq());
+            r = provider.submitBracket(bracketReqNoTakeProfit());
         } finally {
             logger.detachAppender(appender);
         }
 
         assertThat(r.accepted()).isFalse();
-        assertThat(r.rejectCode()).isEqualTo("STOP_PLACEMENT_FAILED");
-        wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/E1"))
-                .withQueryParam("AccountKey", equalTo("Acc+Key/1==")));
-        wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions")));
-        // no position existed (pure unfilled) — flatten's NO_POSITION is tolerated without a
-        // fourth order POST (only the rejected bracket + the entry + the failed stop were placed above)
-        wm.verify(3, postRequestedFor(urlEqualTo("/trade/v2/orders")));
-        // The actual regression: an ordinary, fully-handled outcome must stay silent.
-        assertThat(appender.list).noneMatch(e -> e.getLevel() == Level.ERROR
-                && e.getFormattedMessage().contains("unprotected position may exist"));
+        var lines = appender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .filter(m -> m.startsWith("saxo response [POST /trade/v2/orders (bracket)]: status=400"))
+                .toList();
+        assertThat(lines).hasSize(1);
+        String line = lines.get(0);
+        assertThat(line).contains("[TooFarFromEntryOrder am stop_loss 90]");
+        assertThat(line).doesNotContain("far-stop");
+        // describe() already opens with "bracket rejected [" — the format string must not
+        // prepend a second "rejected".
+        assertThat(line).doesNotContain("rejected bracket rejected");
+        assertThat(line).doesNotContain("SEKRET");
+        assertThat(line).contains("\"token\":\"***\"");
     }
 
     @Test
-    void submitBracketFarStopFallbackLogsOnAGenericFlattenFailure() {
-        // The inverse of the test above: a GENERIC 404 during the fail-safe's flatten (here, the
-        // netpositions read itself failing, not "no position found") is NOT a determination that
-        // no position exists -- it must still be escalated loudly, since an unprotected position
-        // may be sitting there with nothing automated left to try. Folding this into the tolerated
-        // case (as the round-2 regression did in the other direction) would silently swallow the
-        // one failure mode that actually deserves manual review.
+    void submitBracket429IsNotReady() {
+        // submitBracket's own non-400 mapping: writeError -> readError -> NOT_READY. Previously
+        // only reachable through the fallback entry's writeError call.
         stubInstrument();
-        stubBracketRejectTooFar("far-stop-generic-404");
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-generic-404")
-                .whenScenarioStateIs("toofar-rejected")
-                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
-                .willSetStateTo("entry-placed"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-generic-404")
-                .whenScenarioStateIs("entry-placed")
-                .willReturn(aResponse().withStatus(400)
-                        .withHeader("Content-Type", "application/json")
-                        .withBody("""
-                            {"ErrorInfo":{"ErrorCode":"SomeStopRejection","Message":"stop rejected"}}
-                            """)));
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/E1")).willReturn(aResponse().withStatus(200)));
-        // The netpositions GET itself 404s (not a normal 200 with empty Data) -- readError maps
-        // this to the GENERIC BrokerException.Kind.NOT_FOUND, distinct from the definite
-        // NO_POSITION resolveNetPosition throws when the list came back empty.
-        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(aResponse().withStatus(404)));
+        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).willReturn(aResponse().withStatus(429)));
 
-        Logger logger = (Logger) LoggerFactory.getLogger(SaxoBrokerProvider.class);
-        ListAppender<ILoggingEvent> appender = new ListAppender<>();
-        appender.start();
-        logger.addAppender(appender);
-        logger.setLevel(Level.ERROR);
-        OrderResult r;
-        try {
-            r = provider.submitBracket(bracketReq());
-        } finally {
-            logger.detachAppender(appender);
-        }
+        Throwable t = catchThrowable(() -> provider.submitBracket(bracketReq()));
 
-        assertThat(r.accepted()).isFalse();
-        assertThat(r.rejectCode()).isEqualTo("STOP_PLACEMENT_FAILED");
-        assertThat(appender.list).anyMatch(e -> e.getLevel() == Level.ERROR
-                && e.getFormattedMessage().contains("unprotected position may exist"));
-    }
-
-    @Test
-    void submitBracketFarStopFallbackFlattensPartialFillAfterSuccessfulCancel() {
-        stubInstrument();
-        stubBracketRejectTooFar("far-stop-partial-fill");
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-partial-fill")
-                .whenScenarioStateIs("toofar-rejected")
-                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
-                .willSetStateTo("entry-placed"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-partial-fill")
-                .whenScenarioStateIs("entry-placed")
-                .willReturn(aResponse().withStatus(500))
-                .willSetStateTo("stop-failed"));
-        // flatten's own closing Market order for the residual position left by the partial fill
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-partial-fill")
-                .whenScenarioStateIs("stop-failed")
-                .willReturn(okJson("{\"OrderId\":\"F1\"}")));
-        // cancel succeeds (200) — Saxo cancels only the still-working remainder, but a partial
-        // fill still leaves a live, unprotected position behind that cancel alone cannot see.
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/E1")).willReturn(aResponse().withStatus(200)));
-        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
-            {"Data":[{"NetPositionBase":{"Amount":1.0,"Uic":211,"AssetType":"Stock"},
-                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
-            """)));
-        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("{\"Data\":[]}")));
-
-        var r = provider.submitBracket(bracketReq());
-
-        assertThat(r.accepted()).isFalse();
-        assertThat(r.rejectCode()).isEqualTo("STOP_PLACEMENT_FAILED");
-        wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/E1")));
-        // this is the previously-uncovered gap: flatten must run even though cancel succeeded
-        wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions")));
-        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
-                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
-                .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell"))));
-    }
-
-    @Test
-    void submitBracketFarStopFallbackFlattensWhenEntryAlreadyFilledBeforeCancel() {
-        stubInstrument();
-        stubBracketRejectTooFar("far-stop-flatten");
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-flatten")
-                .whenScenarioStateIs("toofar-rejected")
-                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
-                .willSetStateTo("entry-placed"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-flatten")
-                .whenScenarioStateIs("entry-placed")
-                .willReturn(aResponse().withStatus(500))
-                .willSetStateTo("stop-failed"));
-        // flatten's own closing Market order, once the fail-safe kicks in
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-flatten")
-                .whenScenarioStateIs("stop-failed")
-                .willReturn(okJson("{\"OrderId\":\"F1\"}")));
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/E1")).willReturn(aResponse().withStatus(404)));
-        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
-            {"Data":[{"NetPositionBase":{"Amount":1.0,"Uic":211,"AssetType":"Stock"},
-                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
-            """)));
-        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("{\"Data\":[]}")));
-
-        var r = provider.submitBracket(bracketReq());
-
-        assertThat(r.accepted()).isFalse();
-        assertThat(r.rejectCode()).isEqualTo("STOP_PLACEMENT_FAILED");
-        wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/E1")));
-        wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions")));
-        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
-                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
-                .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell"))));
-    }
-
-    @Test
-    void submitBracketFarStopFallbackFlattensWhenCancelFailsWithNonNotFoundError() {
-        stubInstrument();
-        stubBracketRejectTooFar("far-stop-cancel-unavailable");
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel-unavailable")
-                .whenScenarioStateIs("toofar-rejected")
-                .willReturn(okJson("{\"OrderId\":\"E1\"}"))
-                .willSetStateTo("entry-placed"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel-unavailable")
-                .whenScenarioStateIs("entry-placed")
-                .willReturn(aResponse().withStatus(500))
-                .willSetStateTo("stop-failed"));
-        // flatten's own closing Market order, once the last-resort fail-safe kicks in
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-cancel-unavailable")
-                .whenScenarioStateIs("stop-failed")
-                .willReturn(okJson("{\"OrderId\":\"F1\"}")));
-        // cancel fails with a non-404 error (5xx/timeout) — state is ambiguous, entry may
-        // already be filled, so the fail-safe must fall through to flatten rather than give up.
-        wm.stubFor(delete(urlPathEqualTo("/trade/v2/orders/E1")).willReturn(aResponse().withStatus(500)));
-        wm.stubFor(get(urlPathEqualTo("/port/v1/netpositions")).willReturn(okJson("""
-            {"Data":[{"NetPositionBase":{"Amount":1.0,"Uic":211,"AssetType":"Stock"},
-                      "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
-            """)));
-        wm.stubFor(get(urlPathEqualTo("/port/v1/orders/me")).willReturn(okJson("{\"Data\":[]}")));
-
-        var r = provider.submitBracket(bracketReq());
-
-        assertThat(r.accepted()).isFalse();
-        assertThat(r.rejectCode()).isEqualTo("STOP_PLACEMENT_FAILED");
-        wm.verify(deleteRequestedFor(urlPathEqualTo("/trade/v2/orders/E1")));
-        wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/netpositions")));
-        wm.verify(postRequestedFor(urlEqualTo("/trade/v2/orders"))
-                .withRequestBody(matchingJsonPath("$.OrderType", equalTo("Market")))
-                .withRequestBody(matchingJsonPath("$.BuySell", equalTo("Sell"))));
+        assertThat(t).isInstanceOf(BrokerException.class);
+        assertThat(((BrokerException) t).kind()).isEqualTo(BrokerException.Kind.NOT_READY);
+        assertThat(t).hasMessageContaining("rate limited");
+        // No fail-safe cycle. The POST COUNT is deliberately NOT asserted: the test provider is
+        // built on a bare RestClient.builder() whose Apache HttpClient5 transport auto-retries a
+        // 429 POST once, while production disables that (TradingHttp.disableAutomaticRetries()).
+        wm.verify(0, deleteRequestedFor(urlMatching("/trade/v2/orders.*")));
+        wm.verify(0, getRequestedFor(urlPathMatching("/port/v1/netpositions.*")));
     }
 
     // ---- X-Request-ID is a per-attempt key, not a business key ----
@@ -1281,36 +1145,6 @@ class SaxoBrokerProviderTest {
             {"ErrorInfo":{"ErrorCode":"TooFarFromEntryOrder","Message":"too far"}}
             """);
         assertThat(SaxoBrokerProvider.rejectedLeg(body, true)).isNull();
-    }
-
-    @Test
-    void fallbackFailureCarriesBothCauses() {
-        // Bracket wird mit 400 TooFarFromEntryOrder abgelehnt, der Fallback-Entry dann
-        // mit 429 — exakt der Ablauf vom 2026-07-25. Der Aufrufer muss BEIDE Ursachen
-        // sehen; bisher gewann die zweite und die erste ging verloren.
-        stubInstrument();
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-429")
-                .whenScenarioStateIs(Scenario.STARTED)
-                .willReturn(aResponse().withStatus(400)
-                        .withHeader("Content-Type", "application/json")
-                        .withBody(REAL_REJECT_BODY))
-                .willSetStateTo("toofar-rejected"));
-        wm.stubFor(post(urlEqualTo("/trade/v2/orders")).inScenario("far-stop-429")
-                .whenScenarioStateIs("toofar-rejected")
-                .willReturn(aResponse().withStatus(429)));
-
-        // One call only — the WireMock scenario advances, so re-invoking would hit a
-        // different stub.
-        Throwable t = catchThrowable(() -> provider.submitBracket(bracketReq()));
-
-        assertThat(t).isInstanceOf(BrokerException.class);
-        // the 429 mapping (NOT_READY, "retry shortly") must survive unchanged …
-        assertThat(((BrokerException) t).kind()).isEqualTo(BrokerException.Kind.NOT_READY);
-        // … while the message now names BOTH causes: what the bracket was rejected for
-        // (and at which leg), and what the fallback then failed with.
-        assertThat(t).hasMessageContaining("TooFarFromEntryOrder")
-                .hasMessageContaining("take_profit")
-                .hasMessageContaining("rate limited");
     }
 
     // ---- cancel ----

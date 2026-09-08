@@ -513,8 +513,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
         // condition rather than assuming a fixed position.
         //
         // The take-profit is optional (since 2026-07-25). Without it an entry+stop bracket is
-        // built — the same shape submitFarStopFallback produces, but deliberately instead of
-        // reactively after a 400 TooFarFromEntryOrder.
+        // built — a first-class bracket shape here, not a reactive fallback.
         if (req.takeProfitLimit() != null) {
             ObjectNode takeProfit = MAPPER.createObjectNode();
             takeProfit.put("OrderType", "Limit");
@@ -547,13 +546,16 @@ public class SaxoBrokerProvider implements BrokerProvider {
             String orderId = resp == null ? null : resp.path("OrderId").asString(null);
             return withLegIds(orderId, req.clientRef());
         } catch (RestClientResponseException e) {
-            // Reactive far-stop trigger: a 400 here is the atomic reject path — Saxo either
-            // accepts the whole bracket body or rejects it wholesale (this endpoint has no
-            // 200-with-per-leg-errors shape, unlike the old precheck endpoint), so a
-            // TooFarFromEntryOrder reject means NOTHING was placed yet. That makes the full
-            // entry+standalone-stop fallback safe to run from scratch. Any other 400 reject
-            // code is reported as a plain rejection, same as before; non-400 statuses (e.g.
-            // 409 duplicate) are not rejects at all and go straight to writeError untouched.
+            // A 400 here is the ATOMIC reject path: Saxo either accepts the whole bracket body
+            // or rejects it wholesale (this endpoint has no 200-with-per-leg-errors shape,
+            // unlike the old precheck endpoint), so nothing was placed. A TooFarFromEntryOrder
+            // reject is therefore reported as-is, only enriched with the leg Saxo named and that
+            // leg's price — the number the caller has to change. There is deliberately NO
+            // fallback: the only one that ever existed placed the entry alone plus a standalone
+            // StopIfTraded before the fill, and on a cash account Saxo rejects that stop with
+            // NotOwned (measured on SIM 2026-09-07), so it could never succeed. Any other 400
+            // reject code is reported as a plain rejection; non-400 statuses (e.g. 409
+            // duplicate) are not rejects at all and go straight to writeError untouched.
             if (e.getStatusCode().value() == 400) {
                 JsonNode errorBody = parseErrorBody(e);
                 String code = errorBody.path("ErrorInfo").path("ErrorCode").asString(null);
@@ -561,19 +563,16 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 if (message == null) message = errorBody.path("Message").asString(null);
                 if (message == null) message = rawBody(e);
                 if ("TooFarFromEntryOrder".equals(code)) {
-                    // Single consolidated INFO line: raw response (status/body) + parsed
-                    // code/message, so this reject doesn't produce two separate log lines.
-                    // Only this branch logs itself — every other 400 reject falls through to
-                    // writeError below, which owns the logging for those.
-                    log.info("saxo response [POST /trade/v2/orders (bracket)]: status=400 body={} — rejected [{}]: {} for {}",
-                            ProviderLogRedactor.redactBody(rawBody(e)), code, message, req.symbol());
+                    // Single consolidated INFO line: raw response (status/body) + the parsed
+                    // reject with its named leg. Only this branch logs itself — every other 400
+                    // reject falls through to writeError below, which owns the logging for those.
+                    // describe() already starts with "bracket rejected [", so the format string
+                    // must not put another "rejected" in front of it.
                     String leg = rejectedLeg(errorBody, req.takeProfitLimit() != null);
-                    log.info("saxo far-stop: bracket rejected [{}] for {} at leg {} "
-                            + "(take-profit {}, stop {}, entry {}), falling back to entry + standalone stop",
-                            code, req.symbol(), leg == null ? "unknown" : leg,
-                            req.takeProfitLimit(), req.stopLossStop(), req.limitPrice());
                     var reject = new BracketReject(code, message, leg, legPrice(req, leg));
-                    return submitFarStopFallback(req, ri, ctx, opposite, entryFields, reject);
+                    log.info("saxo response [POST /trade/v2/orders (bracket)]: status=400 body={} — {}: {} for {}",
+                            ProviderLogRedactor.redactBody(rawBody(e)), reject.describe(), message, req.symbol());
+                    return OrderResult.rejected(reject.describe() + ": " + message, code);
                 }
             }
             return writeError("POST /trade/v2/orders (bracket)", e);
@@ -611,13 +610,13 @@ public class SaxoBrokerProvider implements BrokerProvider {
     }
 
     /**
-     * Why the original bracket POST was rejected, carried into {@link #submitFarStopFallback}
-     * so it survives a fallback that then fails for an unrelated reason.
+     * The parsed cause of a rejected bracket POST. It exists to name the leg Saxo actually
+     * rejected and that leg's price in the reject reason, so the caller learns WHICH number to
+     * change rather than only that something was "too far".
      *
-     * <p>Before this existed, a rejected bracket followed by a failing fallback reported only
-     * the SECOND failure: on 2026-07-25 the caller saw "saxo rate limited (HTTP 429)" and had
-     * no way to learn that the bracket had been rejected for a too-far take-profit — so it
-     * retried the identical request instead of fixing the target.
+     * <p>Without the named leg a too-far take-profit and a too-far stop are indistinguishable in
+     * the reject reason: on 2026-07-25 that sent diagnosis after the stop while the take-profit
+     * was the leg Saxo had rejected, and the request was retried unchanged.
      */
     record BracketReject(String code, String message, String leg, BigDecimal legPrice) {
         /** {@code bracket rejected [TooFarFromEntryOrder am take_profit 237.71]} */
@@ -630,11 +629,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
             }
             return sb.append(']').toString();
         }
-
-        /** Prefixes {@code detail} (the fallback's own failure) with the original cause. */
-        String prefix(String detail) {
-            return describe() + "; fallback dann gescheitert: " + detail;
-        }
     }
 
     /** The price of the leg Saxo named — the number the caller has to change to get accepted. */
@@ -642,149 +636,6 @@ public class SaxoBrokerProvider implements BrokerProvider {
         if ("take_profit".equals(leg)) return req.takeProfitLimit();
         if ("stop_loss".equals(leg)) return req.stopLossStop();
         return null;
-    }
-
-    /**
-     * Far-stop fallback (triggered reactively when the real bracket POST rejects with
-     * {@code TooFarFromEntryOrder}): Saxo's proximity band rejects a bracket whose stop-loss
-     * sits outside it, so instead of a single bracket POST this places the entry alone, then
-     * a standalone {@code StopIfTraded} at the
-     * requested stop level — no take-profit leg (Dracul exits such positions via its own
-     * trailing chandelier, so a lone entry/stop needs no TP). Two distinct {@code X-Request-ID}s
-     * are used (Saxo dedupes by that header) since these are two independent order placements.
-     *
-     * <p><b>Fail-safe (non-negotiable):</b> once the entry is placed, this position must never
-     * be left without a protective stop. If the standalone stop POST fails for any reason
-     * (throws, or the response carries no usable {@code OrderId}), {@link #protectUnprotectedEntry}
-     * runs a uniform best-effort cancel-then-flatten so the entry is neutralized whether it
-     * ended up unfilled, partially filled, or fully filled. Either way the fallback reports
-     * {@code rejected("STOP_PLACEMENT_FAILED")} rather than an accepted-but-unprotected result.
-     *
-     * <p>Spacing between the rejected bracket, the fallback entry and the standalone stop is
-     * NOT this method's business: {@code SaxoOrderWritePacer} on the connection's RestClient
-     * spaces every order write on that client, so a hand-rolled pre-fallback sleep here would
-     * only add a second, uncoordinated delay.
-     */
-    private OrderResult submitFarStopFallback(BracketOrderRequest req, SaxoInstrumentResolver.ResolvedInstrument ri,
-                                                AccountContext ctx, String opposite, ObjectNode entryBody,
-                                                BracketReject reject) {
-        String entryId;
-        try {
-            JsonNode resp = client.post().uri("/trade/v2/orders")
-                    .header("Authorization", bearer())
-                    .header("X-Request-ID", UUID.randomUUID().toString())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(entryBody)
-                    .retrieve().body(JsonNode.class);
-            entryId = resp == null ? null : resp.path("OrderId").asString(null);
-        } catch (RestClientResponseException e) {
-            // Nothing has been placed yet — safe to report as a plain reject, same as the
-            // CLEAN path's error mapping. But writeError only RETURNS for a 400; for 409 and
-            // for everything readError covers (401/403/404/429/5xx) it THROWS instead. Both
-            // exits must carry the original bracket reject forward, so the throwing one is
-            // caught here and re-thrown with the same kind and an enriched message.
-            try {
-                OrderResult rejected = writeError("POST /trade/v2/orders (far-stop entry)", e);
-                return OrderResult.rejected(reject.prefix(rejected.rejectReason()), rejected.rejectCode());
-            } catch (BrokerException be) {
-                throw new BrokerException(be.kind(), reject.prefix(be.getMessage()), be);
-            }
-        } catch (Exception e) {
-            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
-                    reject.prefix("saxo submitBracket (far-stop entry) failed: " + e.getMessage()), e);
-        }
-
-        ObjectNode standaloneStop = MAPPER.createObjectNode();
-        standaloneStop.put("Uic", ri.uic());
-        standaloneStop.put("AssetType", ri.assetType());
-        standaloneStop.put("BuySell", opposite);
-        standaloneStop.put("Amount", req.qty());
-        standaloneStop.put("OrderType", "StopIfTraded");
-        standaloneStop.put("OrderPrice", req.stopLossStop());
-        standaloneStop.put("ManualOrder", false);
-        standaloneStop.put("AccountKey", ctx.accountKey());
-        standaloneStop.set("OrderDuration", durationNode("GoodTillCancel"));
-
-        String stopId = null;
-        Exception stopFailure = null;
-        try {
-            JsonNode resp = client.post().uri("/trade/v2/orders")
-                    .header("Authorization", bearer())
-                    .header("X-Request-ID", UUID.randomUUID().toString())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(standaloneStop)
-                    .retrieve().body(JsonNode.class);
-            stopId = resp == null ? null : resp.path("OrderId").asString(null);
-        } catch (Exception e) {
-            if (e instanceof RestClientResponseException rce) {
-                log.info("saxo response [POST /trade/v2/orders (far-stop stop)]: status={} body={}",
-                        rce.getStatusCode().value(), rawBody(rce));
-            }
-            stopFailure = e;
-        }
-
-        if (stopId == null) {
-            return protectUnprotectedEntry(entryId, req.symbol(), stopFailure, reject);
-        }
-
-        log.info("saxo far-stop fallback: entry {} + standalone stop {} for {}", entryId, stopId, req.symbol());
-        return OrderResult.accepted(entryId, req.clientRef(), "accepted", stopId, null);
-    }
-
-    /**
-     * Mandatory fail-safe for {@link #submitFarStopFallback}: an entry must never be left
-     * without a protective stop, whether it ended up unfilled, partially filled, or fully
-     * filled. This runs ONE uniform path that covers all three outcomes identically rather
-     * than branching on the cancel result:
-     *
-     * <ol>
-     *   <li>Best-effort {@link #cancel(String)} of the entry, tolerating ANY
-     *   {@link BrokerException} — cancel may legitimately fail if the entry already filled
-     *   (fully or partially) before the cancel reached it, or on a transient transport error.
-     *   Cancel is purely "remove a still-working remainder if any is left"; its outcome is
-     *   never branched on.</li>
-     *   <li>Always follows with a best-effort {@link #flatten(String, java.math.BigDecimal,
-     *   java.math.BigDecimal)} of the full position, which is the authoritative "close
-     *   whatever position resulted" step — this is what actually protects a partial fill (Saxo
-     *   cancel only pulls the still-working remainder, leaving the filled part as a live,
-     *   unprotected position) just as well as a full fill. A {@code NO_POSITION} from flatten
-     *   (the entry was purely unfilled and cancel removed it — no position ever existed) is
-     *   tolerated — the definite, narrow determination {@code resolveNetPosition} makes, not the
-     *   generic {@code NOT_FOUND} an unrelated 404 elsewhere could also produce. Any other
-     *   flatten failure is escalated loudly via {@code log.error} since an unprotected position
-     *   may now exist with nothing automated left to try.</li>
-     *   <li>Always returns {@code rejected("STOP_PLACEMENT_FAILED")} — this method never lets a
-     *   cancel/flatten failure propagate as a thrown {@link BrokerException}.</li>
-     * </ol>
-     */
-    private OrderResult protectUnprotectedEntry(String entryId, String symbol, Exception stopFailure,
-                                                BracketReject reject) {
-        try {
-            cancel(entryId);
-        } catch (BrokerException e) {
-            // Cancel is best-effort only — it may legitimately fail if the entry already
-            // filled (fully or partially) before the cancel reached it, or on a transient
-            // transport error. Either way, flatten below is the authoritative safety net.
-            log.debug("saxo far-stop fail-safe: best-effort cancel of entry {} did not succeed ({}); "
-                    + "falling through to flatten regardless", entryId, e.getMessage());
-        }
-        try {
-            flatten(symbol, BigDecimal.ONE, null);
-        } catch (BrokerException e) {
-            if (e.kind() != BrokerException.Kind.NO_POSITION) {
-                log.error("saxo far-stop fail-safe: cancel of unprotected entry {} and best-effort "
-                        + "flatten of {} both failed to leave a confirmed clean state ({}); an "
-                        + "unprotected position may exist and needs manual review",
-                        entryId, symbol, e.getMessage());
-            }
-            // NO_POSITION: no position existed — the entry was purely unfilled and cancel
-            // already removed it. Nothing left to protect. A generic NOT_FOUND (some OTHER 404
-            // inside flatten, e.g. a related-orders lookup) does NOT mean that and must still be
-            // escalated above -- folding it in here was the exact regression fix round 3 closes.
-        }
-        String cause = stopFailure == null ? "no OrderId in response" : stopFailure.getMessage();
-        return OrderResult.rejected(reject.prefix("standalone stop placement failed: " + cause),
-                "STOP_PLACEMENT_FAILED");
     }
 
     /**
@@ -1432,9 +1283,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * construction: it reads the net position to derive the opposite side (the same derivation
      * {@link #flatten} uses — {@code amount.signum() > 0 ? "Sell" : "Buy"}), then POSTs exactly
      * ONE {@code StopIfTraded} order for {@code qty} at {@code stopPrice} with {@code
-     * GoodTillCancel} duration — the same standalone-stop body shape as the far-stop fallback's
-     * {@code standaloneStop} (see {@link #submitFarStopFallback}). It cancels nothing and reads
-     * no other order.
+     * GoodTillCancel} duration. It cancels nothing and reads no other order.
      *
      * <p>There is no rollback here because there is nothing that was changed to roll back — but
      * that only holds for a DETERMINATE POST failure (400/401/403/404/429, mirroring {@link
