@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,6 +32,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>No test here sleeps for real: the clock is frozen and the {@code Sleeper} is a seam, so a
  * "110 ms slice" costs nothing but is still a real critical section the other thread must wait on.
+ * That same seam is where the latecomer's turn is observed: the pacer sleeps while HOLDING its
+ * gate, so a {@code Sleeper} callback runs inside the critical section, and only a count read there
+ * is a count read at the moment the turn was granted.
  */
 class EdgarPacerFairnessTest {
 
@@ -59,10 +63,26 @@ class EdgarPacerFairnessTest {
         var sweepSlices = new AtomicInteger();
         var sweepIsInsideTheCriticalSection = new CountDownLatch(1);
         var latecomerHasQueued = new CountDownLatch(1);
+        var sweepThread = new AtomicReference<Thread>();
+
+        // Where the latecomer's turn is OBSERVED, and why it is observed here. The pacer sleeps
+        // while holding its gate, so a Sleeper call is proof that its caller holds the lock right
+        // now — and reading the sweep's counter from inside that critical section is the only way
+        // to read it at the instant the turn was granted. Reading it after acquire() returns (the
+        // first version of this test) reads it after the gate was already released, so the sweep
+        // — whose slices cost nothing here: frozen clock, no-op sleeper, a bare lock/unlock per
+        // iteration — can run hundreds of them while this thread is merely off-CPU. On an 8-core
+        // dev box that never happened; on a 2-vCPU CI runner it did, reporting 375 and 1,000
+        // overtakes for a queue that had in fact handed the turn over after exactly one slice.
+        var servedAfterSlices = new AtomicInteger(-1);
 
         // The sweep's FIRST slice parks inside the pacer until the latecomer is provably queued;
         // every later slice returns at once, which is the "re-enters immediately" pattern.
         EdgarSearchService.Sleeper parkOnce = ms -> {
+            if (Thread.currentThread() != sweepThread.get()) {   // the latecomer, holding the gate
+                servedAfterSlices.compareAndSet(-1, sweepSlices.get());
+                return;
+            }
             if (sweepIsInsideTheCriticalSection.getCount() > 0) {
                 sweepIsInsideTheCriticalSection.countDown();
                 latecomerHasQueued.await(5, TimeUnit.SECONDS);
@@ -81,16 +101,15 @@ class EdgarPacerFairnessTest {
                 Thread.currentThread().interrupt();
             }
         }, "sweep");
+        sweepThread.set(sweep);
         sweep.start();
 
         assertThat(sweepIsInsideTheCriticalSection.await(5, TimeUnit.SECONDS)).isTrue();
         int slicesBeforeTheLatecomer = sweepSlices.get();
 
-        var servedAfterSlices = new AtomicInteger(-1);
         var latecomer = new Thread(() -> {
             try {
                 pacer.acquire();
-                servedAfterSlices.set(sweepSlices.get());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
