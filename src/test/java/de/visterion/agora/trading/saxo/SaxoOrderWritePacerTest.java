@@ -27,8 +27,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 /**
  * Saxo documents ONE order operation per second per session. Every test here pins a piece of
  * that policy: the pacer waits (it never throws — a throw would turn a client-side queue into
- * a broker failure and would block the naked-entry fail-safe with the very condition that
- * triggered it), it only touches order WRITES, and any 429 feedback is clamped.
+ * a broker failure, and a multi-write sequence such as the flatten rollback interleave would
+ * be cut off mid-way by the same condition that triggered it), it only touches order WRITES,
+ * and any 429 feedback is clamped.
  */
 class SaxoOrderWritePacerTest {
 

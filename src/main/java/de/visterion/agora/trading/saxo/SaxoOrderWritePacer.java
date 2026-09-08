@@ -191,10 +191,11 @@ public final class SaxoOrderWritePacer implements ClientHttpRequestInterceptor {
         // backwards NTP step (chrony/systemd-timesyncd makestep, a container restart, a host
         // suspend or snapshot restore) would otherwise make remainingMs arbitrarily large and this
         // wait unbounded — while holding the monitor that gates every order write on this
-        // connection, including the naked-entry fail-safe. `monotonicMs` (System.nanoTime()-backed
-        // in production) is immune to wall-clock steps, so bounding the real wait by whichever of
-        // minIntervalMs/maxBlockMs is currently driving remainingMs caps it at "one interval" (no
-        // 429 block outstanding) or "one clamped 429 block" (one is) no matter what the wall clock
+        // connection, including a multi-write sequence such as the flatten rollback interleave.
+        // `monotonicMs` (System.nanoTime()-backed in production) is immune to wall-clock steps,
+        // so bounding the real wait by whichever of minIntervalMs/maxBlockMs is currently driving
+        // remainingMs caps it at "one interval" (no 429 block outstanding) or "one clamped 429
+        // block" (one is) no matter what the wall clock
         // does. Chosen once at entry: nothing but this call can change nextReleaseMs/blockedUntilMs
         // while the monitor is held.
         long ceilingBoundMs = blockedUntilMs > nextReleaseMs ? maxBlockMs : minIntervalMs;

@@ -446,7 +446,7 @@ position read. It is one paced order write, whatever the outcome.
 plus a standalone `StopIfTraded` at the requested level. On a cash account that stop is a sell of
 shares not held, and Saxo rejects it with `NotOwned` — measured on SIM on 2026-09-07. The fallback
 could therefore never succeed on the account shape actually in use, and it paid for the attempt
-with three further paced order writes plus a cancel-and-flatten fail-safe against a live account,
+with two further paced order writes plus a cancel-and-flatten fail-safe worth two more, against a live account,
 for a result that was `accepted:false` either way. The price is the caller's to change; Agora
 cannot place it for them. Attaching a protective stop AFTER an entry has filled is a separate,
 deliberate operation — see `place_protective_stop`.
