@@ -3,8 +3,10 @@ package de.visterion.agora.tools;
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.MarketDataService;
 import de.visterion.agora.data.OhlcBar;
+import de.visterion.agora.research.ExchangeSessions;
 import de.visterion.agora.research.IndicatorEvaluator;
 import de.visterion.agora.research.IndicatorRegistry;
+import de.visterion.agora.research.Ta4jBars;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -28,7 +30,8 @@ import java.util.Map;
  * 2026-08-05: 49 of 645 Alpaca calls answered 429) — the batched path turns ~490 calls into ~15.
  *
  * <p>Every requested symbol appears in {@code results}, including the ones no provider served —
- * those carry {@code available:false} plus a reason. A caller must be able to hold
+ * those carry {@code available:false} plus a reason, as does a symbol whose only bar belongs to a
+ * session that is still running. A caller must be able to hold
  * {@code requested} against {@code returned} and see the gap, never guess at it.
  */
 @Component
@@ -40,6 +43,7 @@ public class GetIndicatorsBatchTool implements AgoraTool {
 
     private final MarketDataService service;
     private final IndicatorEvaluator evaluator;
+    private final ExchangeSessions sessions;
     private final List<String> defaultIndicators;
     private final int fetchDays;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -48,19 +52,22 @@ public class GetIndicatorsBatchTool implements AgoraTool {
     public GetIndicatorsBatchTool(
             MarketDataService service,
             IndicatorEvaluator evaluator,
+            ExchangeSessions sessions,
             @Value("${agora.research.default-indicators:atr,chandelier_stop,ma_cross,52w_range}")
             List<String> defaultIndicators,
             @Value("${agora.research.fetch-days:260}") int fetchDays) {
         this.service = service;
         this.evaluator = evaluator;
+        this.sessions = sessions;
         this.defaultIndicators = List.copyOf(defaultIndicators);
         this.fetchDays = fetchDays;
     }
 
     /** Test/back-compat constructor: builds the shared evaluator from a registry. */
     public GetIndicatorsBatchTool(MarketDataService service, IndicatorRegistry registry,
-                                   List<String> defaultIndicators, int fetchDays) {
-        this(service, new IndicatorEvaluator(registry), defaultIndicators, fetchDays);
+                                   ExchangeSessions sessions, List<String> defaultIndicators,
+                                   int fetchDays) {
+        this(service, new IndicatorEvaluator(registry), sessions, defaultIndicators, fetchDays);
     }
 
     @Override
@@ -127,12 +134,28 @@ public class GetIndicatorsBatchTool implements AgoraTool {
         ArrayNode results = out.putArray("results");
         int returned = 0;
         for (String symbol : symbols) {
-            List<OhlcBar> bars = barsBySymbol.get(symbol);
-            if (bars == null || bars.isEmpty()) {
+            List<OhlcBar> raw = barsBySymbol.get(symbol);
+            if (raw == null || raw.isEmpty()) {
                 results.add(evaluator.unavailable(symbol, "no data for " + symbol));
                 continue;
             }
-            ObjectNode entry = evaluator.evaluate(symbol, bars, parsed.specs(), parsed.seriesN());
+            // Identical normalisation and guard as get_indicators — the two tools must not be
+            // able to disagree about which bar is the newest completed one.
+            List<OhlcBar> bars = Ta4jBars.dedupAndSort(raw);
+            boolean partial = sessions.isPartial(symbol, bars.getLast().date());
+            List<OhlcBar> completed = partial ? bars.subList(0, bars.size() - 1) : bars;
+            if (completed.isEmpty()) {
+                results.add(evaluator.unavailable(symbol, "only an in-progress bar for " + symbol));
+                continue;
+            }
+            ObjectNode entry = evaluator.evaluate(symbol, completed, parsed.specs(), parsed.seriesN());
+            OhlcBar live = bars.getLast();
+            entry.put("partialBar", partial);
+            entry.put("lastCompletedClose", completed.getLast().close());
+            entry.put("currentClose", live.close());
+            entry.put("currentHigh", live.high());
+            entry.put("currentLow", live.low());
+            entry.put("sessionZone", sessions.zoneId(symbol));
             results.add(entry);
             if (entry.path("available").asBoolean(false)) returned++;
         }

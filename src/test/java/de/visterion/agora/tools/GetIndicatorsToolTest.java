@@ -8,6 +8,7 @@ import de.visterion.agora.data.Quote;
 import de.visterion.agora.research.BuiltinIndicators;
 import de.visterion.agora.research.IndicatorRegistry;
 import de.visterion.agora.research.YamlIndicatorCatalog;
+import de.visterion.agora.research.ExchangeSessions;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -17,7 +18,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -75,8 +79,24 @@ class GetIndicatorsToolTest {
         return new MarketDataService(List.of(p), 120L);
     }
 
+    /** 2026-09-16 is a Wednesday; 06:00 UTC is 14:00 in Hong Kong, inside 09:30..16:20. */
+    private static final String HK_IN_SESSION = "2026-09-16T06:00:00Z";
+    /** 09:00 UTC is 17:00 in Hong Kong — the HK session is over. */
+    private static final String HK_AFTER_CLOSE = "2026-09-16T09:00:00Z";
+
+    private static ExchangeSessions sessionsAt(String instant) {
+        return new ExchangeSessions(20, 120,
+                Clock.fixed(Instant.parse(instant), ZoneOffset.UTC));
+    }
+
+    /** The pre-existing helper: a fixed clock so no test depends on when the suite runs. Every
+     *  fixture in the old tests is dated 2025, so the guard never fires for them. */
     private GetIndicatorsTool tool(List<OhlcBar> bars) {
-        return new GetIndicatorsTool(svcWith(bars), registry(),
+        return tool(bars, sessionsAt(HK_IN_SESSION));
+    }
+
+    private GetIndicatorsTool tool(List<OhlcBar> bars, ExchangeSessions sessions) {
+        return new GetIndicatorsTool(svcWith(bars), registry(), sessions,
                 List.of("atr", "chandelier_stop", "ma_cross", "52w_range"), 260);
     }
 
@@ -202,7 +222,7 @@ class GetIndicatorsToolTest {
             }
         };
         return new GetIndicatorsTool(new MarketDataService(List.of(p), 120L), registry(),
-                List.of("atr"), 260);
+                sessionsAt(HK_IN_SESSION), List.of("atr"), 260);
     }
 
     @Test
@@ -361,6 +381,7 @@ class GetIndicatorsToolTest {
             }
         };
         var tool = new GetIndicatorsTool(new MarketDataService(List.of(p), 120L), registry(),
+                sessionsAt(HK_IN_SESSION),
                 List.of("atr", "chandelier_stop", "ma_cross", "52w_range"), 260);
         ObjectNode args = mapper.createObjectNode().put("symbol", "AAPL").put("fetchDays", 2_000_000);
         args.putArray("indicators").add("rsi");
@@ -409,5 +430,140 @@ class GetIndicatorsToolTest {
         assertThat(wr.get("available").asBoolean()).isFalse();
         assertThat(wr.get("error").asString()).contains("math domain error");
         assertThat(wr.get("error").asString()).doesNotContain("insufficient history");
+    }
+
+    // -------------------------------------------------------------------------
+    // SP8: values are computed over completed bars only; the in-progress bar is reported
+    // separately. Fixture arithmetic (hand-invented, no captured data):
+    //   bars 0..28: close = 100+i, high = close+1, low = close-1, open = close
+    //               -> every true range is max(2, 2, 0) = 2
+    //   bar 29    : o 129, h 134, l 123, c 130 -> true range max(11, 6, 5) = 11
+    //   atr(22) over all 30 bars      = (21*2 + 11)/22 = 53/22 = 2.4091
+    //   atr(22) over the 29 completed = 22*2/22        = 2
+    //   sma(2)  over all 30 bars      = (128 + 130)/2  = 129
+    //   sma(2)  over the 29 completed = (127 + 128)/2  = 127.5
+    // -------------------------------------------------------------------------
+
+    private static OhlcBar bar(String date, String o, String h, String l, String c) {
+        return new OhlcBar(LocalDate.parse(date), new BigDecimal(o), new BigDecimal(h),
+                new BigDecimal(l), new BigDecimal(c), 1000L);
+    }
+
+    /** The 29 completed bars, oldest first, ending the day before {@code lastDate}. */
+    private static List<OhlcBar> completedBars(String lastDate) {
+        List<OhlcBar> bars = new ArrayList<>();
+        LocalDate last = LocalDate.parse(lastDate);
+        for (int i = 0; i < 29; i++) {
+            BigDecimal c = new BigDecimal(100 + i);
+            bars.add(new OhlcBar(last.minusDays(29 - i), c, c.add(BigDecimal.ONE),
+                    c.subtract(BigDecimal.ONE), c, 1000L));
+        }
+        return bars;
+    }
+
+    /** The 29 completed bars plus the wide in-progress bar dated {@code lastDate}. */
+    private static List<OhlcBar> thirtyBarsEndingOn(String lastDate) {
+        List<OhlcBar> bars = new ArrayList<>(completedBars(lastDate));
+        bars.add(bar(lastDate, "129", "134", "123", "130"));
+        return bars;
+    }
+
+    /** atr + a 2-period sma: one recomputes to a round number, the other to a fraction. */
+    private ObjectNode atrAndSmaArgs(String symbol) {
+        ObjectNode args = mapper.createObjectNode().put("symbol", symbol);
+        var specs = args.putArray("indicators");
+        specs.add("atr");
+        ObjectNode sma = specs.addObject();
+        sma.put("name", "sma");
+        sma.putObject("params").put("period", 2);
+        return args;
+    }
+
+    /** (1) In session: the newest bar is dropped from the values and reported on its own. */
+    @Test void inSessionTheValuesUseTheCompletedBarsOnly() {
+        var r = tool(thirtyBarsEndingOn("2026-09-16"), sessionsAt(HK_IN_SESSION))
+                .call(atrAndSmaArgs("ACME.HK"));
+
+        assertThat(r.available()).isTrue();
+        JsonNode out = r.output();
+        assertThat(out.get("partialBar").asBoolean()).isTrue();
+        assertThat(out.get("asOf").asString()).isEqualTo("2026-09-15");
+        assertThat(out.get("lastCompletedClose").decimalValue()).isEqualByComparingTo("128");
+        assertThat(out.get("currentClose").decimalValue()).isEqualByComparingTo("130");
+        assertThat(out.get("currentHigh").decimalValue()).isEqualByComparingTo("134");
+        assertThat(out.get("currentLow").decimalValue()).isEqualByComparingTo("123");
+        assertThat(out.get("sessionZone").asString()).isEqualTo("Asia/Hong_Kong");
+        // 2, not the 2.4091 the in-progress bar's true range of 11 would produce.
+        assertThat(value(out, "atr").get("value").decimalValue()).isEqualByComparingTo("2");
+        assertThat(value(out, "sma").get("value").decimalValue()).isEqualByComparingTo("127.5");
+    }
+
+    /** (2) After the close nothing is dropped — this passes on a no-op and pins the boundary. */
+    @Test void afterTheCloseTheNewestBarCounts() {
+        var r = tool(thirtyBarsEndingOn("2026-09-16"), sessionsAt(HK_AFTER_CLOSE))
+                .call(atrAndSmaArgs("ACME.HK"));
+
+        JsonNode out = r.output();
+        assertThat(out.get("partialBar").asBoolean()).isFalse();
+        assertThat(out.get("asOf").asString()).isEqualTo("2026-09-16");
+        assertThat(out.get("lastCompletedClose").decimalValue()).isEqualByComparingTo("130");
+        assertThat(out.get("currentClose").decimalValue()).isEqualByComparingTo("130");
+        assertThat(out.get("sessionZone").asString()).isEqualTo("Asia/Hong_Kong");
+        assertThat(value(out, "atr").get("value").decimalValue()).isEqualByComparingTo("2.4091");
+        assertThat(value(out, "sma").get("value").decimalValue()).isEqualByComparingTo("129");
+    }
+
+    /** (3) Two rows for the same in-progress date: de-duplication runs first, last row wins,
+     *  and exactly one bar is dropped. */
+    @Test void duplicateRowsForTheInProgressDateAreDedupedBeforeTheGuard() {
+        List<OhlcBar> bars = new ArrayList<>(thirtyBarsEndingOn("2026-09-16"));
+        bars.add(bar("2026-09-16", "130", "136", "122", "131"));   // later row for the same date
+
+        var r = tool(bars, sessionsAt(HK_IN_SESSION)).call(atrAndSmaArgs("ACME.HK"));
+
+        JsonNode out = r.output();
+        assertThat(out.get("partialBar").asBoolean()).isTrue();
+        assertThat(out.get("asOf").asString()).isEqualTo("2026-09-15");
+        assertThat(out.get("lastCompletedClose").decimalValue()).isEqualByComparingTo("128");
+        assertThat(out.get("currentClose").decimalValue()).isEqualByComparingTo("131");
+        assertThat(out.get("currentHigh").decimalValue()).isEqualByComparingTo("136");
+        assertThat(out.get("currentLow").decimalValue()).isEqualByComparingTo("122");
+        assertThat(value(out, "atr").get("value").decimalValue()).isEqualByComparingTo("2");
+        assertThat(value(out, "sma").get("value").decimalValue()).isEqualByComparingTo("127.5");
+    }
+
+    /** (4) An out-of-order provider list: the guard judges the latest DATE, not the last row.
+     *  Reading the raw last element instead would see 2026-09-15, call nothing partial, and
+     *  report currentClose 128. */
+    @Test void outOfOrderBarsAreSortedBeforeTheGuardRuns() {
+        List<OhlcBar> completed = completedBars("2026-09-16");
+        List<OhlcBar> bars = new ArrayList<>(completed.subList(0, 28));       // ... 2026-09-14
+        bars.add(bar("2026-09-16", "129", "134", "123", "130"));              // today
+        bars.add(completed.get(28));                                          // 2026-09-15, last
+
+        var r = tool(bars, sessionsAt(HK_IN_SESSION)).call(atrAndSmaArgs("ACME.HK"));
+
+        JsonNode out = r.output();
+        assertThat(out.get("partialBar").asBoolean()).isTrue();
+        assertThat(out.get("asOf").asString()).isEqualTo("2026-09-15");
+        assertThat(out.get("lastCompletedClose").decimalValue()).isEqualByComparingTo("128");
+        assertThat(out.get("currentClose").decimalValue()).isEqualByComparingTo("130");
+        assertThat(value(out, "atr").get("value").decimalValue()).isEqualByComparingTo("2");
+        assertThat(value(out, "sma").get("value").decimalValue()).isEqualByComparingTo("127.5");
+    }
+
+    /** (5) Nothing but an in-progress bar is a data statement, in the established shape. */
+    @Test void aSeriesOfOnlyAnInProgressBarIsUnavailable() {
+        var bars = List.of(bar("2026-09-16", "129", "134", "123", "130"));
+
+        var r = tool(bars, sessionsAt(HK_IN_SESSION)).call(atrAndSmaArgs("ACME.HK"));
+
+        assertThat(r.available()).isTrue();
+        JsonNode out = r.output();
+        assertThat(out.get("available").asBoolean()).isFalse();
+        assertThat(out.get("error").asString())
+                .isEqualTo("only an in-progress bar for ACME.HK");
+        assertThat(out.has("values")).isFalse();
+        assertThat(out.has("partialBar")).isFalse();
     }
 }

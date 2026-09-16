@@ -8,6 +8,7 @@ import de.visterion.agora.data.Quote;
 import de.visterion.agora.research.BuiltinIndicators;
 import de.visterion.agora.research.IndicatorRegistry;
 import de.visterion.agora.research.YamlIndicatorCatalog;
+import de.visterion.agora.research.ExchangeSessions;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
@@ -18,7 +19,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -74,8 +78,22 @@ class GetIndicatorsBatchToolTest {
         return new MarketDataService(List.of(p), 120L);
     }
 
+    /** 2026-09-16 is a Wednesday; 06:00 UTC is 14:00 in Hong Kong (session running) and
+     *  02:00 in New York (session not yet open). One clock, two different verdicts. */
+    private static final String HK_IN_SESSION_US_CLOSED = "2026-09-16T06:00:00Z";
+
+    private static ExchangeSessions sessionsAt(String instant) {
+        return new ExchangeSessions(20, 120,
+                Clock.fixed(Instant.parse(instant), ZoneOffset.UTC));
+    }
+
     private static GetIndicatorsBatchTool tool(Map<String, List<OhlcBar>> served) {
-        return new GetIndicatorsBatchTool(svcServing(served), registry(),
+        return tool(served, sessionsAt(HK_IN_SESSION_US_CLOSED));
+    }
+
+    private static GetIndicatorsBatchTool tool(Map<String, List<OhlcBar>> served,
+                                               ExchangeSessions sessions) {
+        return new GetIndicatorsBatchTool(svcServing(served), registry(), sessions,
                 List.of("atr", "chandelier_stop", "ma_cross", "52w_range"), 260);
     }
 
@@ -100,8 +118,9 @@ class GetIndicatorsBatchToolTest {
         ObjectNode a = args("SYNA", "SYNB");
         a.putArray("indicators").add("rsi");
 
-        var batch = tool(served).call(a);
-        var single = new GetIndicatorsTool(svcServing(served), registry(),
+        var sessions = sessionsAt(HK_IN_SESSION_US_CLOSED);
+        var batch = tool(served, sessions).call(a);
+        var single = new GetIndicatorsTool(svcServing(served), registry(), sessions,
                 List.of("rsi"), 260).call(mapper.createObjectNode().put("symbol", "SYNA"));
 
         assertThat(batch.available()).isTrue();
@@ -233,5 +252,75 @@ class GetIndicatorsBatchToolTest {
         ObjectNode b = args("SYNA");
         b.putArray("indicators");
         assertThat(tool(Map.of()).call(b).error()).isEqualTo("indicators must not be empty");
+    }
+
+    // -------------------------------------------------------------------------
+    // SP8: the guard is per symbol, from one clock. Fixture arithmetic (hand-invented):
+    //   bars 0..28: close = 100+i, high = close+1, low = close-1 -> every true range is 2
+    //   bar 29    : o 129, h 134, l 123, c 130                   -> true range 11
+    //   atr(22) over all 30 = (21*2 + 11)/22 = 2.4091 ; over the 29 completed = 2
+    // -------------------------------------------------------------------------
+
+    private static List<OhlcBar> thirtyBarsEndingOn(String lastDate) {
+        List<OhlcBar> bars = new ArrayList<>();
+        LocalDate last = LocalDate.parse(lastDate);
+        for (int i = 0; i < 29; i++) {
+            BigDecimal c = new BigDecimal(100 + i);
+            bars.add(new OhlcBar(last.minusDays(29 - i), c, c.add(BigDecimal.ONE),
+                    c.subtract(BigDecimal.ONE), c, 1000L));
+        }
+        bars.add(new OhlcBar(last, new BigDecimal("129"), new BigDecimal("134"),
+                new BigDecimal("123"), new BigDecimal("130"), 1000L));
+        return bars;
+    }
+
+    /** One venue is trading and the other is not, so the two entries must disagree. */
+    @Test void theGuardIsDecidedPerSymbol() {
+        Map<String, List<OhlcBar>> served = new LinkedHashMap<>();
+        served.put("ACME.HK", thirtyBarsEndingOn("2026-09-16"));
+        served.put("SYNA", thirtyBarsEndingOn("2026-09-16"));
+        ObjectNode a = args("ACME.HK", "SYNA");
+        a.putArray("indicators").add("atr");
+
+        var r = tool(served).call(a);
+
+        JsonNode hk = result(r.output(), "ACME.HK");
+        assertThat(hk.get("partialBar").asBoolean()).isTrue();
+        assertThat(hk.get("asOf").asString()).isEqualTo("2026-09-15");
+        assertThat(hk.get("lastCompletedClose").decimalValue()).isEqualByComparingTo("128");
+        assertThat(hk.get("currentClose").decimalValue()).isEqualByComparingTo("130");
+        assertThat(hk.get("sessionZone").asString()).isEqualTo("Asia/Hong_Kong");
+        assertThat(hk.get("values").get(0).get("value").decimalValue()).isEqualByComparingTo("2");
+
+        JsonNode us = result(r.output(), "SYNA");
+        assertThat(us.get("partialBar").asBoolean()).isFalse();
+        assertThat(us.get("asOf").asString()).isEqualTo("2026-09-16");
+        assertThat(us.get("lastCompletedClose").decimalValue()).isEqualByComparingTo("130");
+        assertThat(us.get("sessionZone").asString()).isEqualTo("America/New_York");
+        assertThat(us.get("values").get(0).get("value").decimalValue())
+                .isEqualByComparingTo("2.4091");
+
+        assertThat(r.output().get("returned").asInt()).isEqualTo(2);
+    }
+
+    /** A symbol whose only bar is in progress is a reported gap, not a silent omission. */
+    @Test void onlyInProgressBarSymbolLowersReturned() {
+        Map<String, List<OhlcBar>> served = new LinkedHashMap<>();
+        served.put("ACME.HK", List.of(new OhlcBar(LocalDate.parse("2026-09-16"),
+                new BigDecimal("129"), new BigDecimal("134"), new BigDecimal("123"),
+                new BigDecimal("130"), 1000L)));
+        served.put("SYNA", thirtyBarsEndingOn("2026-09-16"));
+        ObjectNode a = args("ACME.HK", "SYNA");
+        a.putArray("indicators").add("atr");
+
+        var r = tool(served).call(a);
+
+        assertThat(r.output().get("results")).hasSize(2);
+        JsonNode hk = result(r.output(), "ACME.HK");
+        assertThat(hk.get("available").asBoolean()).isFalse();
+        assertThat(hk.get("error").asString()).isEqualTo("only an in-progress bar for ACME.HK");
+        assertThat(r.output().get("requested").asInt()).isEqualTo(2);
+        assertThat(r.output().get("returned").asInt()).isEqualTo(1);
+        assertThat(r.output().get("available").asBoolean()).isTrue();
     }
 }
