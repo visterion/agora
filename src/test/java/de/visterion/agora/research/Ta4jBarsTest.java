@@ -73,4 +73,38 @@ class Ta4jBarsTest {
         assertThat(close.getValue(1).bigDecimalValue()).isEqualByComparingTo("11.50");
         assertThat(close.getValue(2).bigDecimalValue()).isEqualByComparingTo("12.50");
     }
+
+    // -------------------------------------------------------------------------
+    // dedupAndSort is part of the public API: the indicator tools (package
+    // de.visterion.agora.tools) normalise the provider list with the very same rule the
+    // series build uses, so "the last bar" means the same thing in both places.
+    // -------------------------------------------------------------------------
+
+    @Test void dedupAndSortIsPublic() throws Exception {
+        // getMethod finds public methods only — this is the cross-package contract itself.
+        var m = Ta4jBars.class.getMethod("dedupAndSort", List.class);
+        assertThat(java.lang.reflect.Modifier.isPublic(m.getModifiers())).isTrue();
+        assertThat(java.lang.reflect.Modifier.isStatic(m.getModifiers())).isTrue();
+    }
+
+    @Test void dedupAndSortKeepsTheLastRowPerDateAndSortsAscending() {
+        var bars = List.of(
+                bar("2026-09-16", "10.00", "11.00", "9.50", "10.50", 1000),  // superseded
+                bar("2026-09-14", "12.00", "13.00", "11.50", "12.50", 2000),
+                bar("2026-09-16", "20.00", "21.00", "19.50", "20.50", 3000), // wins for 09-16
+                bar("2026-09-15", "14.00", "15.00", "13.50", "14.50", 4000));
+
+        List<OhlcBar> out = Ta4jBars.dedupAndSort(bars);
+
+        assertThat(out).hasSize(3);
+        assertThat(out.get(0).date()).isEqualTo(LocalDate.parse("2026-09-14"));
+        assertThat(out.get(1).date()).isEqualTo(LocalDate.parse("2026-09-15"));
+        assertThat(out.get(2).date()).isEqualTo(LocalDate.parse("2026-09-16"));
+        assertThat(out.get(2).close()).isEqualByComparingTo("20.50");
+        assertThat(out.get(2).volume()).isEqualTo(3000L);
+    }
+
+    @Test void dedupAndSortOnAnEmptyListIsEmpty() {
+        assertThat(Ta4jBars.dedupAndSort(List.of())).isEmpty();
+    }
 }

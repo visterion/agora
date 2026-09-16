@@ -47,8 +47,13 @@ public final class Ta4jBars {
     }
 
     /** Keeps the last row per date (LinkedHashMap#put overwrites on collision), then sorts
-     *  ascending by date — order-independent, so unsorted input is handled the same way. */
-    private static List<OhlcBar> dedupAndSort(List<OhlcBar> bars) {
+     *  ascending by date — order-independent, so unsorted input is handled the same way.
+     *
+     *  <p>Public because the indicator tools (package {@code de.visterion.agora.tools}) normalise
+     *  the provider list with this exact rule before deciding whether the last bar belongs to a
+     *  session that is still running: after de-duplication there is exactly one row per date, so
+     *  "the last row" and "the latest date" are the same element in the tool and in the series. */
+    public static List<OhlcBar> dedupAndSort(List<OhlcBar> bars) {
         Map<java.time.LocalDate, OhlcBar> byDate = new LinkedHashMap<>();
         for (OhlcBar b : bars) byDate.put(b.date(), b);
         List<OhlcBar> out = new ArrayList<>(byDate.values());
