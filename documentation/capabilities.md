@@ -652,8 +652,8 @@ unlimited.
 | Tool | Description |
 |---|---|
 | `list_indicators` | Machine-readable indicator catalog |
-| `get_indicators` | Compute catalog indicators for one symbol; composable specs (`of`); optional `series=N` |
-| `get_indicators_batch` | The same computation for many symbols (max 600) from a single batched history fetch — use it to screen a universe |
+| `get_indicators` | Compute catalog indicators for one symbol over completed bars only; composable specs (`of`); optional `series=N`; while the venue's session runs the in-progress bar is reported separately as `partialBar`/`currentClose`/`currentHigh`/`currentLow`, with `lastCompletedClose`/`asOf`/`sessionZone` naming the last completed bar and the venue clock |
+| `get_indicators_batch` | The same completed-bar computation for many symbols (max 600) from a single batched history fetch — use it to screen a universe; a symbol with nothing but an in-progress bar comes back `available:false` with a reason |
 | `get_r_framework` | Risk unit and R-multiple price levels (ATR-based stop optional) |
 | `ping` | Liveness probe |
 

@@ -9,7 +9,12 @@ import de.visterion.agora.research.BuiltinIndicators;
 import de.visterion.agora.research.ExchangeSessions;
 import de.visterion.agora.research.IndicatorRegistry;
 import de.visterion.agora.research.YamlIndicatorCatalog;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -109,6 +114,28 @@ class GetIndicatorsBatchToolTest {
             if (symbol.equals(e.path("symbol").asString())) return e;
         }
         return null;
+    }
+
+    private ListAppender<ILoggingEvent> appender;
+
+    /** Captures what GetIndicatorsBatchTool logs at INFO — the one-line dropped-count summary. */
+    private List<ILoggingEvent> captureLogs() {
+        ch.qos.logback.classic.Logger logger = (ch.qos.logback.classic.Logger)
+                LoggerFactory.getLogger(GetIndicatorsBatchTool.class);
+        appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        return appender.list;
+    }
+
+    @AfterEach
+    void detachAppender() {
+        if (appender != null) {
+            ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(GetIndicatorsBatchTool.class))
+                    .detachAppender(appender);
+            appender.stop();
+            appender = null;
+        }
     }
 
     @Test void computesTheSameValuesPerSymbolAsGetIndicators() {
@@ -301,6 +328,39 @@ class GetIndicatorsBatchToolTest {
                 .isEqualByComparingTo("2.4091");
 
         assertThat(r.output().get("returned").asInt()).isEqualTo(2);
+    }
+
+    /** Logging: one INFO summary naming "1 of 2" when exactly one of two symbols was dropped —
+     *  never the per-symbol detail, which stays at DEBUG inside ExchangeSessions. */
+    @Test void oneDroppedOfTwoSymbolsLogsOneInfoSummary() {
+        Map<String, List<OhlcBar>> served = new LinkedHashMap<>();
+        served.put("ACME.HK", thirtyBarsEndingOn("2026-09-16"));
+        served.put("SYNA", thirtyBarsEndingOn("2026-09-16"));
+        ObjectNode a = args("ACME.HK", "SYNA");
+        a.putArray("indicators").add("atr");
+
+        var logs = captureLogs();
+        tool(served).call(a);
+
+        var infos = logs.stream().filter(e -> e.getLevel() == Level.INFO).toList();
+        assertThat(infos).hasSize(1);
+        assertThat(infos.getFirst().getFormattedMessage())
+                .contains("session guard: dropped in-progress bars for")
+                .contains("1 of 2");
+    }
+
+    /** No symbol dropped -> no INFO line at all. */
+    @Test void noneDroppedLogsNothing() {
+        Map<String, List<OhlcBar>> served = new LinkedHashMap<>();
+        served.put("SYNA", rising(300));
+        served.put("SYNB", rising(300));
+        ObjectNode a = args("SYNA", "SYNB");
+        a.putArray("indicators").add("rsi");
+
+        var logs = captureLogs();
+        tool(served, sessionsAt(HK_IN_SESSION_US_CLOSED)).call(a);
+
+        assertThat(logs.stream().filter(e -> e.getLevel() == Level.INFO)).isEmpty();
     }
 
     /** A symbol whose only bar is in progress is a reported gap, not a silent omission. */

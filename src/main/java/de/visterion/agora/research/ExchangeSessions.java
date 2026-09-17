@@ -150,7 +150,11 @@ public class ExchangeSessions {
             partial = inSession && !lastBarDate.isBefore(todayLocal);
         }
         if (partial) {
-            log.info("session guard: dropped in-progress bar symbol={} zone={} barDate={} "
+            // DEBUG, not INFO: get_indicators_batch accepts up to 600 symbols, so one batch call
+            // inside a session window could otherwise emit 600 lines here. The tools themselves
+            // log one INFO per firing (get_indicators) or one INFO summary per call
+            // (get_indicators_batch) from the partialBar flag this method's caller already reports.
+            log.debug("session guard: dropped in-progress bar symbol={} zone={} barDate={} "
                             + "localNow={} margin={}",
                     symbol, zoneId(symbol), lastBarDate, now.toLocalDateTime(), marginMinutes);
         }

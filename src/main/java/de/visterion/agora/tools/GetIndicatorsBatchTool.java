@@ -9,6 +9,8 @@ import de.visterion.agora.research.IndicatorEvaluator;
 import de.visterion.agora.research.IndicatorRegistry;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -36,6 +38,8 @@ import java.util.Map;
  */
 @Component
 public class GetIndicatorsBatchTool implements AgoraTool {
+
+    private static final Logger log = LoggerFactory.getLogger(GetIndicatorsBatchTool.class);
 
     /** Rejecting beyond this is deliberate: silently truncating a screening universe would make
      *  a half-screened index look like a fully screened one. 600 covers the S&P 500 plus room. */
@@ -136,6 +140,7 @@ public class GetIndicatorsBatchTool implements AgoraTool {
         ObjectNode out = mapper.createObjectNode();
         ArrayNode results = out.putArray("results");
         int returned = 0;
+        int droppedInProgress = 0;
         for (String symbol : symbols) {
             List<OhlcBar> raw = barsBySymbol.get(symbol);
             if (raw == null || raw.isEmpty()) {
@@ -147,6 +152,13 @@ public class GetIndicatorsBatchTool implements AgoraTool {
             ObjectNode entry = completedBars.evaluate(symbol, raw, parsed.specs(), parsed.seriesN());
             results.add(entry);
             if (entry.path("available").asBoolean(false)) returned++;
+            if (entry.path("partialBar").asBoolean(false)) droppedInProgress++;
+        }
+        // One summary line, not one per symbol: a single call can carry 600 symbols, and the
+        // per-firing detail already lives in ExchangeSessions at DEBUG.
+        if (droppedInProgress > 0) {
+            log.info("session guard: dropped in-progress bars for {} of {} symbols",
+                    droppedInProgress, symbols.size());
         }
         out.put("requested", symbols.size());
         // returned = symbols that produced at least one indicator value; the difference to

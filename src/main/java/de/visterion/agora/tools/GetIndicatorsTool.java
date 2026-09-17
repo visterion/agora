@@ -9,6 +9,8 @@ import de.visterion.agora.research.IndicatorEvaluator;
 import de.visterion.agora.research.IndicatorRegistry;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -28,6 +30,8 @@ import java.util.List;
  *  at once use get_indicators_batch, which computes the identical values per symbol. */
 @Component
 public class GetIndicatorsTool implements AgoraTool {
+
+    private static final Logger log = LoggerFactory.getLogger(GetIndicatorsTool.class);
 
     private final MarketDataService service;
     private final IndicatorEvaluator evaluator;
@@ -120,6 +124,11 @@ public class GetIndicatorsTool implements AgoraTool {
         // Same statement, reached without an exception: bars came back empty for this symbol.
         if (raw.isEmpty()) return ToolResult.ok(evaluator.unavailable(symbol, "no data for " + symbol));
 
-        return ToolResult.ok(completedBars.evaluate(symbol, raw, parsed.specs(), parsed.seriesN()));
+        ObjectNode entry = completedBars.evaluate(symbol, raw, parsed.specs(), parsed.seriesN());
+        if (entry.path("partialBar").asBoolean(false)) {
+            log.info("session guard: dropped in-progress bar symbol={} zone={}",
+                    symbol, entry.path("sessionZone").asString());
+        }
+        return ToolResult.ok(entry);
     }
 }

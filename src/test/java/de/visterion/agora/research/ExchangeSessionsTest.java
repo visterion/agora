@@ -42,10 +42,16 @@ class ExchangeSessionsTest {
 
     private static LocalDate d(String date) { return LocalDate.parse(date); }
 
-    /** Captures what ExchangeSessions logs, so the WARN dedupe and the clamp ERROR are testable. */
+    private Level originalLevel;
+
+    /** Captures what ExchangeSessions logs, so the WARN dedupe and the clamp ERROR are testable.
+     *  The per-firing line is DEBUG (kept quiet under batch load), so the logger level is raised
+     *  here for the tests that must see it — restored in {@link #detachAppender}. */
     private List<ILoggingEvent> captureLogs() {
         ch.qos.logback.classic.Logger logger =
                 (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(ExchangeSessions.class);
+        originalLevel = logger.getLevel();
+        logger.setLevel(Level.DEBUG);
         appender = new ListAppender<>();
         appender.start();
         logger.addAppender(appender);
@@ -55,8 +61,10 @@ class ExchangeSessionsTest {
     @AfterEach
     void detachAppender() {
         if (appender != null) {
-            ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(ExchangeSessions.class))
-                    .detachAppender(appender);
+            ch.qos.logback.classic.Logger logger =
+                    (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(ExchangeSessions.class);
+            logger.detachAppender(appender);
+            logger.setLevel(originalLevel);
             appender.stop();
             appender = null;
         }
@@ -227,15 +235,18 @@ class ExchangeSessionsTest {
                 .hasMessageContaining("agora.research.session-close-margin-minutes");
     }
 
-    // Observability: one INFO line per firing, carrying the symbol, the zone and the bar date.
-    @Test void everyFiringLogsOneInfoLine() {
+    // Observability: one DEBUG line per firing, carrying the symbol, the zone and the bar date.
+    // DEBUG rather than INFO because get_indicators_batch can carry 600 symbols in one call —
+    // the tools themselves log one INFO per firing (get_indicators) or one INFO summary per call
+    // (get_indicators_batch) instead.
+    @Test void everyFiringLogsOneDebugLine() {
         var logs = captureLogs();
 
         assertThat(at("2026-09-16T06:00:00Z").isPartial("ACME.HK", d("2026-09-16"))).isTrue();
 
-        var infos = logs.stream().filter(e -> e.getLevel() == Level.INFO).toList();
-        assertThat(infos).hasSize(1);
-        assertThat(infos.getFirst().getFormattedMessage())
+        var debugs = logs.stream().filter(e -> e.getLevel() == Level.DEBUG).toList();
+        assertThat(debugs).hasSize(1);
+        assertThat(debugs.getFirst().getFormattedMessage())
                 .contains("session guard: dropped in-progress bar")
                 .contains("ACME.HK")
                 .contains("Asia/Hong_Kong")
@@ -245,7 +256,7 @@ class ExchangeSessionsTest {
     @Test void aBarThatIsNotDroppedLogsNothing() {
         var logs = captureLogs();
         assertThat(at("2026-09-16T00:30:00Z").isPartial("ACME.HK", d("2026-09-15"))).isFalse();
-        assertThat(logs.stream().filter(e -> e.getLevel() == Level.INFO)).isEmpty();
+        assertThat(logs.stream().filter(e -> e.getLevel() == Level.DEBUG)).isEmpty();
     }
 
     @Test void zoneIdReportsTheResolvedRow() {

@@ -9,7 +9,12 @@ import de.visterion.agora.research.BuiltinIndicators;
 import de.visterion.agora.research.ExchangeSessions;
 import de.visterion.agora.research.IndicatorRegistry;
 import de.visterion.agora.research.YamlIndicatorCatalog;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -105,6 +110,28 @@ class GetIndicatorsToolTest {
             if (label.equals(e.path("label").asString())) return e;
         }
         return null;
+    }
+
+    private ListAppender<ILoggingEvent> appender;
+
+    /** Captures what GetIndicatorsTool logs at INFO — the session-guard summary line. */
+    private List<ILoggingEvent> captureLogs() {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(GetIndicatorsTool.class);
+        appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        return appender.list;
+    }
+
+    @AfterEach
+    void detachAppender() {
+        if (appender != null) {
+            ((ch.qos.logback.classic.Logger) LoggerFactory.getLogger(GetIndicatorsTool.class))
+                    .detachAppender(appender);
+            appender.stop();
+            appender = null;
+        }
     }
 
     @Test
@@ -511,6 +538,32 @@ class GetIndicatorsToolTest {
         assertThat(out.get("sessionZone").asString()).isEqualTo("Asia/Hong_Kong");
         assertThat(value(out, "atr").get("value").decimalValue()).isEqualByComparingTo("2.4091");
         assertThat(value(out, "sma").get("value").decimalValue()).isEqualByComparingTo("129");
+    }
+
+    /** (1, logging) In session, the tool itself logs exactly one INFO line naming the symbol —
+     *  not the per-firing DEBUG line ExchangeSessions logs internally. */
+    @Test void inSessionLogsOneInfoLineWithTheSymbol() {
+        var logs = captureLogs();
+
+        tool(thirtyBarsEndingOn("2026-09-16"), sessionsAt(HK_IN_SESSION))
+                .call(atrAndSmaArgs("ACME.HK"));
+
+        var infos = logs.stream().filter(e -> e.getLevel() == Level.INFO).toList();
+        assertThat(infos).hasSize(1);
+        assertThat(infos.getFirst().getFormattedMessage())
+                .contains("session guard: dropped in-progress bar")
+                .contains("ACME.HK")
+                .contains("Asia/Hong_Kong");
+    }
+
+    /** (2, logging) After the close nothing was dropped, so nothing is logged. */
+    @Test void afterTheCloseLogsNothing() {
+        var logs = captureLogs();
+
+        tool(thirtyBarsEndingOn("2026-09-16"), sessionsAt(HK_AFTER_CLOSE))
+                .call(atrAndSmaArgs("ACME.HK"));
+
+        assertThat(logs.stream().filter(e -> e.getLevel() == Level.INFO)).isEmpty();
     }
 
     /** (3) Two rows for the same in-progress date: de-duplication runs first, last row wins,
