@@ -155,8 +155,8 @@ require a trading token.
 | Tool | Description |
 |---|---|
 | `list_indicators` | Machine-readable indicator catalog: names, params with defaults, outputs |
-| `get_indicators` | Computes any set of catalog indicators for one symbol in one call — composable specs (`{name, params, of, label}`), optional `series=N` for the last N values |
-| `get_indicators_batch` | The same indicators for many symbols (max 600) in one call, from a single batched history fetch instead of one per symbol. Every requested symbol appears in `results`; one without history carries `available:false` and a reason, plus `requested`/`returned` counts |
+| `get_indicators` | Computes any set of catalog indicators for one symbol in one call — composable specs (`{name, params, of, label}`), optional `series=N` for the last N values. Values are computed over **completed** bars: while the venue's session is running the newest bar is excluded and reported separately as `partialBar`, `currentClose`/`currentHigh`/`currentLow`, with `lastCompletedClose` and `asOf` naming the last completed bar and `sessionZone` the venue clock that decided it |
+| `get_indicators_batch` | The same indicators for many symbols (max 600) in one call, from a single batched history fetch instead of one per symbol. Every requested symbol appears in `results`; one without history — or with nothing but an in-progress bar — carries `available:false` and a reason, plus `requested`/`returned` counts. Same completed-bar contract and same `partialBar`/`lastCompletedClose`/`currentHigh`/`currentLow`/`sessionZone` fields as `get_indicators` |
 | `get_r_framework` | Risk unit and R-multiple price levels |
 | `ping` | Liveness probe that returns `pong` plus any echoed message |
 

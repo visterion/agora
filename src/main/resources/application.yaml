@@ -231,7 +231,7 @@ agora:
         initial-delay-ms: ${AGORA_DATA_FX_REFRESH_INITIAL_DELAY_MS:0}
         fixed-delay-ms: ${AGORA_DATA_FX_REFRESH_FIXED_DELAY_MS:1800000}
     cache:
-      ttl-seconds: ${AGORA_DATA_CACHE_TTL_SECONDS:120}     # ohlc (kept short — GUI charts must not show a stale "today" partial bar)
+      ttl-seconds: ${AGORA_DATA_CACHE_TTL_SECONDS:120}     # ohlc (kept short — GUI charts must not show a stale "today" partial bar). Also bounds the completed-bar guard: bars can be this old while the clock is read live, so the effective agora.research.session-close-margin-minutes is max(configured, ttl-seconds / 60 + 1)
       ttl:
         quote-seconds: ${AGORA_DATA_CACHE_TTL_QUOTE:300}           # quote (split from ohlc — fewer repeat provider calls for watchlist/kill-criteria/depot quotes)
         prices-seconds: ${AGORA_DATA_CACHE_TTL_PRICES:120}         # intraday, fx
@@ -257,6 +257,7 @@ agora:
     ma-slow: ${AGORA_RESEARCH_MA_SLOW:200}
     min-bars-52w: ${AGORA_RESEARCH_MIN_BARS_52W:250}
     fetch-days: ${AGORA_RESEARCH_FETCH_DAYS:260}
+    session-close-margin-minutes: ${AGORA_RESEARCH_SESSION_CLOSE_MARGIN_MINUTES:20}  # slack past the end of continuous trading before the day's bar counts as final (covers the closing auction); never smaller than agora.data.cache.ttl-seconds / 60 + 1
     default-indicators: ${AGORA_RESEARCH_DEFAULT_INDICATORS:atr,chandelier_stop,ma_cross,52w_range}
     indicators-file: ${AGORA_RESEARCH_INDICATORS_FILE:}
     r-atr-multiple: ${AGORA_RESEARCH_R_ATR_MULTIPLE:3.0}
