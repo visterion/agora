@@ -3,10 +3,10 @@ package de.visterion.agora.tools;
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.MarketDataService;
 import de.visterion.agora.data.OhlcBar;
+import de.visterion.agora.research.CompletedBarEvaluation;
 import de.visterion.agora.research.ExchangeSessions;
 import de.visterion.agora.research.IndicatorEvaluator;
 import de.visterion.agora.research.IndicatorRegistry;
-import de.visterion.agora.research.Ta4jBars;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,7 +31,7 @@ public class GetIndicatorsTool implements AgoraTool {
 
     private final MarketDataService service;
     private final IndicatorEvaluator evaluator;
-    private final ExchangeSessions sessions;
+    private final CompletedBarEvaluation completedBars;
     private final List<String> defaultIndicators;
     private final int fetchDays;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -46,7 +46,7 @@ public class GetIndicatorsTool implements AgoraTool {
             @Value("${agora.research.fetch-days:260}") int fetchDays) {
         this.service = service;
         this.evaluator = evaluator;
-        this.sessions = sessions;
+        this.completedBars = new CompletedBarEvaluation(evaluator, sessions);
         this.defaultIndicators = List.copyOf(defaultIndicators);
         this.fetchDays = fetchDays;
     }
@@ -67,8 +67,10 @@ public class GetIndicatorsTool implements AgoraTool {
              + "of specs: a catalog name (string) or {name, params, of, label}; 'of' composes "
              + "indicators (e.g. sma of rsi) or picks a price source. Optional series=N returns "
              + "the last N values. Defaults to " + String.join(",", defaultIndicators)
-             + ". Discover the catalog with list_indicators. For many symbols in one call use "
-             + "get_indicators_batch.";
+             + ". Values are computed over completed daily bars only; while the venue's session "
+             + "is running, the in-progress bar is exposed as currentClose/currentHigh/currentLow "
+             + "with partialBar=true, and asOf names the last completed bar. Discover the catalog "
+             + "with list_indicators. For many symbols in one call use get_indicators_batch.";
     }
 
     @Override
@@ -118,24 +120,6 @@ public class GetIndicatorsTool implements AgoraTool {
         // Same statement, reached without an exception: bars came back empty for this symbol.
         if (raw.isEmpty()) return ToolResult.ok(evaluator.unavailable(symbol, "no data for " + symbol));
 
-        // One normalised list for everything below: after de-duplication there is exactly one row
-        // per date, so "the last row" and "the newest trading day" are the same element, and the
-        // reported close and the reported date can never come from two different bars.
-        List<OhlcBar> bars = Ta4jBars.dedupAndSort(raw);
-        boolean partial = sessions.isPartial(symbol, bars.getLast().date());
-        List<OhlcBar> completed = partial ? bars.subList(0, bars.size() - 1) : bars;
-        if (completed.isEmpty()) {
-            return ToolResult.ok(evaluator.unavailable(symbol, "only an in-progress bar for " + symbol));
-        }
-
-        ObjectNode entry = evaluator.evaluate(symbol, completed, parsed.specs(), parsed.seriesN());
-        OhlcBar live = bars.getLast();
-        entry.put("partialBar", partial);
-        entry.put("lastCompletedClose", completed.getLast().close());
-        entry.put("currentClose", live.close());     // the live print, partial or not
-        entry.put("currentHigh", live.high());
-        entry.put("currentLow", live.low());
-        entry.put("sessionZone", sessions.zoneId(symbol));
-        return ToolResult.ok(entry);
+        return ToolResult.ok(completedBars.evaluate(symbol, raw, parsed.specs(), parsed.seriesN()));
     }
 }

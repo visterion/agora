@@ -3,10 +3,10 @@ package de.visterion.agora.tools;
 import de.visterion.agora.data.MarketDataException;
 import de.visterion.agora.data.MarketDataService;
 import de.visterion.agora.data.OhlcBar;
+import de.visterion.agora.research.CompletedBarEvaluation;
 import de.visterion.agora.research.ExchangeSessions;
 import de.visterion.agora.research.IndicatorEvaluator;
 import de.visterion.agora.research.IndicatorRegistry;
-import de.visterion.agora.research.Ta4jBars;
 import de.visterion.agora.tool.AgoraTool;
 import de.visterion.agora.tool.ToolResult;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,7 +43,7 @@ public class GetIndicatorsBatchTool implements AgoraTool {
 
     private final MarketDataService service;
     private final IndicatorEvaluator evaluator;
-    private final ExchangeSessions sessions;
+    private final CompletedBarEvaluation completedBars;
     private final List<String> defaultIndicators;
     private final int fetchDays;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -58,7 +58,7 @@ public class GetIndicatorsBatchTool implements AgoraTool {
             @Value("${agora.research.fetch-days:260}") int fetchDays) {
         this.service = service;
         this.evaluator = evaluator;
-        this.sessions = sessions;
+        this.completedBars = new CompletedBarEvaluation(evaluator, sessions);
         this.defaultIndicators = List.copyOf(defaultIndicators);
         this.fetchDays = fetchDays;
     }
@@ -79,7 +79,10 @@ public class GetIndicatorsBatchTool implements AgoraTool {
              + "call, using a single batched history fetch instead of one per symbol — use this "
              + "for screening a universe. Same 'indicators'/'series'/'fetchDays' arguments and the "
              + "same per-symbol result object. Every requested symbol appears in 'results'; one "
-             + "with no history has available=false and an error. Max " + MAX_SYMBOLS
+             + "with no history has available=false and an error. Values are computed over "
+             + "completed daily bars only; while a symbol's venue session is running, the "
+             + "in-progress bar is exposed as currentClose/currentHigh/currentLow with "
+             + "partialBar=true, and asOf names the last completed bar. Max " + MAX_SYMBOLS
              + " symbols (over that the call is rejected, not truncated).";
     }
 
@@ -141,27 +144,14 @@ public class GetIndicatorsBatchTool implements AgoraTool {
             }
             // Identical normalisation and guard as get_indicators — the two tools must not be
             // able to disagree about which bar is the newest completed one.
-            List<OhlcBar> bars = Ta4jBars.dedupAndSort(raw);
-            boolean partial = sessions.isPartial(symbol, bars.getLast().date());
-            List<OhlcBar> completed = partial ? bars.subList(0, bars.size() - 1) : bars;
-            if (completed.isEmpty()) {
-                results.add(evaluator.unavailable(symbol, "only an in-progress bar for " + symbol));
-                continue;
-            }
-            ObjectNode entry = evaluator.evaluate(symbol, completed, parsed.specs(), parsed.seriesN());
-            OhlcBar live = bars.getLast();
-            entry.put("partialBar", partial);
-            entry.put("lastCompletedClose", completed.getLast().close());
-            entry.put("currentClose", live.close());
-            entry.put("currentHigh", live.high());
-            entry.put("currentLow", live.low());
-            entry.put("sessionZone", sessions.zoneId(symbol));
+            ObjectNode entry = completedBars.evaluate(symbol, raw, parsed.specs(), parsed.seriesN());
             results.add(entry);
             if (entry.path("available").asBoolean(false)) returned++;
         }
         out.put("requested", symbols.size());
         // returned = symbols that produced at least one indicator value; the difference to
-        // requested is what the caller must account for (no history, or provider gap).
+        // requested is what the caller must account for (no history, a provider gap, or only an
+        // in-progress bar).
         out.put("returned", returned);
         // Same rule as the single-symbol tool, one level up: false only when nothing at all
         // could be computed.
