@@ -8,7 +8,7 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <!-- Spring AI 2.0.0 was built against Spring Boot 4.1.0; plan pinned 4.0.0 which conflicts -->
-        <version>4.1.0</version>
+        <version>4.1.1</version>
         <relativePath/>
     </parent>
 
@@ -20,7 +20,7 @@
 
     <properties>
         <java.version>25</java.version>
-        <spring-ai.version>2.0.0</spring-ai.version>
+        <spring-ai.version>2.0.1</spring-ai.version>
     </properties>
 
     <dependencyManagement>
@@ -39,7 +39,7 @@
         <dependency>
             <groupId>org.ta4j</groupId>
             <artifactId>ta4j-core</artifactId>
-            <version>0.22.5</version>
+            <version>0.25.0</version>
         </dependency>
         <dependency>
             <groupId>org.yaml</groupId>
@@ -51,7 +51,7 @@
         <dependency>
             <groupId>org.apache.pdfbox</groupId>
             <artifactId>pdfbox</artifactId>
-            <version>3.0.5</version>
+            <version>3.0.8</version>
             <exclusions>
                 <!-- PDFBox pulls commons-logging transitively; exclude it so its logging resolves
                      through Spring's commons-logging bridge (spring-jcl) rather than JCL's own
