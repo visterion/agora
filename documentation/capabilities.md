@@ -661,6 +661,13 @@ unlimited.
 Parabolic SAR, Ichimoku, RSI/ROC/PPO/DPO/MACD/Stochastic/CCI/Williams %R/Aroon, ADX/ATR/
 Bollinger/StdDev/MeanDev/Chandelier, Highest/Lowest/52w range/OBV.
 
+**Inconsistent provider bars are repaired, not rejected.** Daily feeds occasionally report a
+bar whose high/low do not cover its open/close (seen on free feeds around auctions and exchange
+holidays). The indicator engine (ta4j ≥ 0.25) refuses such a candle, so before computing,
+Agora keeps open and close as reported and widens high/low to the envelope of all four prices;
+no bar is dropped and a WARN names the affected dates. `get_ohlc` still returns the raw
+provider values.
+
 Extensible without rebuild: mount YAML and set `AGORA_RESEARCH_INDICATORS_FILE`.
 
 ---

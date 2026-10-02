@@ -1,6 +1,8 @@
 package de.visterion.agora.research;
 
 import de.visterion.agora.data.OhlcBar;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.ta4j.core.BarSeries;
 import org.ta4j.core.BaseBarSeriesBuilder;
 import org.ta4j.core.Indicator;
@@ -20,28 +22,49 @@ import java.util.Map;
 /** Bridges Agora's OhlcBar list to a ta4j BarSeries (DecimalNum precision) and reads values back. */
 public final class Ta4jBars {
 
+    private static final Logger log = LoggerFactory.getLogger(Ta4jBars.class);
     private static final Duration ONE_DAY = Duration.ofDays(1);
+    private static final int MAX_LOGGED_DATES = 3;
 
     private Ta4jBars() {}
 
     /** Build a DecimalNum-backed daily series from provider OhlcBars. Providers occasionally
      *  return duplicate-date rows (last one wins) or out-of-order rows — de-duplicate and sort
-     *  ascending here instead of letting ta4j throw on a non-monotonic end time. */
+     *  ascending here instead of letting ta4j throw on a non-monotonic end time.
+     *
+     *  <p>Since ta4j 0.25 a bar whose high is below its open/close/low (or whose low is above
+     *  them) is rejected with an IllegalArgumentException. Real provider data contains such rows
+     *  (free daily feeds around auctions and exchange holidays), so one bad row would fail the
+     *  whole indicator call. Such a bar is repaired here, at the ta4j boundary only: open and
+     *  close stay as reported and high/low are widened to the envelope of all four prices. No
+     *  row is dropped, so the series stays index-aligned with the provider list. Raw provider
+     *  data (e.g. {@code get_ohlc}) is not altered. */
     public static BarSeries toSeries(List<OhlcBar> bars) {
         BarSeries series = new BaseBarSeriesBuilder()
                 .withNumFactory(DecimalNumFactory.getInstance())
                 .withName("agora")
                 .build();
+        List<java.time.LocalDate> repaired = new ArrayList<>();
         for (OhlcBar b : dedupAndSort(bars)) {
+            BigDecimal high = b.high().max(b.open()).max(b.close()).max(b.low());
+            BigDecimal low = b.low().min(b.open()).min(b.close()).min(b.high());
+            if (high.compareTo(b.high()) != 0 || low.compareTo(b.low()) != 0) {
+                repaired.add(b.date());
+            }
             series.barBuilder()
                     .endTime(b.date().atStartOfDay(ZoneOffset.UTC).toInstant())
                     .timePeriod(ONE_DAY)
                     .openPrice(b.open().toPlainString())
-                    .highPrice(b.high().toPlainString())
-                    .lowPrice(b.low().toPlainString())
+                    .highPrice(high.toPlainString())
+                    .lowPrice(low.toPlainString())
                     .closePrice(b.close().toPlainString())
                     .volume(Long.toString(b.volume()))
                     .add();
+        }
+        if (!repaired.isEmpty()) {
+            log.warn("widened high/low of {} bar(s) whose OHLC was inconsistent (high/low not "
+                    + "covering open/close), e.g. {}", repaired.size(),
+                    repaired.subList(0, Math.min(MAX_LOGGED_DATES, repaired.size())));
         }
         return series;
     }
