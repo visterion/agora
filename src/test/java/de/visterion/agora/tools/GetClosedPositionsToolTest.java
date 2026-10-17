@@ -122,7 +122,7 @@ class GetClosedPositionsToolTest {
 
     @Test void costFieldsOmittedWhenNull() {
         var stub = new StubBroker() {
-            public List<ClosedPosition> closedPositions() {
+            @Override public List<ClosedPosition> closedPositions() {
                 return List.of(new ClosedPosition("ISRG", 36313L, new BigDecimal("364.35"),
                         new BigDecimal("364.10"), new BigDecimal("3"), new BigDecimal("-0.25"), "sig-1"));
             }

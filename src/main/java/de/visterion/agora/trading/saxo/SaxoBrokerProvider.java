@@ -196,10 +196,14 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * *position* id from {@code OpeningPositionId} — there is no order id on a closed position,
      * only the id of the position that was opened and later closed. The five cost fields
      * ({@code costOpening}, {@code costClosing}, {@code costOpeningBase}, {@code costClosingBase},
-     * {@code profitLossCurrencyConversion}) come from the {@code Costs} FieldGroup — requested
-     * alongside {@code ClosedPosition,DisplayAndFormat} — and are mapped with {@link #bdOrNull},
-     * not {@link #bd}: a missing node or JSON null stays Java {@code null} ("broker did not report
-     * it"), while a reported {@code 0} stays {@link BigDecimal#ZERO}, never conflated with null.
+     * {@code profitLossCurrencyConversion}) are read from the {@code ClosedPosition} node itself
+     * (same node as every other field above); {@code Costs} is additionally requested as a
+     * FieldGroup because that is what makes Saxo populate those five properties on the node in
+     * the first place — see {@link #FIELD_GROUPS_WITH_COSTS} for the HTTP-400 fallback if a given
+     * Saxo environment rejects {@code Costs} as a closedpositions FieldGroup. They are mapped with
+     * {@link #bdOrNull}, not {@link #bd}: a missing node or JSON null stays Java {@code null}
+     * ("broker did not report it"), while a reported {@code 0} stays {@link BigDecimal#ZERO},
+     * never conflated with null.
      *
      * <p>{@code from}/{@code to} apply a client-side TEMPORAL window filter on {@code closeTime}
      * (Saxo's closedpositions endpoint has no server-side date-range query): both bounds are
@@ -213,15 +217,14 @@ public class SaxoBrokerProvider implements BrokerProvider {
         return closedPositions(null, null);
     }
 
+    /** Requested in the common case; {@link #FIELD_GROUPS_WITHOUT_COSTS} is the HTTP-400 fallback. */
+    private static final String FIELD_GROUPS_WITH_COSTS = "ClosedPosition,DisplayAndFormat,Costs";
+    private static final String FIELD_GROUPS_WITHOUT_COSTS = "ClosedPosition,DisplayAndFormat";
+
     @Override
     public List<ClosedPosition> closedPositions(String from, String to) {
         AccountContext ctx = accountContext();
-        JsonNode resp = followPagination(getJson("GET /port/v1/closedpositions",
-                b -> b.path("/port/v1/closedpositions")
-                        .queryParam("ClientKey", "{ck}")
-                        .queryParam("AccountKey", "{ak}")
-                        .queryParam("FieldGroups", "{fg}")
-                        .build(ctx.clientKey(), ctx.accountKey(), "ClosedPosition,DisplayAndFormat,Costs")));
+        JsonNode resp = followPagination(closedPositionsPage(ctx, FIELD_GROUPS_WITH_COSTS, true));
         List<ClosedPosition> out = new ArrayList<>();
         for (JsonNode n : resp.path("Data")) {
             JsonNode cp = n.path("ClosedPosition");
@@ -1866,6 +1869,46 @@ public class SaxoBrokerProvider implements BrokerProvider {
                 .retrieve().body(JsonNode.class));
     }
 
+    /**
+     * Requests one page of {@code GET /port/v1/closedpositions} with the given FieldGroups.
+     * When {@code allowFallbackOn400} is true and Saxo rejects that FieldGroups value with
+     * HTTP 400 (e.g. an environment where {@code Costs} is not a valid closedpositions
+     * FieldGroup), retries ONCE with {@link #FIELD_GROUPS_WITHOUT_COSTS} and logs a WARN
+     * naming the fallback — so a broker-side FieldGroups rejection degrades to "no cost
+     * fields" instead of making the whole call (and Dracul's only closed-positions source)
+     * UNAVAILABLE. Any other status (401/403/429/5xx) is NOT retried, matching today's
+     * behavior via {@link #readError}. {@link #followPagination} then follows the
+     * {@code __next} link of whichever request succeeded, so later pages use the same
+     * FieldGroups as the first one.
+     */
+    private JsonNode closedPositionsPage(AccountContext ctx, String fieldGroups, boolean allowFallbackOn400) {
+        try {
+            JsonNode n = client.get().uri(b -> b.path("/port/v1/closedpositions")
+                            .queryParam("ClientKey", "{ck}")
+                            .queryParam("AccountKey", "{ak}")
+                            .queryParam("FieldGroups", "{fg}")
+                            .build(ctx.clientKey(), ctx.accountKey(), fieldGroups))
+                    .header("Authorization", bearer()).retrieve().body(JsonNode.class);
+            if (n == null) {
+                throw new BrokerException(BrokerException.Kind.UNAVAILABLE, "empty saxo response", null);
+            }
+            return n;
+        } catch (RestClientResponseException e) {
+            if (allowFallbackOn400 && e.getStatusCode().value() == 400) {
+                log.warn("saxo /port/v1/closedpositions rejected FieldGroups={} (HTTP 400) — "
+                                + "retrying with FieldGroups={} (cost fields will be null)",
+                        fieldGroups, FIELD_GROUPS_WITHOUT_COSTS);
+                return closedPositionsPage(ctx, FIELD_GROUPS_WITHOUT_COSTS, false);
+            }
+            throw readError(e);
+        } catch (BrokerException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BrokerException(BrokerException.Kind.UNAVAILABLE,
+                    "saxo request failed: " + e.getMessage(), e);
+        }
+    }
+
     private JsonNode exchange(Supplier<JsonNode> call) {
         try {
             JsonNode n = call.get();
@@ -2080,6 +2123,13 @@ public class SaxoBrokerProvider implements BrokerProvider {
         if (node == null || node.isNull() || node.isMissingNode()) return null;
         if (node.isNumber()) return node.decimalValue();
         try { return new BigDecimal(node.asString("0")); }
-        catch (NumberFormatException e) { return null; }
+        catch (NumberFormatException e) {
+            // Distinguish "present but not a number" from "missing" — this is the branch
+            // where Saxo sent something, just not a parseable one; missing/null never reaches here.
+            if (log.isDebugEnabled()) {
+                log.debug("saxo bdOrNull: non-numeric value '{}' is not a valid BigDecimal — treating as null", node.asString(""));
+            }
+            return null;
+        }
     }
 }

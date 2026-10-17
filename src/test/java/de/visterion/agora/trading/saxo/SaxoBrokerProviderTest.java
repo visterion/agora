@@ -358,6 +358,36 @@ class SaxoBrokerProviderTest {
                 .withQueryParam("FieldGroups", equalTo("ClosedPosition,DisplayAndFormat,Costs")));
     }
 
+    @Test void closedPositionsRetriesWithoutCostsOn400() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions"))
+                .withQueryParam("FieldGroups", equalTo("ClosedPosition,DisplayAndFormat,Costs"))
+                .willReturn(aResponse().withStatus(400).withBody("FieldGroups 'Costs' not supported")));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions"))
+                .withQueryParam("FieldGroups", equalTo("ClosedPosition,DisplayAndFormat"))
+                .willReturn(okJson("""
+                    {"__count":1,"Data":[{
+                      "ClosedPosition":{"Uic":36313,"Amount":3.0,"OpenPrice":364.35,"ClosingPrice":364.10,
+                                         "ClosedProfitLoss":-0.25},
+                      "DisplayAndFormat":{"Symbol":"ISRG:xnas"}}]}
+                    """)));
+        var cps = provider.closedPositions();
+        assertThat(cps).hasSize(1);
+        assertThat(cps.get(0).symbol()).isEqualTo("ISRG");
+        assertThat(cps.get(0).costOpening()).isNull();
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/port/v1/closedpositions"))
+                .withQueryParam("FieldGroups", equalTo("ClosedPosition,DisplayAndFormat,Costs")));
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/port/v1/closedpositions"))
+                .withQueryParam("FieldGroups", equalTo("ClosedPosition,DisplayAndFormat")));
+        wm.verify(2, getRequestedFor(urlPathEqualTo("/port/v1/closedpositions")));
+    }
+
+    @Test void closedPositionsDoesNotRetryOn500() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions"))
+                .willReturn(aResponse().withStatus(500)));
+        assertThatThrownBy(() -> provider.closedPositions()).isInstanceOf(BrokerException.class);
+        wm.verify(1, getRequestedFor(urlPathEqualTo("/port/v1/closedpositions")));
+    }
+
     @Test void closedPositionsNullCloseTimeKeptOnlyWithoutRange() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
             {"__count":1,"Data":[{
