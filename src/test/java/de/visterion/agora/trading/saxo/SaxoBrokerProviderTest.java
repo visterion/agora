@@ -349,6 +349,22 @@ class SaxoBrokerProviderTest {
         assertThat(cps.get(0).profitLossCurrencyConversion()).isNull();
     }
 
+    @Test void closedPositionsCostFieldNullWhenValueIsAnObjectNotANumber() {
+        // A malformed/unexpected Saxo payload where a cost field is an object rather than a
+        // scalar number: bdOrNull must still yield null, never BigDecimal.ZERO — proving the
+        // missing/zero distinction holds even for non-scalar JSON, not just absent/0.
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
+            {"__count":1,"Data":[{
+              "ClosedPosition":{"Uic":211,"Amount":10.0,"OpenPrice":150.0,"ClosingPrice":155.0,
+                                 "ClosedProfitLoss":50.0,
+                                 "CostOpening":{"Unexpected":"object"}},
+              "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        var cps = provider.closedPositions();
+        assertThat(cps).hasSize(1);
+        assertThat(cps.get(0).costOpening()).isNull();
+    }
+
     @Test void closedPositionsRequestsCostsFieldGroup() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
             {"__count":0,"Data":[]}
@@ -379,6 +395,34 @@ class SaxoBrokerProviderTest {
         wm.verify(1, getRequestedFor(urlPathEqualTo("/port/v1/closedpositions"))
                 .withQueryParam("FieldGroups", equalTo("ClosedPosition,DisplayAndFormat")));
         wm.verify(2, getRequestedFor(urlPathEqualTo("/port/v1/closedpositions")));
+    }
+
+    @Test void closedPositionsFallbackWarnLogsRejectionBody() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions"))
+                .withQueryParam("FieldGroups", equalTo("ClosedPosition,DisplayAndFormat,Costs"))
+                .willReturn(aResponse().withStatus(400)
+                        .withHeader("Content-Type", "application/json")
+                        .withBody("""
+                            {"ErrorInfo":{"ErrorCode":"InvalidFieldGroup","Message":"Costs is not valid here"}}
+                            """)));
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions"))
+                .withQueryParam("FieldGroups", equalTo("ClosedPosition,DisplayAndFormat"))
+                .willReturn(okJson("""
+                    {"__count":0,"Data":[]}
+                    """)));
+
+        Logger logger = (Logger) LoggerFactory.getLogger(SaxoBrokerProvider.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+        try {
+            provider.closedPositions();
+            assertThat(appender.list).anyMatch(e -> e.getFormattedMessage().contains("InvalidFieldGroup")
+                    && e.getFormattedMessage().contains("Costs is not valid here"));
+        } finally {
+            logger.detachAppender(appender);
+        }
     }
 
     @Test void closedPositionsDoesNotRetryOn500() {

@@ -197,11 +197,15 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * only the id of the position that was opened and later closed. The five cost fields
      * ({@code costOpening}, {@code costClosing}, {@code costOpeningBase}, {@code costClosingBase},
      * {@code profitLossCurrencyConversion}) are read from the {@code ClosedPosition} node itself
-     * (same node as every other field above); {@code Costs} is additionally requested as a
-     * FieldGroup because that is what makes Saxo populate those five properties on the node in
-     * the first place — see {@link #FIELD_GROUPS_WITH_COSTS} for the HTTP-400 fallback if a given
-     * Saxo environment rejects {@code Costs} as a closedpositions FieldGroup. They are mapped with
-     * {@link #bdOrNull}, not {@link #bd}: a missing node or JSON null stays Java {@code null}
+     * (same node as every other field above) — they are documented properties of the
+     * {@code ClosedPosition} schema per the Saxo OpenAPI reference ({@code port/v1/closedpositions},
+     * schema {@code ClosedPosition}). {@code Costs} is additionally requested as a FieldGroup
+     * because Saxo's release notes mention a {@code Costs} FieldGroup on (Net/Closed)Positions;
+     * whether {@code closedpositions} actually needs or even accepts {@code Costs} as a FieldGroup
+     * is NOT verified — hence {@link #FIELD_GROUPS_WITH_COSTS} has an HTTP-400 fallback to
+     * {@link #FIELD_GROUPS_WITHOUT_COSTS} (see {@link #closedPositionsPage}) rather than assuming
+     * {@code Costs} is required, or even accepted, by this endpoint. The five fields are mapped
+     * with {@link #bdOrNull}, not {@link #bd}: a missing node or JSON null stays Java {@code null}
      * ("broker did not report it"), while a reported {@code 0} stays {@link BigDecimal#ZERO},
      * never conflated with null.
      *
@@ -1857,6 +1861,18 @@ public class SaxoBrokerProvider implements BrokerProvider {
         return (raw == null || raw.isBlank()) ? e.getMessage() : raw;
     }
 
+    /** Max response-body length kept in a log line — Saxo error bodies are normally short JSON,
+     *  but this caps it in case a misbehaving environment echoes something huge. */
+    private static final int MAX_LOGGED_BODY_LENGTH = 300;
+
+    /** Redacted (secrets scrubbed) and length-capped response body, for a log line that must
+     *  name what the broker actually rejected without risking an oversized or secret-bearing log. */
+    private static String truncatedBody(RestClientResponseException e) {
+        String body = ProviderLogRedactor.redactBody(rawBody(e));
+        if (body == null) return "";
+        return body.length() > MAX_LOGGED_BODY_LENGTH ? body.substring(0, MAX_LOGGED_BODY_LENGTH) + "...[truncated]" : body;
+    }
+
     // ---- helpers ----
 
     JsonNode getJson(String uri) {
@@ -1896,8 +1912,8 @@ public class SaxoBrokerProvider implements BrokerProvider {
         } catch (RestClientResponseException e) {
             if (allowFallbackOn400 && e.getStatusCode().value() == 400) {
                 log.warn("saxo /port/v1/closedpositions rejected FieldGroups={} (HTTP 400) — "
-                                + "retrying with FieldGroups={} (cost fields will be null)",
-                        fieldGroups, FIELD_GROUPS_WITHOUT_COSTS);
+                                + "retrying with FieldGroups={} (cost fields will be null); rejection body: {}",
+                        fieldGroups, FIELD_GROUPS_WITHOUT_COSTS, truncatedBody(e));
                 return closedPositionsPage(ctx, FIELD_GROUPS_WITHOUT_COSTS, false);
             }
             throw readError(e);
@@ -2122,6 +2138,16 @@ public class SaxoBrokerProvider implements BrokerProvider {
     static BigDecimal bdOrNull(JsonNode node) {
         if (node == null || node.isNull() || node.isMissingNode()) return null;
         if (node.isNumber()) return node.decimalValue();
+        if (!node.isValueNode()) {
+            // Object/array — never a legitimate Saxo numeric cost field. asString("0") on a
+            // non-value node would otherwise return the "0" default and silently coerce this
+            // to BigDecimal.ZERO, exactly the missing/zero conflation this method exists to avoid.
+            if (log.isDebugEnabled()) {
+                log.debug("saxo bdOrNull: non-scalar node ({}) is not a valid BigDecimal — treating as null",
+                        node.getNodeType());
+            }
+            return null;
+        }
         try { return new BigDecimal(node.asString("0")); }
         catch (NumberFormatException e) {
             // Distinguish "present but not a number" from "missing" — this is the branch
