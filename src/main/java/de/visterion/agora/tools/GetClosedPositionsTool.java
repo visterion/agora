@@ -72,6 +72,12 @@ public class GetClosedPositionsTool implements AgoraTool {
                 if (cp.openTime() != null) n.put("openTime", cp.openTime());
                 if (cp.closeTime() != null) n.put("closeTime", cp.closeTime());
                 if (cp.openingPositionId() != null) n.put("openingPositionId", cp.openingPositionId());
+                if (cp.costOpening() != null) n.put("costOpening", cp.costOpening());
+                if (cp.costClosing() != null) n.put("costClosing", cp.costClosing());
+                if (cp.costOpeningBase() != null) n.put("costOpeningBase", cp.costOpeningBase());
+                if (cp.costClosingBase() != null) n.put("costClosingBase", cp.costClosingBase());
+                if (cp.profitLossCurrencyConversion() != null)
+                    n.put("profitLossCurrencyConversion", cp.profitLossCurrencyConversion());
             }
             if (from != null || to != null) {
                 out.put("windowLimited", true);

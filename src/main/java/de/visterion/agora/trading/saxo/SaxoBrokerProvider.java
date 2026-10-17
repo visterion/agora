@@ -194,7 +194,12 @@ public class SaxoBrokerProvider implements BrokerProvider {
      * {@code closeTime} come straight from {@code ExecutionTimeOpen}/{@code ExecutionTimeClose}
      * (ISO-8601 strings, passed through unparsed). {@code openingPositionId} is the Saxo
      * *position* id from {@code OpeningPositionId} — there is no order id on a closed position,
-     * only the id of the position that was opened and later closed.
+     * only the id of the position that was opened and later closed. The five cost fields
+     * ({@code costOpening}, {@code costClosing}, {@code costOpeningBase}, {@code costClosingBase},
+     * {@code profitLossCurrencyConversion}) come from the {@code Costs} FieldGroup — requested
+     * alongside {@code ClosedPosition,DisplayAndFormat} — and are mapped with {@link #bdOrNull},
+     * not {@link #bd}: a missing node or JSON null stays Java {@code null} ("broker did not report
+     * it"), while a reported {@code 0} stays {@link BigDecimal#ZERO}, never conflated with null.
      *
      * <p>{@code from}/{@code to} apply a client-side TEMPORAL window filter on {@code closeTime}
      * (Saxo's closedpositions endpoint has no server-side date-range query): both bounds are
@@ -216,7 +221,7 @@ public class SaxoBrokerProvider implements BrokerProvider {
                         .queryParam("ClientKey", "{ck}")
                         .queryParam("AccountKey", "{ak}")
                         .queryParam("FieldGroups", "{fg}")
-                        .build(ctx.clientKey(), ctx.accountKey(), "ClosedPosition,DisplayAndFormat")));
+                        .build(ctx.clientKey(), ctx.accountKey(), "ClosedPosition,DisplayAndFormat,Costs")));
         List<ClosedPosition> out = new ArrayList<>();
         for (JsonNode n : resp.path("Data")) {
             JsonNode cp = n.path("ClosedPosition");
@@ -232,9 +237,15 @@ public class SaxoBrokerProvider implements BrokerProvider {
             String openTime = textOrNull(cp, "ExecutionTimeOpen");
             String closeTime = textOrNull(cp, "ExecutionTimeClose");
             Long openingPositionId = parseLongOrNull(textOrNull(cp, "OpeningPositionId"));
+            BigDecimal costOpening = bdOrNull(cp.path("CostOpening"));
+            BigDecimal costClosing = bdOrNull(cp.path("CostClosing"));
+            BigDecimal costOpeningBase = bdOrNull(cp.path("CostOpeningInBaseCurrency"));
+            BigDecimal costClosingBase = bdOrNull(cp.path("CostClosingInBaseCurrency"));
+            BigDecimal profitLossCurrencyConversion = bdOrNull(cp.path("ProfitLossCurrencyConversion"));
             if (!withinCloseWindow(closeTime, from, to)) continue;
             out.add(new ClosedPosition(symbol, uic, openPrice, closePrice, amount, profitLoss,
-                    clientRef, openTime, closeTime, openingPositionId));
+                    clientRef, openTime, closeTime, openingPositionId,
+                    costOpening, costClosing, costOpeningBase, costClosingBase, profitLossCurrencyConversion));
         }
         return out;
     }
@@ -2060,5 +2071,15 @@ public class SaxoBrokerProvider implements BrokerProvider {
         if (node.isNumber()) return node.decimalValue();
         try { return new BigDecimal(node.asString("0")); }
         catch (NumberFormatException e) { return BigDecimal.ZERO; }
+    }
+
+    /** Like {@link #bd}, but preserves the missing/null distinction instead of defaulting to
+     *  zero — for optional numeric fields (e.g. the Saxo cost fields) where null means "the
+     *  broker did not report this" and must stay distinguishable from a real reported zero. */
+    static BigDecimal bdOrNull(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) return null;
+        if (node.isNumber()) return node.decimalValue();
+        try { return new BigDecimal(node.asString("0")); }
+        catch (NumberFormatException e) { return null; }
     }
 }

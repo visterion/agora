@@ -314,6 +314,50 @@ class SaxoBrokerProviderTest {
         assertThat(cps).extracting(de.visterion.agora.trading.ClosedPosition::symbol).containsExactly("B");
     }
 
+    @Test void closedPositionsMapsCostFieldsIncludingRealZero() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
+            {"__count":1,"Data":[{
+              "ClosedPosition":{"Uic":36313,"Amount":3.0,"OpenPrice":364.35,"ClosingPrice":364.10,
+                                 "ClosedProfitLoss":-0.25,
+                                 "CostOpening":1.50,"CostClosing":0,
+                                 "CostOpeningInBaseCurrency":1.35,"CostClosingInBaseCurrency":1.08,
+                                 "ProfitLossCurrencyConversion":0.03},
+              "DisplayAndFormat":{"Symbol":"ISRG:xnas"}}]}
+            """)));
+        var cps = provider.closedPositions();
+        assertThat(cps).hasSize(1);
+        assertThat(cps.get(0).costOpening()).isEqualByComparingTo("1.50");
+        assertThat(cps.get(0).costClosing()).isEqualByComparingTo("0");
+        assertThat(cps.get(0).costOpeningBase()).isEqualByComparingTo("1.35");
+        assertThat(cps.get(0).costClosingBase()).isEqualByComparingTo("1.08");
+        assertThat(cps.get(0).profitLossCurrencyConversion()).isEqualByComparingTo("0.03");
+    }
+
+    @Test void closedPositionsCostFieldsNullWhenAbsent() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
+            {"__count":1,"Data":[{
+              "ClosedPosition":{"Uic":211,"Amount":10.0,"OpenPrice":150.0,"ClosingPrice":155.0,
+                                 "ClosedProfitLoss":50.0},
+              "DisplayAndFormat":{"Symbol":"AAPL:xnas"}}]}
+            """)));
+        var cps = provider.closedPositions();
+        assertThat(cps).hasSize(1);
+        assertThat(cps.get(0).costOpening()).isNull();
+        assertThat(cps.get(0).costClosing()).isNull();
+        assertThat(cps.get(0).costOpeningBase()).isNull();
+        assertThat(cps.get(0).costClosingBase()).isNull();
+        assertThat(cps.get(0).profitLossCurrencyConversion()).isNull();
+    }
+
+    @Test void closedPositionsRequestsCostsFieldGroup() {
+        wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
+            {"__count":0,"Data":[]}
+            """)));
+        provider.closedPositions();
+        wm.verify(getRequestedFor(urlPathEqualTo("/port/v1/closedpositions"))
+                .withQueryParam("FieldGroups", equalTo("ClosedPosition,DisplayAndFormat,Costs")));
+    }
+
     @Test void closedPositionsNullCloseTimeKeptOnlyWithoutRange() {
         wm.stubFor(get(urlPathEqualTo("/port/v1/closedpositions")).willReturn(okJson("""
             {"__count":1,"Data":[{

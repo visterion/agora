@@ -101,6 +101,41 @@ class GetClosedPositionsToolTest {
         assertThat(cp.get("openingPositionId").asLong()).isEqualTo(998877L);
     }
 
+    @Test void costFieldsEmittedWhenPresentIncludingRealZero() {
+        var stub = new StubBroker() {
+            @Override public List<ClosedPosition> closedPositions(String from, String to) {
+                return List.of(new ClosedPosition("ISRG",36313L,new BigDecimal("364.35"),
+                        new BigDecimal("364.10"),new BigDecimal("3"),new BigDecimal("-0.25"),"sig-1",
+                        "2026-07-01T09:00:00Z","2026-07-01T15:30:00Z",998877L,
+                        new BigDecimal("1.5"), BigDecimal.ZERO, new BigDecimal("1.35"),
+                        new BigDecimal("1.08"), new BigDecimal("0.03")));
+            }
+        };
+        var cp = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN))
+                .output().get("closedPositions").get(0);
+        assertThat(cp.get("costOpening").decimalValue()).isEqualByComparingTo("1.5");
+        assertThat(cp.get("costClosing").decimalValue()).isEqualByComparingTo("0");
+        assertThat(cp.get("costOpeningBase").decimalValue()).isEqualByComparingTo("1.35");
+        assertThat(cp.get("costClosingBase").decimalValue()).isEqualByComparingTo("1.08");
+        assertThat(cp.get("profitLossCurrencyConversion").decimalValue()).isEqualByComparingTo("0.03");
+    }
+
+    @Test void costFieldsOmittedWhenNull() {
+        var stub = new StubBroker() {
+            public List<ClosedPosition> closedPositions() {
+                return List.of(new ClosedPosition("ISRG", 36313L, new BigDecimal("364.35"),
+                        new BigDecimal("364.10"), new BigDecimal("3"), new BigDecimal("-0.25"), "sig-1"));
+            }
+        };
+        var cp = tool(stub).call(mapper.createObjectNode().put("connection", TestConnections.CONN))
+                .output().get("closedPositions").get(0);
+        assertThat(cp.has("costOpening")).isFalse();
+        assertThat(cp.has("costClosing")).isFalse();
+        assertThat(cp.has("costOpeningBase")).isFalse();
+        assertThat(cp.has("costClosingBase")).isFalse();
+        assertThat(cp.has("profitLossCurrencyConversion")).isFalse();
+    }
+
     @Test void windowLimitedFlagWhenRangeRequested() {
         var stub = new StubBroker() {
             @Override public List<ClosedPosition> closedPositions(String from, String to) { return List.of(); }

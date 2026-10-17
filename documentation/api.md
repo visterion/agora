@@ -448,13 +448,23 @@ below).
       "clientRef": "dracul-aapl-1",
       "openTime": "2026-07-10T14:30:02Z",
       "closeTime": "2026-07-15T20:00:00Z",
-      "openingPositionId": "posid-789"
+      "openingPositionId": "posid-789",
+      "costOpening": 1.50,
+      "costClosing": 1.20,
+      "costOpeningBase": 1.35,
+      "costClosingBase": 1.08,
+      "profitLossCurrencyConversion": 0.03
     }
   ],
   "windowLimited": true,
   "note": "saxo closed positions cover only the broker's current rolling window, not full history — from/to is a client-side filter over that window"
 }
 ```
+`costOpening`/`costClosing` are the total broker cost of opening/closing the position in
+instrument currency; `costOpeningBase`/`costClosingBase` are the same costs in the client/account's
+base currency; `profitLossCurrencyConversion` is the P/L from currency conversion between position
+open and close. All five are omitted (key absent) when Saxo did not report them — a reported `0`
+is a real zero and is still emitted.
 
 **Output (Alpaca — unsupported):**
 ```json
