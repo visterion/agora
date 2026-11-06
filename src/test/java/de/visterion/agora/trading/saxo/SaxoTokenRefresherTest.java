@@ -369,8 +369,8 @@ class SaxoTokenRefresherTest {
 
     // Names what it actually proves: a re-auth rolls the deadline, so the very next tick must
     // not kill the session a human just restored. The narrower race — a callback landing
-    // BETWEEN the refreshWindowExpired() check and markDeadIfCurrent() — is covered by the CAS
-    // guard and by the stale-token tests above.
+    // BETWEEN the refreshWindowExpired() check and markDeadIfCurrent() — is covered by
+    // reLoginLandingDuringTheWindowCheckIsNotKilled below.
     @Test
     void reauthorizationClearsAnExpiredWindow() {
         SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
@@ -383,6 +383,30 @@ class SaxoTokenRefresherTest {
 
         assertThat(store.dead()).isFalse();
         assertThat(store.validAccessToken()).contains("acc-fresh");
+    }
+
+    @Test
+    void reLoginLandingDuringTheWindowCheckIsNotKilled() {
+        java.util.concurrent.atomic.AtomicReference<Runnable> hook =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.function.LongSupplier clock = () -> {
+            Runnable r = hook.getAndSet(null);
+            if (r != null) r.run();
+            return now.get();
+        };
+        SaxoTokenStores stores = new SaxoTokenStores(dir, clock);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-old", 1200, "ref-old", 3600);
+        now.addAndGet(3_601_000L);                   // window elapsed, not yet marked dead
+        // the next clock read happens inside refreshWindowExpired(): a re-login lands right there
+        hook.set(() -> store.authorize("acc-new", 1200, "ref-new", 3600));
+        ConnectionRegistry registry = registry();
+
+        new SaxoTokenRefresher(registry, stores, mock(SaxoOAuthClient.class)).tick();
+
+        assertThat(store.dead()).isFalse();
+        assertThat(store.refreshToken()).isEqualTo("ref-new");
+        assertThat(registry.get("saxo-sim").orElseThrow().probeStatus().state()).isEqualTo("unknown");
     }
 
     // --- only state changes are logged, not every attempt ---

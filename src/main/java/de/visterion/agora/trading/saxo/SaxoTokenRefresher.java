@@ -69,8 +69,10 @@ public class SaxoTokenRefresher {
             // looked like (HTTP 401, DNS outage, ...). Say so instead of polling forever: on
             // 2026-08-01 a 9h outage outlasted the window and the connection then reported
             // "refresh pending — retry shortly" for five more hours.
+            // Capture the token BEFORE the window check: a re-login landing in between then
+            // makes the CAS below fail instead of killing the fresh session.
+            String expired = store.refreshToken();
             if (store.refreshWindowExpired()) {
-                String expired = store.refreshToken();
                 if (store.markDeadIfCurrent(expired, "refresh token expired")) {
                     c.setProbeStatus(ProbeStatus.unreachable(Instant.now(),
                             "refresh token expired — re-authorize via /auth/saxo/login"));
