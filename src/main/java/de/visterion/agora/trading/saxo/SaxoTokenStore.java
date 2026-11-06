@@ -79,11 +79,19 @@ public final class SaxoTokenStore {
         loadFile();
     }
 
+    /**
+     * Refresh-path semantics (a missing refresh deadline keeps the one in hand); a login
+     * must use {@link #authorize(String, long, String, long)}.
+     */
     public synchronized void update(String accessToken, long expiresInSeconds, String newRefreshToken) {
         applyUpdate(accessToken, expiresInSeconds, newRefreshToken, 0L, true);
     }
 
-    /** As {@link #update(String, long, String)}, with Saxo's refresh_token_expires_in. */
+    /**
+     * As {@link #update(String, long, String)}, with Saxo's refresh_token_expires_in. Same
+     * refresh-path semantics: a missing figure keeps the deadline in hand; a login must use
+     * {@link #authorize(String, long, String, long)}.
+     */
     public synchronized void update(String accessToken, long expiresInSeconds,
             String newRefreshToken, long refreshExpiresInSeconds) {
         applyUpdate(accessToken, expiresInSeconds, newRefreshToken, refreshExpiresInSeconds, true);
@@ -228,7 +236,7 @@ public final class SaxoTokenStore {
 
     /**
      * Whether the refresh token's own lifetime (Saxo: refresh_token_expires_in) has run out.
-     * A store that never received a figure returns false: an unknown deadline must never kill
+     * A store with no known deadline returns false: an unknown deadline must never kill
      * a session — that is what makes a deploy over a token file written by an older version
      * safe.
      */

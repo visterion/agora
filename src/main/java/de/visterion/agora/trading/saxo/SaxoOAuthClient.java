@@ -25,8 +25,8 @@ public class SaxoOAuthClient {
      * Token response. {@code refreshExpiresInSeconds} is Saxo's own
      * {@code refresh_token_expires_in} (3600s in production, sent on both the
      * authorization-code and the refresh grant); {@code 0} means the response carried no
-     * figure — callers must then keep whatever deadline they already have rather than
-     * inventing one.
+     * figure. The refresh path then keeps the deadline in hand rather than inventing one;
+     * a fresh authorization treats it as unknown (see {@link SaxoTokenStore#authorize}).
      */
     public record SaxoTokens(String accessToken, long expiresInSeconds, String refreshToken,
             long refreshExpiresInSeconds) {

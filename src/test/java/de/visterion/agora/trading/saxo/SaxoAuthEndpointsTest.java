@@ -176,8 +176,8 @@ class SaxoAuthEndpointsTest {
 
     @Test
     void reLoginWithoutAGrantedLifetimeSurvivesTheNextRefresherTick() {
-        // prod 2026-11-05: the callback kept the dead session's past refresh deadline,
-        // so the refresher killed the fresh login 9 s later
+        // not the prod 2026-11-05 case (that grant carried the figure): guards the decision
+        // that a login without a figure must not inherit the dead session's old deadline
         SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
         SaxoTokenStore store = stores.forConnection("saxo-sim");
         store.update("acc-old", 1200, "ref-old", 3600);

@@ -235,7 +235,7 @@ class SaxoTokenRefresherTest {
         SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
         when(oauth.refresh(any(), eq("ref-0"))).thenAnswer(invocation -> {
             // simulate a concurrent /auth/saxo/callback landing fresh tokens mid-flight
-            store.update("acc-manual", 1200, "ref-manual");
+            store.authorize("acc-manual", 1200, "ref-manual", 0);
             return new SaxoOAuthClient.SaxoTokens("acc-stale", 1200, "ref-stale");
         });
 
@@ -260,7 +260,7 @@ class SaxoTokenRefresherTest {
             now.addAndGet(1_300_000L);
             SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
             when(oauth.refresh(any(), eq("ref-secret-0"))).thenAnswer(invocation -> {
-                store.update("acc-manual", 1200, "ref-manual");   // concurrent callback wins the CAS
+                store.authorize("acc-manual", 1200, "ref-manual", 0);   // concurrent callback wins the CAS
                 return new SaxoOAuthClient.SaxoTokens("acc-stale", 1200, "ref-stale");
             });
 
@@ -285,7 +285,7 @@ class SaxoTokenRefresherTest {
         SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
         when(oauth.refresh(any(), eq("ref-0"))).thenAnswer(invocation -> {
             // a human re-authorized concurrently while the stale refresh (ref-0) was in flight
-            store.update("acc-manual", 1200, "ref-manual");
+            store.authorize("acc-manual", 1200, "ref-manual", 0);
             throw new SaxoOAuthClient.InvalidGrantException("rejected");
         });
         ConnectionRegistry registry = registry();
@@ -377,7 +377,7 @@ class SaxoTokenRefresherTest {
         SaxoTokenStore store = stores.forConnection("saxo-sim");
         store.update("acc-0", 1200, "ref-0", 3600);
         now.addAndGet(3_601_000L);                                  // old grant past its window
-        store.update("acc-fresh", 1200, "ref-fresh", 3600);         // human re-authorized just now
+        store.authorize("acc-fresh", 1200, "ref-fresh", 3600);       // human re-authorized just now
 
         new SaxoTokenRefresher(registry(), stores, mock(SaxoOAuthClient.class)).tick();
 
