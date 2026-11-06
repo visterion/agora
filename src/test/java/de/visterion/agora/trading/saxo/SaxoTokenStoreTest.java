@@ -303,4 +303,60 @@ class SaxoTokenStoreTest {
         now.addAndGet(3_599_000L);
         assertThat(s.refreshWindowExpired()).isFalse();
     }
+
+    @Test
+    void authorizeGivesAReLoginItsOwnGrantedLifetime() {
+        var s = store("saxo-sim");
+        s.update("acc-old", 1200, "ref-old", 3600);
+        now.addAndGet(3_601_000L);                          // old window elapsed
+        s.markDead("refresh token expired");
+
+        s.authorize("acc-new", 1200, "ref-new", 3600);
+
+        assertThat(s.dead()).isFalse();
+        assertThat(s.refreshWindowExpired()).isFalse();
+        now.addAndGet(3_599_000L);
+        assertThat(s.refreshWindowExpired()).isFalse();
+        now.addAndGet(2_000L);
+        assertThat(s.refreshWindowExpired()).isTrue();
+    }
+
+    @Test
+    void authorizeWithoutAFigureDoesNotInheritTheExpiredDeadline() {
+        var s = store("saxo-sim");
+        s.update("acc-old", 1200, "ref-old", 3600);
+        now.addAndGet(3_601_000L);
+        s.markDead("refresh token expired");
+
+        s.authorize("acc-new", 1200, "ref-new", 0);
+
+        assertThat(s.refreshWindowExpired()).isFalse();
+        now.addAndGet(10 * 3_600_000L);
+        assertThat(s.refreshWindowExpired()).isFalse();     // unknown never kills a session
+        assertThat(store("saxo-sim").refreshWindowExpired()).isFalse();   // persisted as unknown
+    }
+
+    @Test
+    void authorizeReplacesAShorterLiveDeadline() {
+        var s = store("saxo-sim");
+        s.update("acc-old", 1200, "ref-old", 3600);
+        now.addAndGet(3_000_000L);                          // 10 min of the old window left
+        s.authorize("acc-new", 1200, "ref-new", 3600);
+        now.addAndGet(1_200_000L);                          // past the OLD deadline
+        assertThat(s.refreshWindowExpired()).isFalse();
+    }
+
+    @Test
+    void staleRefreshResultCannotOverwriteAReLogin() {
+        var s = store("saxo-sim");
+        s.update("acc-old", 1200, "ref-old", 3600);
+        s.authorize("acc-new", 1200, "ref-new", 3600);
+
+        assertThat(s.updateIfCurrent("ref-old", "acc-stale", 1200, "ref-stale", 60)).isFalse();
+
+        assertThat(s.validAccessToken()).contains("acc-new");
+        assertThat(s.refreshToken()).isEqualTo("ref-new");
+        now.addAndGet(3_599_000L);
+        assertThat(s.refreshWindowExpired()).isFalse();
+    }
 }

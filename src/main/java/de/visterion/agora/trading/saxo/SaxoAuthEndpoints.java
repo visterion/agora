@@ -82,7 +82,8 @@ public class SaxoAuthEndpoints {
 
         try {
             SaxoOAuthClient.SaxoTokens t = oauth.exchangeCode(cfg, code);
-            stores.forConnection(id).update(t.accessToken(), t.expiresInSeconds(), t.refreshToken());
+            stores.forConnection(id).authorize(t.accessToken(), t.expiresInSeconds(),
+                    t.refreshToken(), t.refreshExpiresInSeconds());
             registry.get(id).ifPresent(c -> c.setProbeStatus(ProbeStatus.ok(Instant.now())));
             log.info("Saxo connection '{}' authorized via OAuth callback", id);
             return ResponseEntity.ok("connection " + id + " authorized");

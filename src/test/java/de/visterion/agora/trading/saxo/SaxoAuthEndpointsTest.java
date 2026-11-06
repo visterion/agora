@@ -148,4 +148,52 @@ class SaxoAuthEndpointsTest {
         assertThat(r.getStatusCode().value()).isEqualTo(502);
         assertThat(r.getBody()).isEqualTo("token exchange failed");
     }
+
+    @Test
+    void reLoginAfterAnExpiredSessionSurvivesTheNextRefresherTick() {
+        // prod 2026-11-05: the callback kept the dead session's past refresh deadline,
+        // so the refresher killed the fresh login 9 s later
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-old", 1200, "ref-old", 3600);
+        now.addAndGet(3_601_000L);
+        store.markDead("refresh token expired");
+        SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+        when(oauth.exchangeCode(any(), eq("code-1")))
+                .thenReturn(new SaxoOAuthClient.SaxoTokens("acc-new", 1200, "ref-new", 3600));
+        ConnectionRegistry registry = registry(saxoCfg());
+        SaxoAuthState states = new SaxoAuthState(now::get);
+        SaxoAuthEndpoints ep = new SaxoAuthEndpoints(registry, stores, states, oauth);
+
+        assertThat(ep.callback("code-1", states.issue("saxo-sim")).getStatusCode().value()).isEqualTo(200);
+        new SaxoTokenRefresher(registry, stores, oauth).tick();
+
+        assertThat(store.dead()).isFalse();
+        assertThat(store.refreshWindowExpired()).isFalse();
+        assertThat(store.validAccessToken()).contains("acc-new");
+        assertThat(registry.get("saxo-sim").orElseThrow().probeStatus().state()).isEqualTo("ok");
+    }
+
+    @Test
+    void reLoginWithoutAGrantedLifetimeSurvivesTheNextRefresherTick() {
+        // prod 2026-11-05: the callback kept the dead session's past refresh deadline,
+        // so the refresher killed the fresh login 9 s later
+        SaxoTokenStores stores = new SaxoTokenStores(dir, now::get);
+        SaxoTokenStore store = stores.forConnection("saxo-sim");
+        store.update("acc-old", 1200, "ref-old", 3600);
+        now.addAndGet(3_601_000L);
+        store.markDead("refresh token expired");
+        SaxoOAuthClient oauth = mock(SaxoOAuthClient.class);
+        when(oauth.exchangeCode(any(), eq("code-1")))
+                .thenReturn(new SaxoOAuthClient.SaxoTokens("acc-new", 1200, "ref-new"));
+        ConnectionRegistry registry = registry(saxoCfg());
+        SaxoAuthState states = new SaxoAuthState(now::get);
+        SaxoAuthEndpoints ep = new SaxoAuthEndpoints(registry, stores, states, oauth);
+
+        assertThat(ep.callback("code-1", states.issue("saxo-sim")).getStatusCode().value()).isEqualTo(200);
+        new SaxoTokenRefresher(registry, stores, oauth).tick();
+
+        assertThat(store.dead()).isFalse();
+        assertThat(store.refreshWindowExpired()).isFalse();
+    }
 }

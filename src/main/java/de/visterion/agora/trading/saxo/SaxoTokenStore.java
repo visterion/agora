@@ -80,13 +80,25 @@ public final class SaxoTokenStore {
     }
 
     public synchronized void update(String accessToken, long expiresInSeconds, String newRefreshToken) {
-        applyUpdate(accessToken, expiresInSeconds, newRefreshToken, 0L);
+        applyUpdate(accessToken, expiresInSeconds, newRefreshToken, 0L, true);
     }
 
     /** As {@link #update(String, long, String)}, with Saxo's refresh_token_expires_in. */
     public synchronized void update(String accessToken, long expiresInSeconds,
             String newRefreshToken, long refreshExpiresInSeconds) {
-        applyUpdate(accessToken, expiresInSeconds, newRefreshToken, refreshExpiresInSeconds);
+        applyUpdate(accessToken, expiresInSeconds, newRefreshToken, refreshExpiresInSeconds, true);
+    }
+
+    /**
+     * Stores the result of a fresh OAuth authorization (the login callback). Unlike the
+     * refresh path, the refresh deadline is never inherited from the previous session: it
+     * comes from this response's {@code refresh_token_expires_in}, or is 0 (unknown, which
+     * never kills a session) when the response carries none. This is what lets a re-login
+     * after an expired or dead session start with a clean deadline.
+     */
+    public synchronized void authorize(String accessToken, long expiresInSeconds,
+            String refreshToken, long refreshExpiresInSeconds) {
+        applyUpdate(accessToken, expiresInSeconds, refreshToken, refreshExpiresInSeconds, false);
     }
 
     /**
@@ -107,23 +119,25 @@ public final class SaxoTokenStore {
         if (!Objects.equals(expectedRefreshToken, state.refreshToken())) {
             return false;
         }
-        applyUpdate(accessToken, expiresInSeconds, newRefreshToken, refreshExpiresInSeconds);
+        applyUpdate(accessToken, expiresInSeconds, newRefreshToken, refreshExpiresInSeconds, true);
         return true;
     }
 
     private void applyUpdate(String accessToken, long expiresInSeconds, String newRefreshToken,
-            long refreshExpiresInSeconds) {
+            long refreshExpiresInSeconds, boolean inheritDeadline) {
         // C6: Saxo may legally omit refresh_token on a refresh response (RFC 6749 §6) —
         // that means "keep the one you have", not "the session no longer has one".
         if (newRefreshToken == null || newRefreshToken.isBlank()) {
             newRefreshToken = state.refreshToken();
         }
-        // Same rule for the refresh-token deadline: a response without refresh_token_expires_in
-        // grants no new lifetime, so keep the one in hand rather than inventing a TTL. 0
-        // therefore means "unknown", and an unknown deadline never kills a session.
+        // Same rule for the refresh-token deadline on the refresh path (inheritDeadline): a
+        // response without refresh_token_expires_in grants no new lifetime, so keep the one
+        // in hand rather than inventing a TTL. A fresh authorization never inherits: the
+        // previous session's deadline says nothing about the new one. 0 therefore means
+        // "unknown", and an unknown deadline never kills a session.
         long refreshExpiresAt = refreshExpiresInSeconds > 0
                 ? nowMillis.getAsLong() + refreshExpiresInSeconds * 1000L
-                : state.refreshExpiresAtMillis();
+                : (inheritDeadline ? state.refreshExpiresAtMillis() : 0L);
         // M-T8: persist first so a successful write is never lost, but a persist failure
         // must not prevent the in-memory swap — see class-level comment.
         try {
